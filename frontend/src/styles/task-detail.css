@@ -106,17 +106,47 @@
  *
  * 격자 자체는 기존 `.meta-grid`(dt/dd · `components.css:527-531`)다 — 새 부품이 아니다. 열 행이 서므로
  * 이 화면에서만 행을 촘촘하게(44 → 36) 하고 활자를 `업무 정보` 의 칸과 같은 13px 로 맞춘다. */
-.scax-td .meta-info > div { min-height: 36px; padding: var(--scax-space-100) var(--scax-space-300); font-size: 13px; }
-.scax-td .meta-info dt { font-size: 12px; }
-.scax-td .meta-info dd { display: flex; flex-direction: column; align-items: flex-start; gap: var(--scax-space-100); }
+/* 한 줄 = 칸 둘(WORK-010 2루프 E2E-1). 겉 상자·줄 구분선은 공용 `.meta-grid`(components.css:527-531)와 같은 모양을
+   이 스코프에서 다시 쥔다 — 공용 규칙은 관계 탐색·제안 상자·요청 상세가 쓰므로 건드리지 않는다. */
+.scax-td .meta-info { display: grid; border: 1px solid var(--scax-color-line); border-radius: 12px; overflow: hidden; }
+.scax-td .meta-info__line { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid var(--scax-color-line-weak); }
+.scax-td .meta-info__line:last-child { border-bottom: 0; }
+/* 칸 = 라벨 | 값. 라벨 폭은 가장 긴 라벨(「시작 예정일」·「실제 종료일」)이 한 줄에 드는 만큼이다. */
+.scax-td .meta-info__item {
+  display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: var(--scax-space-200);
+  min-width: 0; min-height: 36px; margin: 0; padding: var(--scax-space-100) var(--scax-space-300); font-size: 13px;
+}
+.scax-td .meta-info__item + .meta-info__item { border-left: 1px solid var(--scax-color-line-weak); }
+.scax-td .meta-info dt { color: var(--scax-color-ink-assistive); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.scax-td .meta-info dd { display: flex; flex-direction: column; align-items: flex-start; gap: var(--scax-space-100); min-width: 0; margin: 0; overflow: hidden; }
+/* 칸을 넘지 않는다 — 셀렉트 트리거·출처 링크·배지는 말줄임이다. */
+.scax-td .meta-info dd > *, .scax-td .meta-info .scax-select__trigger { max-width: 100%; }
+.scax-td .meta-info .scax-select__trigger { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scax-td .meta-info .origin-chip .scax-button--inline, .scax-td .meta-info .scax-badge { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 좁은 폭 — 한 줄에 한 칸. 기준은 기존 반응형 경계 900px(`components.css:711` · `screens-a.css` 로그인과 같은 값)이다:
+   업무 상세 모달(880 + 겹 바깥 여백)이 화면보다 좁아지기 시작하는 자리다. */
+@media (max-width: 900px) {
+  .scax-td .meta-info__line { grid-template-columns: minmax(0, 1fr); }
+  .scax-td .meta-info__item + .meta-info__item { border-left: 0; border-top: 1px solid var(--scax-color-line-weak); }
+  .scax-td .meta-info__item--empty { display: none; }
+}
 /* 걸린 일 상자 — 메타 정보 바로 아래, 있을 때만 (SPEC-007 §2.10.3 · WORK-010 2b-3). 「진행과 판단」 구역 머리는 없다. */
 .scax-td .task-blockers { display: grid; gap: var(--scax-space-250); margin-top: var(--scax-space-400); }
 .scax-td .task-blockers > .drawer-section.notice { margin-top: 0; }
-/* 마감일 값 + 「마감일 초과」 배지는 한 줄이다 (OQ-711). */
-.scax-td .meta-info__value { display: flex; align-items: center; gap: var(--scax-space-200); }
-/* 날짜 칸은 값 칸의 폭을 다 쓰지 않는다 — 날짜 하나가 들어갈 폭이면 된다. */
-.scax-td .meta-info .date-field { width: 180px; }
-.scax-td .meta-info .date-field .select-trigger { height: 30px; font-size: 13px; }
+/* 날짜칸 + 곁말(「마감일 초과」) — 배지는 날짜칸 **오른쪽 옆**이고, 칸이 좁으면 아래 줄로 내려간다 (OQ-711 · E2E-2). */
+.scax-td .meta-info__value { display: flex; flex-wrap: wrap; align-items: center; gap: var(--scax-space-100) var(--scax-space-200); max-width: 100%; }
+/*
+ * **날짜칸 폭은 이 규칙 하나가 정한다** — 시작 예정일·마감일 둘 다 `.meta-info__date` 안이다 (WORK-010 2루프 E2E-2).
+ * 고정 폭 140px: 트리거 = 테두리 2 + 안여백 22(왼 12·오 10) + 「2026/10/13」(13px 숫자 10자 ≈ 75) + 간격 8 + 달력 아이콘 16
+ * ≈ 123px 에 여유 17px. 칸(값 열)이 그보다 좁으면 `flex-shrink` · `min-width:0` 으로 칸을 따른다.
+ * 안쪽 셋(`.date-field` · `popover-root` · `.select-trigger`)은 이 폭을 그대로 채운다 — 예전 `.date-field { max-width }`
+ * 는 감싸개마다 다르게 풀려(마감일은 내용 폭, 시작 예정일은 칸 폭) 두 칸 폭이 갈렸다.
+ */
+.scax-td .meta-info__date { flex: 0 1 140px; width: 140px; min-width: 0; }
+.scax-td .meta-info__date .date-field,
+.scax-td .meta-info__date .date-field > .popover-root,
+.scax-td .meta-info__date .select-trigger { width: 100%; min-width: 0; max-width: none; }
+.scax-td .meta-info__date .select-trigger { height: 30px; font-size: 13px; }
 /* 담당 이름 옆 「변경 제안 중」 · 출처의 배지·링크도 한 줄이다. */
 .scax-td .meta-info dd:has(> .scax-badge) { flex-direction: row; align-items: center; gap: var(--scax-space-200); }
 .scax-td .meta-info .origin-chip { flex-direction: row; align-items: center; flex-wrap: wrap; gap: var(--scax-space-200); margin: 0; font-size: 13px; }

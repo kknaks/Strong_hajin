@@ -110,19 +110,33 @@ function renderDrawer(task: DirectTask, props: Record<string, unknown> = {}) {
 /** 메타 정보 격자의 행 — 「라벨 값」 한 줄씩 (읽기 전용 화면에서 쓴다 — 입력칸의 숨은 라벨이 끼지 않는다). */
 async function rows(): Promise<string[]> {
   const meta = await screen.findByLabelText("메타 정보");
-  return [...meta.querySelectorAll(".meta-info > div")].map(
+  return [...meta.querySelectorAll(".meta-info__item:not(.meta-info__item--empty)")].map(
     (row) => `${row.querySelector("dt")?.textContent ?? ""} ${row.querySelector("dd")?.textContent ?? ""}`,
   );
+}
+/**
+ * 메타 정보의 **줄** — 줄마다 [왼쪽 칸, 오른쪽 칸] 의 「라벨 값」. 빈 칸은 `""` 다 (WORK-010 2루프 E2E-1).
+ */
+async function lines(): Promise<Array<[string, string]>> {
+  const meta = await screen.findByLabelText("메타 정보");
+  const text = (item: Element) =>
+    item.classList.contains("meta-info__item--empty")
+      ? ""
+      : `${item.querySelector("dt")?.textContent ?? ""} ${item.querySelector("dd")?.textContent ?? ""}`;
+  return [...meta.querySelectorAll(".meta-info__line")].map((line) => {
+    const [left, right] = [...line.children];
+    return [text(left), text(right)];
+  });
 }
 /** 행 이름만. */
 async function labels(): Promise<string[]> {
   const meta = await screen.findByLabelText("메타 정보");
-  return [...meta.querySelectorAll(".meta-info dt")].map((dt) => dt.textContent ?? "");
+  return [...meta.querySelectorAll(".meta-info__item dt")].map((dt) => dt.textContent ?? "");
 }
 /** 이름으로 한 행. */
 function row(name: string): HTMLElement {
   const meta = screen.getByLabelText("메타 정보");
-  const found = [...meta.querySelectorAll(".meta-info > div")].find((div) => div.querySelector("dt")?.textContent === name);
+  const found = [...meta.querySelectorAll(".meta-info__item:not(.meta-info__item--empty)")].find((div) => div.querySelector("dt")?.textContent === name);
   if (!found) throw new Error(`no row ${name}`);
   return found as HTMLElement;
 }
@@ -186,7 +200,8 @@ describe("헤더 (SPEC-007 §2.10.1)", () => {
 });
 
 describe("메타 정보 격자 (SPEC-007 §2.10.2)", () => {
-  it("행 순서 — 진행 상태 · 버전 · 담당 · 시작 예정일 · 실제 시작일 · 실제 종료일 · 마감일 (완료 업무, 읽기)", async () => {
+  /* 한 줄에 두 칸 — 짝이 계약이다 (WORK-010 2루프 E2E-1 · 사용자 2026-10-05). */
+  it("짝 — 진행 상태|버전 · 담당|출처 · 시작 예정일|실제 시작일 · 마감일|실제 종료일 (완료 업무, 읽기)", async () => {
     const task = detail({
       state: "done",
       version: 4,
@@ -197,14 +212,44 @@ describe("메타 정보 격자 (SPEC-007 §2.10.2)", () => {
     });
     renderDrawer(task, { canManage: false });
     await waitFor(async () =>
-      expect(await rows()).toEqual([
-        "진행 상태 완료",
-        "버전 v4",
-        "담당 민아",
-        "시작 예정일 2026/10/01",
-        "실제 시작일 2026/10/02",
-        "실제 종료일 2026/10/04",
-        "마감일 2026/10/06",
+      expect(await lines()).toEqual([
+        ["진행 상태 완료", "버전 v4"],
+        // 출처가 없으면 오른쪽 칸만 빈다
+        ["담당 민아", ""],
+        ["시작 예정일 2026/10/01", "실제 시작일 2026/10/02"],
+        ["마감일 2026/10/06", "실제 종료일 2026/10/04"],
+      ]),
+    );
+  });
+
+  it("짝의 한쪽만 비면 그 칸 자리만 빈다 — 실제 시작·종료가 없으면 오른쪽이 빈 칸이다", async () => {
+    renderDrawer(detail({ start_date: "2026-10-01", due_date: "2026-10-06" }), { canManage: false });
+    await waitFor(async () =>
+      expect(await lines()).toEqual([
+        ["진행 상태 시작 전", "버전 v1"],
+        ["담당 민아", ""],
+        ["시작 예정일 2026/10/01", ""],
+        ["마감일 2026/10/06", ""],
+      ]),
+    );
+    // 빈 칸은 자리만 지킨다 — 읽어 주지 않는다
+    const empties = [...document.querySelectorAll(".meta-info__item--empty")];
+    expect(empties.length).toBe(3);
+    for (const empty of empties) expect(empty.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("한 줄의 두 칸이 모두 비면 그 줄이 서지 않는다 — 읽기 전용에서 날짜가 하나도 없으면 날짜 줄 둘이 없다", async () => {
+    renderDrawer(detail(), { canManage: false });
+    await waitFor(async () => expect(await lines()).toEqual([["진행 상태 시작 전", "버전 v1"], ["담당 민아", ""]]));
+  });
+
+  it("실제 시작일만 있으면 왼쪽(시작 예정일) 칸이 비고 오른쪽에 선다", async () => {
+    renderDrawer(detail({ state: "in_progress", started_at: "2026-10-02T01:00:00Z" }), { canManage: false });
+    await waitFor(async () =>
+      expect(await lines()).toEqual([
+        ["진행 상태 진행 중", "버전 v1"],
+        ["담당 민아", ""],
+        ["", "실제 시작일 2026/10/02"],
       ]),
     );
   });
@@ -236,7 +281,7 @@ describe("메타 정보 격자 (SPEC-007 §2.10.2)", () => {
     }
   });
 
-  it("결재 · 참조 · 출처는 마감일 뒤에 그 순서로 선다", async () => {
+  it("담당|출처 짝, 결재|참조는 둘 다 있으면 한 줄의 짝이다", async () => {
     renderDrawer(
       detail({
         due_date: "2026-10-06",
@@ -253,16 +298,44 @@ describe("메타 정보 격자 (SPEC-007 §2.10.2)", () => {
       },
     );
     await waitFor(async () =>
-      expect(await rows()).toEqual([
-        "진행 상태 시작 전",
-        "버전 v1",
-        "담당 민아",
-        "마감일 2026/10/06",
-        "결재 지호",
-        "참조 유나",
-        "출처 지호가 보낸 업무",
+      expect(await lines()).toEqual([
+        ["진행 상태 시작 전", "버전 v1"],
+        ["담당 민아", "출처 지호가 보낸 업무"],
+        ["마감일 2026/10/06", ""],
+        ["결재 지호", "참조 유나"],
       ]),
     );
+  });
+
+  it("결재·참조가 하나뿐이면 왼쪽 칸에 선다", async () => {
+    renderDrawer(detail({ cc_member_ids: ["yuna"] }), { canManage: false, personas: [{ id: "yuna", display_name: "유나 (대표)" }] });
+    await waitFor(async () => expect((await lines()).at(-1)).toEqual(["참조 유나", ""]));
+  });
+
+  /* WORK-010 2루프 E2E-2 — 두 날짜칸의 폭이 달랐다(마감일만 감싸개 안). 같은 감싸개·같은 클래스여야 같은 규칙을 받는다. */
+  it("편집 가능한 날짜칸 둘은 같은 감싸개 구조다 — dd > .meta-info__value > .meta-info__date > .date-field", async () => {
+    renderDrawer(detail({ start_date: "2026-10-01", due_date: "2020-01-01" }));
+    await screen.findByLabelText("메타 정보");
+    const chain = (name: string) => {
+      const field = row(name).querySelector(".date-field") as HTMLElement;
+      const date = field.parentElement as HTMLElement;
+      const value = date.parentElement as HTMLElement;
+      return [date.className, value.className, value.parentElement?.tagName];
+    };
+    expect(chain("시작 예정일")).toEqual(["meta-info__date", "meta-info__value", "DD"]);
+    expect(chain("마감일")).toEqual(chain("시작 예정일"));
+    // 「마감일 초과」는 날짜칸 «오른쪽 옆» — 같은 줄 감싸개 안, 날짜칸 다음 형제다
+    const badge = within(row("마감일")).getByText("마감일 초과");
+    expect(badge.previousElementSibling?.className).toBe("meta-info__date");
+    expect(badge.parentElement?.className).toBe("meta-info__value");
+  });
+
+  it("읽기 전용의 날짜 글자도 같은 감싸개에 든다", async () => {
+    renderDrawer(detail({ start_date: "2026-10-01", due_date: "2026-10-06" }), { canManage: false });
+    await screen.findByLabelText("메타 정보");
+    for (const name of ["시작 예정일", "마감일"]) {
+      expect(row(name).querySelector("dd > .meta-info__value > .meta-info__date")?.textContent).toMatch(/2026\/10\/0[16]/);
+    }
   });
 
   it("마감이 지났으면 「마감일 초과」 배지가 마감일 값 옆에 선다 — 머리에는 없다", async () => {

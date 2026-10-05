@@ -1966,6 +1966,224 @@ export function TaskDetailDrawer({
   const dueShown = pending.due_date ?? shown.due_date ?? "";
   const descriptionShown = pending.description ?? shown.description ?? "";
 
+  /*
+   * ── 메타 정보의 칸 (SPEC-007 §2.10.2) — 한 줄에 **두 칸**이다 (WORK-010 2루프 E2E-1 · 사용자 2026-10-05) ──
+   *
+   * 칸 하나 = 라벨·값(`dl.meta-info__item`). 값이 없는 읽기 전용 칸은 `null` 이다(§2.10.2 「서지 않는다」).
+   * 줄은 아래 `metaLine` 이 짝으로 세운다.
+   */
+  const metaStateItem = (
+    <dl className="meta-info__item">
+      <dt>{taskDetail.metaState}</dt>
+      <dd>
+        {/*
+          * 진행 상태 — **갈 곳이 하나라도 있으면 셀렉트**, 없으면 상태 글자 (SPEC-007 §2.10.5 · WORK-010 2b-1).
+          * 목록은 지금 상태 + 갈 곳이고 「업무 취소」는 맨 아래 빨강이다. 고른 값으로 셀렉트를 바꾸지 않는다 —
+          * 늘 서버가 준 상태를 가리키므로, 모달을 닫거나 서버가 거절하면 그대로 원래 값이다.
+          * 트리거 톤은 목록의 상태 칸과 같은 표(`stateTriggerTone`)다.
+          */}
+        {stateMoves.length > 0 ? (
+          <Select
+            emptyActionLabel={emptyActionLabel.filter}
+            label={taskDetail.metaStateSelect}
+            labels={selectLabel}
+            onChange={pickState}
+            options={[
+              { value: task.state, label: taskStateLabel[task.state] },
+              ...stateMoves
+                .filter((move) => move.action !== "cancel")
+                .map((move) => ({ value: move.to, label: taskStateLabel[move.to] })),
+              ...stateMoves
+                .filter((move) => move.action === "cancel")
+                .map((move) => ({ value: move.to, label: taskDetail.stateCancel, tone: "danger" as const })),
+            ]}
+            trigger={({ label, props }) => (
+              <button {...props} className={`scax-select__trigger${stateTriggerTone[task.state] ?? ""}`} disabled={busy || queued > 0}>
+                {label}
+                <Icon name="chevron-down" size={12} />
+              </button>
+            )}
+            value={task.state}
+          />
+        ) : (
+          <StatusText state={task.state} />
+        )}
+      </dd>
+    </dl>
+  );
+  const metaVersionItem = (
+    <dl className="meta-info__item">
+      <dt>{taskDetail.metaVersion}</dt>
+      <dd>v{current.version}</dd>
+    </dl>
+  );
+  const metaAssigneeItem = (
+    <dl className="meta-info__item">
+      <dt>{taskDetail.metaAssignee}</dt>
+      <dd>
+        {/*
+          * 담당 — `task.assign` 이 있고 읽기 전용이 아니면 **셀렉트**(고르면 변경 «제안», SPEC-007 §2.10.6).
+          * 대기 중인 제안이 있으면 셀렉트를 열지 않고 「{대상}에게 변경 제안 중」을 단다(서버도 409).
+          */}
+        {assigneeSelect ? (
+          <Select
+            emptyActionLabel={emptyActionLabel.filter}
+            label={taskDetail.metaAssigneeSelect}
+            labels={selectLabel}
+            onChange={pickAssignee}
+            options={[
+              ...(task.assignee && !(handoverChoices ?? []).some((choice) => choice.id === task.assignee!.member_id)
+                ? [{ value: task.assignee.member_id, label: ownerName }]
+                : []),
+              ...(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) })),
+            ]}
+            placeholder={ownerName}
+            trigger={({ label, props }) => (
+              <button {...props} className="scax-select__trigger scax-select__trigger--neutral" disabled={busy || queued > 0}>
+                {label}
+                <Icon name="chevron-down" size={12} />
+              </button>
+            )}
+            value={task.assignee?.member_id ?? ""}
+          />
+        ) : (
+          ownerName
+        )}
+        {assignments?.pending && (
+          <Badge tone="outline">
+            {taskDetail.assigneeProposed(proposedNameOf(assignments.pending.assignee_id))}
+          </Badge>
+        )}
+      </dd>
+    </dl>
+  );
+  /**
+   * 메타 정보의 **날짜칸 하나** — 시작 예정일·마감일이 **같은 감싸개·같은 규칙**을 쓴다 (WORK-010 2루프 E2E-2).
+   *
+   * 예전에는 마감일만 배지 때문에 `span.meta-info__value` 로 감싸여 내용 폭으로 줄고, 시작 예정일은 `dd` 직속이라
+   * 칸 폭으로 늘어 두 칸의 폭이 달랐다. 이제 둘 다 `span.meta-info__value > span.meta-info__date` 이고 폭은
+   * `.meta-info__date` 하나가 정한다(`task-detail.css`). 「마감일 초과」 같은 곁말은 날짜칸 **오른쪽 옆**(`after`)이다.
+   */
+  const dateCell = (field: "start_date" | "due_date", label: string, value: string, after?: React.ReactNode) => (
+    <>
+      <span className="meta-info__value">
+        <span className="meta-info__date">
+          {editable ? (
+            <DateField
+              formatMonth={formatMonthLong}
+              hideLabel
+              id={`task-${field === "start_date" ? "start" : "due"}-${task.task_id}`}
+              label={label}
+              labels={datePickerLabel}
+              onChange={(next) => saveDate(field, next)}
+              today={seoulToday()}
+              value={value}
+              weekdayNames={weekdayNames}
+            />
+          ) : (
+            formatDate(value)
+          )}
+        </span>
+        {after}
+      </span>
+      <FieldMessage error={fieldErrors[field]} help={saving[field] ? taskDetail.inlineSaving : undefined} />
+    </>
+  );
+  const metaStartItem = editable || startShown ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaPlannedStart}</dt>
+        <dd>{dateCell("start_date", taskDateLabel.plannedStart, startShown)}</dd>
+      </dl>
+  ) : null;
+  const metaActualStartItem = shown.started_at ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaActualStart}</dt>
+        <dd>{formatDate(shown.started_at)}</dd>
+      </dl>
+  ) : null;
+  const metaActualEndItem = shown.completed_at ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaActualEnd}</dt>
+        <dd>{formatDate(shown.completed_at)}</dd>
+      </dl>
+  ) : null;
+  const metaDueItem = editable || dueShown ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaDue}</dt>
+        <dd>
+          {dateCell(
+            "due_date",
+            taskDateLabel.due,
+            dueShown,
+            /* 「마감일 초과」는 머리가 아니라 **마감일 값 옆**이다 (OQ-711). 서는 조건은 예전 그대로. */
+            isOverdue({ due_date: dueShown || null, state: task.state }, today) ? <Badge tone="danger">{taskDateLabel.overdue}</Badge> : null,
+          )}
+        </dd>
+      </dl>
+  ) : null;
+  const metaApproverItem = shown.approver_id ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaApprover}</dt>
+        <dd>{displayNameOf(personas ?? [], shown.approver_id)}</dd>
+      </dl>
+  ) : null;
+  const metaCcItem = (shown.cc_member_ids ?? []).length > 0 ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaCc}</dt>
+        <dd>{(shown.cc_member_ids ?? []).map((id) => displayNameOf(personas ?? [], id)).join(" · ")}</dd>
+      </dl>
+  ) : null;
+    /*
+      * 출처 (SPEC-007 §2.10.8). 출처가 없거나 볼 수 없으면 **행이 서지 않는다**(서버가 싣지 않는다).
+      * AX 제안에서 생긴 업무는 「AX 제안 · 판단 보기」 — 링크 글자가 업무 제목이 아니다(결정 e).
+      * 판단 상세를 열 수 없는 화면(홈·캘린더 — `onOpenSource` 없음)은 「AX 제안」 글자만이다.
+      * 요청·직접 배정의 문구·링크는 지금 그대로다.
+      */
+  const metaOriginItem = task.origin ? (
+      <dl className="meta-info__item">
+        <dt>{taskDetail.metaOrigin}</dt>
+        <dd aria-label="업무 출처" className="origin-chip">
+          {task.origin.source?.type === "action_item" ? (
+            <>
+              <span>{taskDetail.originAx}</span>
+              {onOpenSource && (
+                <>
+                  <span aria-hidden>·</span>
+                  <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
+                    {taskDetail.originOpenDecision}
+                  </Button>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {originSentence(task.origin) && <Badge tone="outline">{originSentence(task.origin)}</Badge>}
+              {task.origin.source &&
+                (onOpenSource ? (
+                  <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
+                    {task.origin.source.title ?? "출처 보기"}
+                  </Button>
+                ) : (
+                  <small className="t-meta">{task.origin.source.title}</small>
+                ))}
+            </>
+          )}
+        </dd>
+      </dl>
+  ) : null;
+  /**
+   * 한 줄 = 왼쪽 칸 | 오른쪽 칸. **한쪽만 비면 그 칸 자리만 비워** 다음 줄과 열이 맞게 두고,
+   * **둘 다 비면 줄이 서지 않는다**(E2E-1 계약).
+   */
+  const metaLine = (key: string, left: React.ReactNode, right: React.ReactNode) =>
+    left || right ? (
+      <div className="meta-info__line" key={key}>
+        {left ?? <div aria-hidden className="meta-info__item meta-info__item--empty" />}
+        {right ?? <div aria-hidden className="meta-info__item meta-info__item--empty" />}
+      </div>
+    ) : null;
+
+
   return (
     <>
       <Shell
@@ -2034,214 +2252,27 @@ export function TaskDetailDrawer({
           */}
         <div className="scax-td">
         {/*
-          * ── 메타 정보 — 라벨·값 2열 격자 (SPEC-007 §2.10.2 · WORK-010 2a-2) ──────────────
+          * ── 메타 정보 — 한 줄에 라벨·값 **두 칸** (SPEC-007 §2.10.2 · WORK-010 2a-2 · 2루프 E2E-1) ──────
           *
-          * `업무 정보` 와 같은 레벨의 구역이다. 행 순서가 계약이다 — 진행 상태 · 버전 · 담당 · 시작 예정일 ·
-          * 실제 시작일 · 실제 종료일 · 마감일 · 결재 · 참조 · 출처(날짜 넷은 E2E-5 순서, OQ-712).
-          * 격자는 기존 `.meta-grid`(dt/dd)를 쓴다 — 이 화면만의 촘촘함은 `task-detail.css` 가 스코프로 준다.
+          * `업무 정보` 와 같은 레벨의 구역이다. 짝이 계약이다(사용자 2026-10-05) — 진행 상태|버전 · 담당|출처 ·
+          * 시작 예정일|실제 시작일 · 마감일|실제 종료일 · 결재|참조. 좁은 폭에서는 한 줄에 한 칸으로 접힌다.
+          * 공용 `.meta-grid` 는 다른 화면(관계 탐색 · 제안 상자 · 요청 상세)이 쓰므로 쓰지 않는다 —
+          * 격자는 `task-detail.css` 의 `.scax-td .meta-info` 가 이 화면 스코프에서만 짠다.
           *
-          * 이 판(2a)에서 진행 상태·담당은 **읽기 글자**다 — 셀렉트는 2b 다.
           * 고칠 수 있는 화면에서 시작 예정일·마감일은 **비어 있어도 선다**(처음 정할 자리). 값이 없는
-          * 읽기 전용 행은 서지 않는다.
+          * 읽기 전용 칸은 서지 않고, 짝의 한쪽만 비면 그 칸 자리만 빈다.
           */}
         <section aria-label={taskDetail.blockMeta} className="block">
           <div className="block__row"><h3>{taskDetail.blockMeta}</h3></div>
-          <dl className="meta-grid meta-info">
-            <div>
-              <dt>{taskDetail.metaState}</dt>
-              <dd>
-                {/*
-                  * 진행 상태 — **갈 곳이 하나라도 있으면 셀렉트**, 없으면 상태 글자 (SPEC-007 §2.10.5 · WORK-010 2b-1).
-                  * 목록은 지금 상태 + 갈 곳이고 「업무 취소」는 맨 아래 빨강이다. 고른 값으로 셀렉트를 바꾸지 않는다 —
-                  * 늘 서버가 준 상태를 가리키므로, 모달을 닫거나 서버가 거절하면 그대로 원래 값이다.
-                  * 트리거 톤은 목록의 상태 칸과 같은 표(`stateTriggerTone`)다.
-                  */}
-                {stateMoves.length > 0 ? (
-                  <Select
-                    emptyActionLabel={emptyActionLabel.filter}
-                    label={taskDetail.metaStateSelect}
-                    labels={selectLabel}
-                    onChange={pickState}
-                    options={[
-                      { value: task.state, label: taskStateLabel[task.state] },
-                      ...stateMoves
-                        .filter((move) => move.action !== "cancel")
-                        .map((move) => ({ value: move.to, label: taskStateLabel[move.to] })),
-                      ...stateMoves
-                        .filter((move) => move.action === "cancel")
-                        .map((move) => ({ value: move.to, label: taskDetail.stateCancel, tone: "danger" as const })),
-                    ]}
-                    trigger={({ label, props }) => (
-                      <button {...props} className={`scax-select__trigger${stateTriggerTone[task.state] ?? ""}`} disabled={busy || queued > 0}>
-                        {label}
-                        <Icon name="chevron-down" size={12} />
-                      </button>
-                    )}
-                    value={task.state}
-                  />
-                ) : (
-                  <StatusText state={task.state} />
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>{taskDetail.metaVersion}</dt>
-              <dd>v{current.version}</dd>
-            </div>
-            <div>
-              <dt>{taskDetail.metaAssignee}</dt>
-              <dd>
-                {/*
-                  * 담당 — `task.assign` 이 있고 읽기 전용이 아니면 **셀렉트**(고르면 변경 «제안», SPEC-007 §2.10.6).
-                  * 대기 중인 제안이 있으면 셀렉트를 열지 않고 「{대상}에게 변경 제안 중」을 단다(서버도 409).
-                  */}
-                {assigneeSelect ? (
-                  <Select
-                    emptyActionLabel={emptyActionLabel.filter}
-                    label={taskDetail.metaAssigneeSelect}
-                    labels={selectLabel}
-                    onChange={pickAssignee}
-                    options={[
-                      ...(task.assignee && !(handoverChoices ?? []).some((choice) => choice.id === task.assignee!.member_id)
-                        ? [{ value: task.assignee.member_id, label: ownerName }]
-                        : []),
-                      ...(handoverChoices ?? []).map((choice) => ({ value: choice.id, label: personName(choice.display_name) })),
-                    ]}
-                    placeholder={ownerName}
-                    trigger={({ label, props }) => (
-                      <button {...props} className="scax-select__trigger scax-select__trigger--neutral" disabled={busy || queued > 0}>
-                        {label}
-                        <Icon name="chevron-down" size={12} />
-                      </button>
-                    )}
-                    value={task.assignee?.member_id ?? ""}
-                  />
-                ) : (
-                  ownerName
-                )}
-                {assignments?.pending && (
-                  <Badge tone="outline">
-                    {taskDetail.assigneeProposed(proposedNameOf(assignments.pending.assignee_id))}
-                  </Badge>
-                )}
-              </dd>
-            </div>
-            {(editable || startShown) && (
-              <div>
-                <dt>{taskDetail.metaPlannedStart}</dt>
-                <dd>
-                  {editable ? (
-                    <DateField
-                      formatMonth={formatMonthLong}
-                      hideLabel
-                      id={`task-start-${task.task_id}`}
-                      label={taskDateLabel.plannedStart}
-                      labels={datePickerLabel}
-                      onChange={(value) => saveDate("start_date", value)}
-                      today={seoulToday()}
-                      value={startShown}
-                      weekdayNames={weekdayNames}
-                    />
-                  ) : (
-                    formatDate(startShown)
-                  )}
-                  <FieldMessage error={fieldErrors.start_date} help={saving.start_date ? taskDetail.inlineSaving : undefined} />
-                </dd>
-              </div>
-            )}
-            {/* 실제 두 값은 시각이라 `formatDate` 가 서울 날짜로 옮겨 낸다 (WORK-009 2b-1). */}
-            {shown.started_at && (
-              <div>
-                <dt>{taskDetail.metaActualStart}</dt>
-                <dd>{formatDate(shown.started_at)}</dd>
-              </div>
-            )}
-            {shown.completed_at && (
-              <div>
-                <dt>{taskDetail.metaActualEnd}</dt>
-                <dd>{formatDate(shown.completed_at)}</dd>
-              </div>
-            )}
-            {(editable || dueShown) && (
-              <div>
-                <dt>{taskDetail.metaDue}</dt>
-                <dd>
-                  <span className="meta-info__value">
-                    {editable ? (
-                      <DateField
-                        formatMonth={formatMonthLong}
-                        hideLabel
-                        id={`task-due-${task.task_id}`}
-                        label={taskDateLabel.due}
-                        labels={datePickerLabel}
-                        onChange={(value) => saveDate("due_date", value)}
-                        today={seoulToday()}
-                        value={dueShown}
-                        weekdayNames={weekdayNames}
-                      />
-                    ) : (
-                      formatDate(dueShown)
-                    )}
-                    {/* 「마감일 초과」는 머리가 아니라 **마감일 값 옆**이다 (OQ-711). 서는 조건은 예전 그대로. */}
-                    {isOverdue({ due_date: dueShown || null, state: task.state }, today) && (
-                      <Badge tone="danger">{taskDateLabel.overdue}</Badge>
-                    )}
-                  </span>
-                  <FieldMessage error={fieldErrors.due_date} help={saving.due_date ? taskDetail.inlineSaving : undefined} />
-                </dd>
-              </div>
-            )}
-            {shown.approver_id && (
-              <div>
-                <dt>{taskDetail.metaApprover}</dt>
-                <dd>{displayNameOf(personas ?? [], shown.approver_id)}</dd>
-              </div>
-            )}
-            {(shown.cc_member_ids ?? []).length > 0 && (
-              <div>
-                <dt>{taskDetail.metaCc}</dt>
-                <dd>{(shown.cc_member_ids ?? []).map((id) => displayNameOf(personas ?? [], id)).join(" · ")}</dd>
-              </div>
-            )}
-            {/*
-              * 출처 (SPEC-007 §2.10.8). 출처가 없거나 볼 수 없으면 **행이 서지 않는다**(서버가 싣지 않는다).
-              * AX 제안에서 생긴 업무는 「AX 제안 · 판단 보기」 — 링크 글자가 업무 제목이 아니다(결정 e).
-              * 판단 상세를 열 수 없는 화면(홈·캘린더 — `onOpenSource` 없음)은 「AX 제안」 글자만이다.
-              * 요청·직접 배정의 문구·링크는 지금 그대로다.
-              */}
-            {task.origin && (
-              <div>
-                <dt>{taskDetail.metaOrigin}</dt>
-                <dd aria-label="업무 출처" className="origin-chip">
-                  {task.origin.source?.type === "action_item" ? (
-                    <>
-                      <span>{taskDetail.originAx}</span>
-                      {onOpenSource && (
-                        <>
-                          <span aria-hidden>·</span>
-                          <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
-                            {taskDetail.originOpenDecision}
-                          </Button>
-                        </>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {originSentence(task.origin) && <Badge tone="outline">{originSentence(task.origin)}</Badge>}
-                      {task.origin.source &&
-                        (onOpenSource ? (
-                          <Button variant="inline" onClick={() => { if (canLeave()) onOpenSource(task.origin!.source!); }} type="button">
-                            {task.origin.source.title ?? "출처 보기"}
-                          </Button>
-                        ) : (
-                          <small className="t-meta">{task.origin.source.title}</small>
-                        ))}
-                    </>
-                  )}
-                </dd>
-              </div>
-            )}
-          </dl>
+          <div className="meta-info">
+            {/* 짝(왼쪽 | 오른쪽) — 진행 상태|버전 · 담당|출처 · 시작 예정일|실제 시작일 · 마감일|실제 종료일 · 결재|참조 */}
+            {metaLine("state", metaStateItem, metaVersionItem)}
+            {metaLine("holder", metaAssigneeItem, metaOriginItem)}
+            {metaLine("start", metaStartItem, metaActualStartItem)}
+            {metaLine("end", metaDueItem, metaActualEndItem)}
+            {/* 결재·참조는 있을 때만 — 둘 다 있으면 짝, 하나면 왼쪽 */}
+            {metaLine("people", metaApproverItem ?? metaCcItem, metaApproverItem ? metaCcItem : null)}
+          </div>
         </section>
 
         {/*

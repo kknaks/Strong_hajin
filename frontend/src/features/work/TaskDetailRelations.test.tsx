@@ -658,8 +658,10 @@ const SCOPED_CLASSES = [
   "one--empty",
   "empty",
   "private",
-  /* 메타 정보 격자 (WORK-010 2a-2) — 격자 자체는 공용 `.meta-grid` 이고, 이 화면의 촘촘함이 `.meta-info` 다. */
+  /* 메타 정보 격자 (WORK-010 2a-2 · 2루프 E2E-1) — 한 줄에 두 칸. 공용 `.meta-grid` 를 쓰지 않고 이 스코프가 짠다. */
   "meta-info",
+  "meta-info__line",
+  "meta-info__item",
   "meta-info__value",
   "desc",
   "desc--editable",
