@@ -295,6 +295,7 @@ function Message({
   line,
   grouped,
   hrefOf,
+  thumbOf,
   onResend,
   threadOpen,
   onOpenThread,
@@ -304,6 +305,8 @@ function Message({
   line: ChatLine;
   grouped: boolean;
   hrefOf: (aid: string) => string;
+  /** 대화 안 이미지 미리보기 — 썸네일(`?variant=thumb`). 누르기·받기는 `hrefOf`(원본). */
+  thumbOf: (aid: string) => string;
   onResend: (line: LocalLine) => void;
   threadOpen?: boolean;
   onOpenThread?: () => void;
@@ -335,7 +338,7 @@ function Message({
         {line.unfurls.map((unfurl, index) => (
           <UnfurlCard key={index} unfurl={unfurl} />
         ))}
-        <AttachmentList attachments={line.attachments} hrefOf={hrefOf} />
+        <AttachmentList attachments={line.attachments} hrefOf={hrefOf} thumbOf={thumbOf} />
         {line.localFiles.length ? (
           <div className="scax-attach">
             <div className="scax-fcard-row">
@@ -431,6 +434,7 @@ function ThreadPanel({
   meName,
   hub,
   hrefOf,
+  thumbOf,
   onClose,
   nameOf,
 }: {
@@ -441,6 +445,8 @@ function ThreadPanel({
   meName: string;
   hub: InboxEventHub;
   hrefOf: (aid: string) => string;
+  /** 대화 안 이미지 미리보기 — 썸네일(`?variant=thumb`). 누르기·받기는 `hrefOf`(원본). */
+  thumbOf: (aid: string) => string;
   onClose: () => void;
   nameOf: (id: string) => string;
 }) {
@@ -479,14 +485,14 @@ function ThreadPanel({
         <IconButton label={copy.threadClose} name="close" onClick={onClose} />
       </header>
       <div className="scax-thread-panel__log">
-        <Message grouped={false} hrefOf={hrefOf} inPanel line={parent} nameOf={nameOf} onResend={sender.resend} />
+        <Message grouped={false} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={parent} nameOf={nameOf} onResend={sender.resend} />
         <div className="scax-thread-panel__count">
           <span>{copy.replies(Math.max(replies.length, parent.thread?.count ?? 0))}</span>
         </div>
         {state === "error" ? (
           <Empty actionLabel={copy.retry} description={copy.retryDesc} onAction={() => void load()} title={copy.threadError} variant="error" />
         ) : (
-          <Log dividers={false} lines={lines} render={(line, grouped) => <Message grouped={grouped} hrefOf={hrefOf} inPanel line={line} nameOf={nameOf} onResend={sender.resend} />} />
+          <Log dividers={false} lines={lines} render={(line, grouped) => <Message grouped={grouped} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={line} nameOf={nameOf} onResend={sender.resend} />} />
         )}
       </div>
       <div className="scax-thread-panel__compose">
@@ -530,6 +536,7 @@ export function RoomView({
   const people = useMemo<InboxPeople>(() => page?.users ?? {}, [page]);
   const nameOf = useCallback((id: string) => people[id]?.name ?? id, [people]);
   const hrefOf = useCallback((aid: string) => inboxRoomAttachmentUrl(roomId, aid), [roomId]);
+  const thumbOf = useCallback((aid: string) => inboxRoomAttachmentUrl(roomId, aid, "thumb"), [roomId]);
 
   const load = useCallback(
     async (mode: "first" | "refresh") => {
@@ -696,7 +703,7 @@ export function RoomView({
                 render={(line, grouped) => (
                   <Message
                     grouped={grouped}
-                    hrefOf={hrefOf}
+                    hrefOf={hrefOf} thumbOf={thumbOf}
                     line={line}
                     nameOf={nameOf}
                     onOpenThread={kakao ? undefined : () => setThreadKey(line.key)}
@@ -732,7 +739,7 @@ export function RoomView({
       </div>
       {parent && !kakao ? (
         <ThreadPanel
-          hrefOf={hrefOf}
+          hrefOf={hrefOf} thumbOf={thumbOf}
           hub={hub}
           key={parent.key}
           meName={meName}

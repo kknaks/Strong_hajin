@@ -91,7 +91,8 @@ function downloadAll(list: Array<{ name: string; href: string }>) {
   });
 }
 
-type Linked = InboxAttachment & { href: string | null };
+/** `href` = 원본(누르기·받기) · `thumb` = 대화 안에 그리는 주소(썸네일이 있으면 그것, 없으면 원본). */
+type Linked = InboxAttachment & { href: string | null; thumb: string | null };
 
 function FileGroup({ files }: { files: Linked[] }) {
   const [open, setOpen] = useState(true);
@@ -150,12 +151,15 @@ function PdfBlock({ file }: { file: Linked }) {
   );
 }
 
-/** 그림 — 받은 이미지가 선다(중계·저장본 주소). 누르면 새 탭에서 크게 본다. */
-export function Thumb({ src, alt, size = "lg" }: { src: string | null; alt: string; size?: "lg" | "md" | "sm" | "cell" }) {
+/**
+ * 그림 — 받은 이미지가 선다(중계·저장본 주소). 누르면 새 탭에서 **원본**을 크게 본다.
+ * `src` 는 그리는 주소(방 첨부는 썸네일), `href` 는 누를 때 여는 원본 — 주지 않으면 `src` 와 같다.
+ */
+export function Thumb({ src, href, alt, size = "lg" }: { src: string | null; href?: string | null; alt: string; size?: "lg" | "md" | "sm" | "cell" }) {
   return (
     <span className={`scax-thumb scax-thumb--${size}`}>
       {src ? (
-        <a className="scax-thumb__link" href={src} rel="noreferrer" target="_blank">
+        <a className="scax-thumb__link" href={href ?? src} rel="noreferrer" target="_blank">
           <img alt={alt} className="scax-thumb__img" loading="lazy" src={src} />
         </a>
       ) : (
@@ -170,7 +174,7 @@ function ImageBlock({ file }: { file: Linked }) {
   return (
     <div className="scax-attach">
       <FoldHead label={file.name} onToggle={() => setOpen((value) => !value)} open={open} />
-      {open ? <Thumb alt={file.name} src={file.href} /> : null}
+      {open ? <Thumb alt={file.name} href={file.href} src={file.thumb} /> : null}
     </div>
   );
 }
@@ -187,7 +191,7 @@ function AlbumBlock({ files }: { files: Linked[] }) {
         <div className={`scax-album scax-album--${Math.min(files.length, 4)}`}>
           {shown.map((file, index) => (
             <span className="scax-album__cell" key={file.aid}>
-              <Thumb alt={file.name} size="cell" src={file.href} />
+              <Thumb alt={file.name} href={file.href} size="cell" src={file.thumb} />
               {index === shown.length - 1 && rest > 0 ? <span className="scax-album__more">+{rest}</span> : null}
             </span>
           ))}
@@ -231,13 +235,22 @@ function ExpiredCard({ file }: { file: InboxAttachment }) {
 }
 
 /** 한 메시지의 첨부 전부 — 종류별로 시안의 부품에 나눠 그린다. */
-export function AttachmentList({ attachments, hrefOf }: { attachments: InboxAttachment[]; hrefOf: (aid: string) => string }) {
+export function AttachmentList({
+  attachments,
+  hrefOf,
+  thumbOf,
+}: {
+  attachments: InboxAttachment[];
+  hrefOf: (aid: string) => string;
+  /** 이미지 미리보기 주소(썸네일). 없으면 원본 주소로 그린다. */
+  thumbOf?: (aid: string) => string;
+}) {
   if (!attachments.length) return null;
   const blocked = (item: InboxAttachment) => item.state === "expired" || item.state === "too_large";
-  const linked: Linked[] = attachments.map((item) => ({
-    ...item,
-    href: blocked(item) || item.state === "not_stored" || item.state === "pending" ? null : hrefOf(item.aid),
-  }));
+  const linked: Linked[] = attachments.map((item) => {
+    const href = blocked(item) || item.state === "not_stored" || item.state === "pending" ? null : hrefOf(item.aid);
+    return { ...item, href, thumb: href && thumbOf ? thumbOf(item.aid) : href };
+  });
   const out: ReactNode[] = [];
   const album = linked.filter((item) => item.kind === "album" && !blocked(item));
   const images = linked.filter((item) => item.kind === "image" && !blocked(item));

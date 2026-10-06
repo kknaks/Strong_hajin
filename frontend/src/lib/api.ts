@@ -1669,8 +1669,13 @@ export function inboxMailAttachmentUrl(messageId: string, aid: string): string {
   return `/api/inbox/mail/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(aid)}`;
 }
 
-export function inboxRoomAttachmentUrl(roomId: string, aid: string): string {
-  return `/api/inbox/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(aid)}`;
+/**
+ * 방 첨부 — `variant: "thumb"` 면 썸네일(BE 수정 판 6 · 원본보다 작고 빠르다). 대화 안 미리보기만 이것을 쓰고,
+ * 누르기(크게 보기)·받기는 원본(variant 없이)이다.
+ */
+export function inboxRoomAttachmentUrl(roomId: string, aid: string, variant?: "thumb"): string {
+  const base = `/api/inbox/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(aid)}`;
+  return variant ? `${base}?variant=${variant}` : base;
 }
 
 /** 메일 본문의 원격 이미지 — 처음부터 보이되 **서버 프록시**로만 받는다(보낸 쪽 서버에 직접 붙지 않음 · N-5 · FE 수정 판 2). */

@@ -47,7 +47,18 @@ const ROOM = {
   next_cursor: null,
   messages: [
     { id: "1", key: "1.0", at: T(1), author: "U1", thread_key: null, raw: { user: "U1", text: "첫 줄 <javascript:alert(document.cookie)|미끼 링크>" }, attachments: [] },
-    { id: "2", key: "2.0", at: T(3), author: "U1", thread_key: null, raw: { user: "U1", text: "이어서 <@U2> 확인" }, attachments: [] },
+    {
+      id: "2",
+      key: "2.0",
+      at: T(3),
+      author: "U1",
+      thread_key: null,
+      raw: { user: "U1", text: "이어서 <@U2> 확인" },
+      attachments: [
+        { aid: "img1", name: "현장.png", size: 276000, mime: "image/png", kind: "image", state: "reference" },
+        { aid: "doc1", name: "범위.pdf", size: 1200, mime: "application/pdf", kind: "file", state: "reference" },
+      ],
+    },
     { id: "3", key: "3.0", at: T(4), author: "B1", thread_key: "3.0", raw: { bot_id: "B1", text: "배포 *완료*", reply_count: 1, reply_users: ["U2"], latest_reply: "1791245400.0" }, attachments: [] },
     { id: "4", key: "4.0", at: T(5), author: "U2", thread_key: "3.0", raw: { user: "U2", text: "스레드 답글" }, attachments: [] },
   ],
@@ -318,6 +329,15 @@ describe("슬랙·카톡 본문 — 대화방 · 스레드 3열 · 조회 전용
     expect(document.querySelector(".scax-inbox-main--thread")).not.toBeNull();
     fireEvent.click(within(panel).getByRole("button", { name: "스레드 닫기" }));
     expect(body().queryByRole("complementary")).toBeNull();
+  });
+
+  it("방 안 이미지는 썸네일(?variant=thumb)로 그리고, 누르기·받기는 원본(FE 수정 판 5)", async () => {
+    render(<Harness />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    const image = (await body().findByAltText("현장.png")) as HTMLImageElement;
+    expect(image.getAttribute("src")).toBe("/api/inbox/rooms/r1/attachments/img1?variant=thumb");
+    expect(image.closest("a")?.getAttribute("href")).toBe("/api/inbox/rooms/r1/attachments/img1");
+    expect(body().getByRole("link", { name: "범위.pdf 받기" }).getAttribute("href")).toBe("/api/inbox/rooms/r1/attachments/doc1");
   });
 
   it("javascript: 링크는 링크로 서지 않고 눌러도 새 창이 열리지 않는다(검수 F-1)", async () => {
