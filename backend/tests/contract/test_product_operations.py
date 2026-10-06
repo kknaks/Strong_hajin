@@ -771,6 +771,8 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
         "member_id": "mina",
         "display_name": "민아 (구성원)",
         "assistant_character": {"character_key": "cream-cat", "version": 0},
+        # 프로필 이미지 주소 한 칸(SPEC-008 §4.7 · W-15). 올린 것이 없으면 null — 화면은 이니셜 아바타.
+        "profile_image_url": None,
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
         "roles": ["구성원"],
         "capabilities": [

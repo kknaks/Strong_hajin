@@ -76,6 +76,18 @@ def test_local_api_loads_the_external_channel_secrets_without_printing_them() ->
     assert 'AX_API_ORIGIN="$(E2E_API_ORIGIN)"' in _recipe("api-e2e")
 
 
+def test_local_stack_supervises_the_single_external_channel_worker() -> None:
+    """연동 워커(WORK-011 BE-2 · SPEC-008 §5 로컬 스택 W-13) — local-stack 이 띄우고 감독한다. 앱 토큰 하나라 하나만."""
+    recipe = _recipe("local-stack")
+    assert len(re.findall(r"\$\(MAKE\)[^\n;]*\bexternal-worker\b", recipe)) == 1
+    worker = _recipe("external-worker")
+    assert worker.lstrip().startswith("@") and "$(GOOGLE_ENV)" in worker and "$(SLACK_ENV)" in worker
+    assert "ax_workspace.entrypoints.external_worker" in worker
+    # 개발 전용 슬랙 토큰 주입(★3) — 토큰은 stdin 으로만, 명령줄·출력에 싣지 않는다.
+    seam = _recipe("slack-dev-connect")
+    assert '< "$(SLACK_TEST_TOKEN_FILE)"' in seam and "$(MEMBER)" in seam
+
+
 def test_stack_target_is_declared_phony_and_documented() -> None:
     text = MAKEFILE.read_text(encoding="utf-8")
     phony = next(line for line in text.splitlines() if line.startswith(".PHONY:"))

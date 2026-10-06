@@ -1,5 +1,5 @@
 """Authorized organization projections; candidates never carry directory HR fields."""
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 from ax_workspace.modules.organization_access.commands import AssistantCharacterResult
 
 
@@ -66,6 +66,8 @@ class OrganizationProfileView(MemberAccessView):
 
 class MyOrganizationProfileView(OrganizationProfileView):
     assistant_character: AssistantCharacterResult
+    #: 프로필 이미지 주소(`GET /api/profile/image?v=…`) — 없으면 null 이고 화면은 이니셜 아바타를 그린다(SPEC-008 §4.7).
+    profile_image_url: NotRequired[str | None]
 
 
 class MemberHierarchyView(TypedDict):

@@ -221,6 +221,7 @@ from ax_workspace.platform.persistence import (
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
 from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 from ax_workspace.platform.external_channels import SqlAlchemyExternalChannelRepository
+from ax_workspace.bootstrap.external_inbox import ExternalInboxOperations
 from ax_workspace.platform.external_oauth import GoogleGmailOAuth, SlackUserOAuth
 from ax_workspace.platform.external_tokens import FernetTokenCipher, development_key
 from ax_workspace.platform.action_materials import SqlAlchemyActionMaterialDraftRepository
@@ -956,7 +957,7 @@ class _SessionTaskReferences:
         }
 
 
-class WorkflowApplication:
+class WorkflowApplication(ExternalInboxOperations):
     """Transaction boundary shared by HTTP, MCP, and local rehearsal adapters."""
 
     def __init__(self, settings: Settings, report_provider: AiProvider | None = None) -> None:
@@ -2135,7 +2136,9 @@ class WorkflowApplication:
 
     def my_organization_profile(self, principal: Principal) -> MyOrganizationProfileView:
         with self._session_factory() as session:
-            return OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
+            profile = OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
+        # 프로필 머리 값은 이 응답을 재사용하고 이미지 주소 한 칸만 더한다(SPEC-008 §4.7 · W-15).
+        return {**profile, "profile_image_url": self.profile_image_url(str(principal.id))}
 
     def set_assistant_character(
         self, principal: Principal, character_key: str, expected_version: int

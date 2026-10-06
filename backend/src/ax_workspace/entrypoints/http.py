@@ -109,6 +109,7 @@ from ax_workspace.modules.organization_access.application import (
     UnsupportedAssistantCharacter,
 )
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.entrypoints.http_inbox import register_inbox_routes
 from ax_workspace.entrypoints.http_auth import (
     SESSION_COOKIE,
     SESSION_MAX_AGE,
@@ -2730,6 +2731,7 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok", "profile": settings.profile}
 
+    register_inbox_routes(app)  # 메시지함·답장·사용자 WS·카톡 수신·프로필 설정 (WORK-011 BE-3 · entrypoints/http_inbox.py)
     return app
 
 

@@ -272,6 +272,19 @@ material-worker:
 meeting-worker:
 	@$(SONIOX_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.meeting_worker
 
+# 연동 전용 워커(WORK-011 BE-2) — 슬랙 Socket Mode·Gmail Pub/Sub 은 앱 토큰 하나라 **이 프로세스 하나만** 띄운다(레플리카 1).
+.PHONY: external-worker slack-dev-connect
+external-worker:
+	@$(GOOGLE_ENV) $(SLACK_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.external_worker
+
+# 개발 전용(4차 검수 ★3): 실측 사용자 토큰 파일을 MEMBER 의 「연결된 슬랙 연동」으로 넣는다. 토큰은 stdin 으로만 —
+# 찍지 않는다. 운영 프로파일(AX_PROFILE=production)이면 거절한다. 예: make slack-dev-connect MEMBER=mina
+SLACK_TEST_TOKEN_FILE ?= $(HOME)/.slack_test_token
+slack-dev-connect:
+	@test -n "$(MEMBER)" || (echo "Set MEMBER to a seeded member id, e.g. make slack-dev-connect MEMBER=mina" >&2; exit 2)
+	@test -f "$(SLACK_TEST_TOKEN_FILE)" || (echo "$(SLACK_TEST_TOKEN_FILE) is missing" >&2; exit 2)
+	@cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.slack_dev_connect --member "$(MEMBER)" < "$(SLACK_TEST_TOKEN_FILE)"
+
 report-worker:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.report_worker
 
@@ -324,6 +337,7 @@ local-stack:
 		$(MAKE) material-worker & pids="$$pids $$!"; names="$$names material-worker"; \
 		$(MAKE) meeting-worker & pids="$$pids $$!"; names="$$names meeting-worker"; \
 		$(MAKE) report-worker & pids="$$pids $$!"; names="$$names report-worker"; \
+		$(MAKE) external-worker & pids="$$pids $$!"; names="$$names external-worker"; \
 		$(MAKE) frontend-e2e & pids="$$pids $$!"; names="$$names frontend"; \
 		for attempt in $$(seq 1 60); do curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$(E2E_FRONTEND_PORT)" >/dev/null 2>&1 && break; sleep 1; done; \
 		curl -fsS "http://127.0.0.1:$(E2E_API_PORT)/api/auth/providers" >/dev/null; \

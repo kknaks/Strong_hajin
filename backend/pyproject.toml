@@ -18,6 +18,9 @@ dependencies = [
   "kiwipiepy>=0.23.2",
   "markdown-it-py>=4,<5",
   "cryptography>=46",
+  "websockets>=13",
+  "nh3>=0.2.18",
+  "lxml>=5",
 ]
 
 [build-system]
