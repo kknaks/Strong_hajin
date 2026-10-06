@@ -256,8 +256,10 @@ describe("메일 본문 — 샌드박스 iframe · 답장", () => {
     const frame = (await body().findByTitle("메일 본문")) as HTMLIFrameElement;
     expect(frame.getAttribute("sandbox")).toBe("allow-same-origin allow-popups allow-popups-to-escape-sandbox");
     expect(frame.getAttribute("sandbox")).not.toContain("allow-scripts");
-    expect(frame.getAttribute("srcdoc")).toContain("일정표 본문");
-    // 앱 문서에는 원문 HTML 이 요소로 들어오지 않는다(iframe 의 srcdoc 글자로만 있다)
+    // srcdoc 이동이 아니라 첫 문서에 써 넣는다(데스크톱 셸이 about:srcdoc 이동을 취소했다 — 운영 결함)
+    expect(frame.hasAttribute("srcdoc")).toBe(false);
+    expect(frame.contentDocument?.body.textContent).toContain("일정표 본문");
+    // 앱 문서에는 원문 HTML 이 요소로 들어오지 않는다(iframe 문서 안에만 있다)
     expect(screen.queryByText("일정표 본문")).toBeNull();
     expect(body().getByText("받은 계정")).toBeTruthy();
     expect(body().getByText("haram@company.example", { selector: "dd" })).toBeTruthy();

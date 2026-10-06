@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { inboxRemoteImageUrl } from "../../lib/api";
 import { inboxScreen as copy } from "../../lib/labels";
@@ -17,14 +17,17 @@ import { openLink } from "./inboxStream";
  *   Gmail 처럼 사용자 브라우저가 보낸 쪽 서버에 직접 붙지 않는다(IP 노출 없음 · SSRF 규칙은 서버가 지킨다 · N-5).
  *   CSP `img-src 'self' data:` 그대로 — 이미지 출처는 우리 프록시뿐이다. 프록시가 실패한 그림은 깨진 아이콘 대신 빈 자리(alt 글자).
  * - 글자 모양은 앱 토큰 값을 iframe 에 옮겨 단다(iframe 은 부모 CSS 를 물려받지 않는다) — 시안 `.scax-mail-html` 규칙 그대로.
+ * - **`srcdoc` 을 쓰지 않는다 — 부모가 iframe 의 첫 문서에 안전본을 `document.write` 로 써 넣는다**(운영 결함 2026-10-06).
+ *   `srcdoc` 은 iframe 이 `about:srcdoc` 으로 «이동»하는 것이라, 데스크톱 셸(medi-ax · WKWebView)의 이동 허용 목록
+ *   (`on_navigation` — wry 0.55 는 하위 프레임 이동도 그 훅으로 보낸다)이 origin `null` 로 보고 **취소**한다 → 본문이 빈다.
+ *   써 넣기는 이동이 아니므로 셸을 지나지 않는다. 지키는 것은 그대로다: 샌드박스(스크립트 금지 — 써 넣은 `<script>` 도
+ *   돌지 않는다) · 안전본 맨 앞 CSP meta(원격 이미지 차단) · 같은 origin(부모가 읽는다 — `srcdoc` 도 같았다).
+ *   Chrome · WebKit · 셸과 같은 규칙의 WKWebView 에서 재현·확인했다.
  */
 
 export const MAIL_SANDBOX = "allow-same-origin allow-popups allow-popups-to-escape-sandbox";
 
 const REMOTE_ATTRIBUTE = "data-ax-remote-src";
-
-/** 듣는 손을 이미 단 iframe 문서. */
-const wired = new WeakSet<Document>();
 
 /* 시안 `.scax-mail-html` 규칙을 iframe 문서용으로 — 값은 부모의 토큰을 그대로 옮겨 쓴다(아래 TOKENS). */
 const FRAME_CSS = `
@@ -76,6 +79,8 @@ function frameStyle(): string {
 export function MailFrame({ html, messageId }: { html: string; messageId: string }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(120);
+  /** 지금 문서에 단 듣는 손을 떼는 것 — 다시 써 넣기 전에 부른다(엔진이 `document.open` 에서 안 지워도 한 벌만 남게). */
+  const detach = useRef<(() => void) | null>(null);
 
   const measure = useCallback(() => {
     const doc = frame.current?.contentDocument;
@@ -107,12 +112,6 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
       });
       image.setAttribute("src", inboxRemoteImageUrl(messageId, remote));
     });
-    /* 같은 문서에 load 가 두 번 와도 듣는 손은 한 벌만 — 링크가 두 번 열리지 않게 */
-    if (wired.has(doc)) {
-      measure();
-      return;
-    }
-    wired.add(doc);
     /* 링크 — iframe 안에서 열지 않고 부모가 연다. 가운데 클릭(auxclick)도 같다(검수 W-6 — 데스크톱은 새 창을 막는다).
        열 수 없는 스킴(F-1)은 막기만 하고 열지 않는다. */
     const intercept = (event: MouseEvent) => {
@@ -129,9 +128,29 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
     doc.addEventListener("auxclick", intercept);
     /* 인용 접기·그림이 실리면 높이가 바뀐다 */
     doc.addEventListener("toggle", measure, true);
+    detach.current = () => {
+      doc.removeEventListener("click", intercept);
+      doc.removeEventListener("auxclick", intercept);
+      doc.removeEventListener("toggle", measure, true);
+    };
     doc.querySelectorAll("img").forEach((image) => image.addEventListener("load", measure));
     measure();
   }, [measure, messageId]);
+
+  /*
+   * 안전본을 iframe 의 첫 문서에 써 넣는다 — `html` 이 바뀔 때마다 다시. `document.open` 은 문서의 듣는 손을 모두
+   * 지우므로 쓸 때마다 `prepare` 가 한 벌만 다시 단다(그래서 링크가 두 번 열리지 않는다). iframe 의 `load` 는 높이만 잰다.
+   */
+  useLayoutEffect(() => {
+    const doc = frame.current?.contentDocument;
+    if (!doc) return;
+    detach.current?.();
+    detach.current = null;
+    doc.open();
+    doc.write(html);
+    doc.close();
+    prepare();
+  }, [html, prepare]);
 
   /* 폭이 바뀌면 글이 다시 흘러 높이가 바뀐다 */
   useEffect(() => {
@@ -142,10 +161,9 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
   return (
     <iframe
       className="scax-mail-frame"
-      onLoad={prepare}
+      onLoad={measure}
       ref={frame}
       sandbox={MAIL_SANDBOX}
-      srcDoc={html}
       style={{ height }}
       title={copy.mailFrame}
     />
