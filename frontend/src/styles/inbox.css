@@ -292,11 +292,10 @@ ol.scax-imsg-list{list-style:decimal}
 /* HTML 메일 — 샌드박스 iframe(F-3). 높이는 부모가 문서 높이를 재서 맞춘다 */
 .scax-mail-frame{display:block;width:100%;min-height:80px;border:0;background:var(--scax-color-surface)}
 
-/* 원격 이미지 차단 안내 · 수집 실패 배너 — DS StatusNote 의 한 줄 모양 */
+/* 안내 한 줄(설정의 콜백 실패 · 카톡 계정 바뀜) — DS StatusNote 의 한 줄 모양 */
 .scax-inbox-notice{display:flex;align-items:center;gap:var(--scax-space-300);padding:var(--scax-space-200) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-neutral)}
 .scax-inbox-notice__text{flex:1 1 auto;min-width:0}
 .scax-inbox-notice--danger{border-color:var(--scax-color-danger);background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
-.scax-inbox-banners{display:flex;flex-direction:column;gap:var(--scax-space-200);flex:0 0 auto;padding:var(--scax-space-300) var(--scax-space-600) 0}
 
 /* 대화 위로 더 읽기 · 레일 더 보기 */
 .scax-room-log__older,.scax-inbox-list__more{display:flex;justify-content:center;padding:var(--scax-space-200) 0}
@@ -306,3 +305,9 @@ ol.scax-imsg-list{list-style:decimal}
 .scax-imsg-avatar__img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 /* 본문 칸 — 배너 줄 + 메일/대화방 본문. 본문이 남은 높이를 다 갖고 자기 안에서 스크롤한다 */
 .scax-inbox-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+
+/* 머리 [!] 연결 경고 배지 + 팝오버 목록(D-50 · 로컬 피드백 1) — DS Button·Badge·Popover 를 쓰고 자리만 여기서 */
+.scax-inbox-warn{gap:var(--scax-space-100);color:var(--scax-color-danger)}
+.scax-inbox-warn__list{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding:var(--scax-space-100);list-style:none}
+.scax-inbox-warn__row{display:flex;align-items:center;gap:var(--scax-space-200)}
+.scax-inbox-warn__text{flex:1 1 auto;min-width:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink)}

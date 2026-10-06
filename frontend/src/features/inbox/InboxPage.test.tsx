@@ -193,13 +193,38 @@ describe("메시지함 — 레일 · 네 상태", () => {
     expect(rail().queryByRole("img", { name: "안 읽음" })).toBeNull();
   });
 
-  it("수집이 끊긴 연동은 본문 머리 배너로 알린다(D-50)", async () => {
+  it("수집이 끊긴 연동은 머리 [!] 배지(개수) → 팝오버에 사유와 「다시 연결」 · 본문 배너는 없다(D-50 · 피드백 1)", async () => {
     overrides["GET /api/integrations"] = () =>
-      json([{ id: "i-slack", kind: "slack", status: "disconnected", display_name: "노을웍스", synced_count: 0, last_synced_at: null, backfill_count: 0, collector: null }]);
+      json([
+        { id: "i-slack", kind: "slack", status: "disconnected", display_name: "노을웍스", synced_count: 0, last_synced_at: null, backfill_count: 0, collector: null },
+        { id: "i-mail", kind: "mail", status: "disconnected", display_name: "old@company.example", synced_count: 0, last_synced_at: null, backfill_count: 0, collector: null },
+        { id: "i-mail2", kind: "mail", status: "connected", display_name: "ok@company.example", synced_count: 0, last_synced_at: null, backfill_count: 0, collector: null },
+      ]);
     render(<Harness />);
-    const banner = await body().findByRole("alert");
-    expect(banner.textContent).toContain("슬랙 연결이 끊겼습니다");
-    expect(within(banner).getByRole("button", { name: "다시 연결" })).toBeTruthy();
+    const actions = within(screen.getByTestId("actions"));
+    const badge = await actions.findByRole("button", { name: "연결 경고 2건" });
+    expect(badge.textContent).toContain("2");
+    expect(actions.getByRole("button", { name: "모두 읽음으로" })).toBeTruthy();
+    expect(body().queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/연결이 끊겼습니다/)).toBeNull();
+
+    fireEvent.click(badge);
+    const panel = screen.getByRole("group", { name: "연결 경고" });
+    expect(within(panel).getByText("슬랙 연결이 끊겼습니다")).toBeTruthy();
+    expect(within(panel).getByText("메일 old@company.example 연결이 끊겼습니다")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("group", { name: "연결 경고" })).toBeNull());
+
+    fireEvent.click(badge);
+    fireEvent.click(within(screen.getByRole("group", { name: "연결 경고" })).getAllByRole("button", { name: "다시 연결" })[0]);
+    await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/integrations/i-slack/reconnect")).toBe(true));
+    expect(screen.queryByRole("group", { name: "연결 경고" })).toBeNull();
+  });
+
+  it("경고가 없으면 배지가 없다", async () => {
+    render(<Harness />);
+    await rail().findByText("#pilot-launch");
+    expect(within(screen.getByTestId("actions")).queryByRole("button", { name: /연결 경고/ })).toBeNull();
   });
 
   it("새 메시지 사건이 오면 목록을 다시 읽는다(AC-10b · 회의 WS 아님)", async () => {

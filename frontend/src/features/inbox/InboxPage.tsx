@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "../../ds/Button";
+import { Badge } from "../../ds/Badge";
 import { Empty } from "../../ds/Empty";
+import { Icon } from "../../ds/icons/Icon";
+import { Popover } from "../../ds/Popover";
 import {
   listInbox,
   listIntegrations,
@@ -34,6 +37,45 @@ type Props = {
   onRegisterHeaderActions?: (actions: ReactNode) => void;
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
 };
+
+/**
+ * 머리 「모두 읽음으로」 옆 [!] 배지 — 경고 개수. 누르면 DS 팝오버에 연동별 사유 한 줄 + 「다시 연결」.
+ * 바깥 클릭·Esc 로 닫힌다(DS `Popover`). 경고가 없으면 부르는 쪽이 아예 그리지 않는다.
+ */
+function ConnectionWarnings({ items, onReconnect }: { items: Integration[]; onReconnect: (item: Integration) => void }) {
+  return (
+    <Popover
+      label={copy.warningsTitle}
+      trigger={({ props }) => (
+        <button {...props} aria-label={copy.warningsButton(items.length)} className="scax-button scax-button--outlined-neutral scax-button--sm scax-inbox-warn">
+          <Icon name="circle-exclamation" size={16} />
+          <Badge variant="count">{items.length}</Badge>
+        </button>
+      )}
+      width={320}
+    >
+      {(close) => (
+        <ul className="scax-inbox-warn__list">
+          {items.map((item) => (
+            <li className="scax-inbox-warn__row" key={item.id}>
+              <span className="scax-inbox-warn__text">{copy.brokenBanner(item.kind === "slack" ? copy.slackKind : copy.mailAccount(item.display_name))}</span>
+              <Button
+                label={copy.reconnect}
+                onClick={() => {
+                  close();
+                  onReconnect(item);
+                }}
+                size="sm"
+                tone="neutral"
+                variant="outlined"
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </Popover>
+  );
+}
 
 const zeroCounts = { all: 0, mail: 0, slack: 0, kakao: 0 } as const;
 
@@ -190,22 +232,34 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
     return () => onRegisterRails({});
   }, [cards, cursor, loadList, loadMore, loadingMore, onRegisterRails, selectedKey, source, state, unread]);
 
+  /* 수집 실패 알림(D-50 · 로컬 피드백 1) — 끊긴 메일·슬랙 연동은 본문 배너가 아니라 머리 [!] 배지 + 팝오버로 */
+  const broken = useMemo(() => integrations.filter((item) => item.status === "disconnected" && item.kind !== "kakao"), [integrations]);
+  const reconnect = useCallback(
+    async (integration: Integration) => {
+      try {
+        const outcome = await beginConsent(await reconnectIntegration(integration.id));
+        if (outcome === "failed") onError(copy.reconnectFailed);
+      } catch (reason) {
+        onError(reason instanceof Error ? reason.message : copy.reconnectFailed);
+      }
+    },
+    [onError],
+  );
+
   useEffect(() => {
     if (!onRegisterHeaderActions) return;
-    onRegisterHeaderActions(state === "ready" ? <Button label={copy.readAll} onClick={() => void readAll()} size="sm" /> : null);
+    const warnings = broken.length ? <ConnectionWarnings items={broken} onReconnect={(item) => void reconnect(item)} /> : null;
+    const readAllButton = state === "ready" ? <Button label={copy.readAll} onClick={() => void readAll()} size="sm" /> : null;
+    onRegisterHeaderActions(
+      warnings || readAllButton ? (
+        <>
+          {warnings}
+          {readAllButton}
+        </>
+      ) : null,
+    );
     return () => onRegisterHeaderActions(null);
-  }, [onRegisterHeaderActions, readAll, state]);
-
-  /* 수집 실패 배너(D-50) — 끊긴 메일·슬랙 연동마다 한 줄 + 「다시 연결」 */
-  const broken = integrations.filter((item) => item.status === "disconnected" && item.kind !== "kakao");
-  const reconnect = async (integration: Integration) => {
-    try {
-      const outcome = await beginConsent(await reconnectIntegration(integration.id));
-      if (outcome === "failed") onError(copy.reconnectFailed);
-    } catch (reason) {
-      onError(reason instanceof Error ? reason.message : copy.reconnectFailed);
-    }
-  };
+  }, [broken, onRegisterHeaderActions, readAll, reconnect, state]);
 
   let body: ReactNode;
   if (state === "loading" && !selected) {
@@ -240,16 +294,6 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
 
   return (
     <div className="scax-inbox-body">
-      {broken.length ? (
-        <div className="scax-inbox-banners">
-          {broken.map((item) => (
-            <div className="scax-inbox-notice scax-inbox-notice--danger" key={item.id} role="alert">
-              <span className="scax-inbox-notice__text">{copy.brokenBanner(item.kind === "slack" ? copy.slackKind : copy.mailAccount(item.display_name))}</span>
-              <Button label={copy.reconnect} onClick={() => void reconnect(item)} size="sm" tone="neutral" variant="outlined" />
-            </div>
-          ))}
-        </div>
-      ) : null}
       {body}
     </div>
   );

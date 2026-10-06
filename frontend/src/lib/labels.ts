@@ -1515,6 +1515,8 @@ export const inboxScreen = {
   /* 수집 실패 배너 (D-50) */
   brokenBanner: (name: string) => `${name} 연결이 끊겼습니다`,
   reconnect: "다시 연결",
+  warningsTitle: "연결 경고",
+  warningsButton: (count: number) => `연결 경고 ${count}건`,
   reconnectFailed: "다시 연결을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.",
   mailAccount: (address: string) => `메일 ${address}`,
   kakaoPaused: "카카오톡 수집이 멈췄습니다 — Mac 앱을 확인해 주세요",
