@@ -149,6 +149,7 @@ fn plain_agent() -> ureq::Agent {
 /// **한 번 수집** — handshake 부터 방별 업로드까지. 서버 base 와 기기 토큰을 받는다.
 /// 수집기 스레드와 E2E 테스트가 함께 쓴다. 상태를 `shared` 에 반영한다.
 pub fn collect_once(base: &str, token: &str, shared: &Shared) -> Result<Summary, String> {
+    crate::log_event("kakao", &format!("collect_once 시작 base={base}"));
     let client = Client::new(base, token);
     let cdn = plain_agent();
 
@@ -156,6 +157,7 @@ pub fn collect_once(base: &str, token: &str, shared: &Shared) -> Result<Summary,
     let resolved = match crypto::resolve() {
         Ok(r) => r,
         Err(e) => {
+            crate::log_event("kakao", &format!("resolve 실패 reason={:?} detail={}", e.failure, e.detail));
             let reason = reason_str(e.failure);
             report_unreadable(&client, &shared_device(), reason, shared);
             shared.update(|s| {
@@ -187,8 +189,17 @@ pub fn collect_once(base: &str, token: &str, shared: &Shared) -> Result<Summary,
         s.logged_in = true;
     });
 
+    crate::log_event("kakao", &format!("DB 열림 user_id={} account={:?}", resolved.user_id, account));
+
     // 2) handshake — 서버의 고른 방·버전.
-    let hs = client.handshake().map_err(|e| e.to_string())?;
+    let hs = client.handshake().map_err(|e| {
+        crate::log_event("kakao", &format!("handshake 실패: {e}"));
+        e.to_string()
+    })?;
+    crate::log_event(
+        "kakao",
+        &format!("handshake OK integration={} rooms={} version={}", hs.integration_id, hs.selected_rooms.len(), hs.selected_rooms_version),
+    );
     shared.update(|s| s.selected_rooms_version = hs.selected_rooms_version);
 
     let mut summary = Summary {
@@ -238,14 +249,21 @@ pub fn collect_once(base: &str, token: &str, shared: &Shared) -> Result<Summary,
     }
 
     // 4) 상태 보고.
-    let _ = client.post_status(&client::StatusInput {
+    match client.post_status(&client::StatusInput {
         device_name: device_name(),
         version: app_version(),
         kakao_state: "running",
         kakao_reason: None,
         account_name: account,
         account_changed: false,
-    });
+    }) {
+        Ok(v) => crate::log_event("kakao", &format!("status OK selected_rooms_version={v}")),
+        Err(e) => crate::log_event("kakao", &format!("status 실패: {e}")),
+    }
+    crate::log_event(
+        "kakao",
+        &format!("collect_once 끝 msgs={} atts={}", summary.uploaded_messages, summary.uploaded_attachments),
+    );
     shared.update(|s| s.last_error = None);
     Ok(summary)
 }
@@ -293,19 +311,26 @@ pub fn spawn(base: String) -> Shared {
     std::thread::Builder::new()
         .name("kakao-collector".into())
         .spawn(move || {
+            crate::log_event("kakao", &format!("수집기 스레드 시작 base={base}"));
             let mut last_status = Instant::now()
                 .checked_sub(STATUS_EVERY)
                 .unwrap_or_else(Instant::now);
+            let mut announced_no_token = false;
             while worker.running.load(Ordering::SeqCst) {
                 let token = super::keychain::load();
                 match token {
                     None => {
+                        if !announced_no_token {
+                            crate::log_event("kakao", "기기 토큰 없음 — login_required(쉼)");
+                            announced_no_token = true;
+                        }
                         worker.update(|s| {
                             s.logged_in = false;
                             s.last_error = None;
                         });
                     }
                     Some(token) => {
+                        announced_no_token = false;
                         worker.update(|s| s.logged_in = true);
                         // 메시지 틱.
                         if let Err(e) = collect_once(&base, &token, &worker) {
@@ -370,5 +395,22 @@ mod tests {
         let s = Status::default();
         assert_eq!(s.kakao_state, "off");
         assert!(!s.logged_in);
+    }
+
+    /// **회귀** — ureq NativeTls provider 가 **https 에서 패닉하지 않는다**(native-tls feature 등록 확인).
+    /// 고치기 전에는 "provider is NativeTls but feature is not enabled" 로 패닉해 수집기 스레드가 죽었다.
+    /// 로컬 http 로는 안 드러나던 버그라 실제 https 호출로 재서 막는다. 네트워크가 필요해 ignore.
+    #[test]
+    #[ignore = "네트워크 필요 — https TLS provider 회귀 가드"]
+    fn https_네이티브tls_가_패닉하지_않는다() {
+        let agent = super::plain_agent();
+        // `.call()` 까지 패닉 없이 돌아오면(상태코드가 무엇이든) provider 가 등록된 것이다.
+        let got = agent.get("https://ax.medisolveai.xyz/").call();
+        let outcome = match &got {
+            Ok(r) => format!("status {}", r.status().as_u16()),
+            Err(e) => format!("err {e}"),
+        };
+        println!("[kakao] https NativeTls → {outcome}");
+        assert!(got.is_ok() || got.is_err(), "여기 도달 = 패닉 안 함");
     }
 }
