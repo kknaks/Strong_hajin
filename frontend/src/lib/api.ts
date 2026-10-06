@@ -140,6 +140,18 @@ export async function uploadBrowserFile(id: string, file: File): Promise<Browser
   return response.json() as Promise<BrowserInteraction>;
 }
 
+/**
+ * 성공 응답의 본문 — **비어 있으면 JSON 으로 풀지 않는다**(FE 수정 판 4).
+ * `204` 뿐 아니라 `202 Accepted`(방 추가 · 비동기 접수)처럼 본문 없이 오는 성공도 있다 — 거기에 `response.json()` 을
+ * 부르면 「Unexpected end of JSON input」 이 성공을 실패로 뒤집는다. 그래서 글자로 먼저 읽고 비면 `undefined` 다.
+ */
+async function readBody<T>(response: Response): Promise<T> {
+  if (response.status === 204 || response.status === 205) return undefined as T;
+  const text = await response.text();
+  if (!text.trim()) return undefined as T;
+  return JSON.parse(text) as T;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -155,8 +167,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const detail = typeof error.detail === "string" ? error.detail : response.statusText;
     throw new ApiError(response.status, detail, error.detail);
   }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  return readBody<T>(response);
 }
 
 /** Names for ids, so the product can say who did what. Any signed-in member may read it; it opens nothing else. */
@@ -1532,8 +1543,7 @@ async function sendForm<T>(path: string, form: FormData, init: { method?: string
     const detail = typeof error.detail === "string" ? error.detail : response.statusText;
     throw new ApiError(response.status, detail, error.detail);
   }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  return readBody<T>(response);
 }
 
 /** 연결 시작·다시 연결의 응답 — 서버가 회원에 묶은 일회용 `state` 를 박은 **동의 URL**(F-2). 302 가 아니다. */

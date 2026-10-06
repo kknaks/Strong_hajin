@@ -114,7 +114,8 @@ beforeEach(() => {
       if (path === "/api/device-tokens" && method === "GET") return json([{ id: "d1", device_name: "MacBook Pro", created_at: "2026-10-06T00:00:00Z", last_used_at: null }]);
       if (path === "/api/device-tokens" && method === "POST") return json({ token: "SECRET-TOKEN" }, 201);
       if (path === "/api/profile/image" && method === "PUT") return json({ profile_image_url: "/api/profile/image?v=1" });
-      if (method === "POST" && path.endsWith("/rooms")) return json(null, 202);
+      // 실제 서버처럼 202 + 빈 본문(FE 수정 판 4)
+      if (method === "POST" && path.endsWith("/rooms")) return new Response(null, { status: 202 });
       return json(null, 204);
     }),
   );
@@ -176,6 +177,9 @@ describe("슬랙 연동", () => {
     await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/integrations/i-slack/rooms")).toBe(true));
     const body = JSON.parse(String(calls.find((call) => call.method === "POST" && call.path === "/api/integrations/i-slack/rooms")!.body));
     expect(body.room_ids).toEqual(["C03", "G02"]);
+    // 빈 본문 202 는 성공이다 — 오류 토스트가 없고 창이 닫힌다
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "방 추가" })).toBeNull());
+    expect(notices.error).not.toHaveBeenCalled();
   });
 
   it("끊긴 워크스페이스 — 모든 방이 「멈춤」, 「연결 해제」는 확인 뒤", async () => {
