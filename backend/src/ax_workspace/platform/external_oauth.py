@@ -26,7 +26,7 @@ GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 
-#: 슬랙 사용자 토큰 권한 — 실측 10개(BASE-006 입력 4-2) + 답장 첨부 `files:write`(D-32) = 11.
+#: 슬랙 사용자 토큰 권한 — 실측 10개(BASE-006 입력 4-2) + 답장 첨부 `files:write`(D-32) + 첨부 받기 `files:read` = 12.
 #: 사용자 토큰이라 **사람이 이미 볼 수 있는 방만** 읽는다(봇은 남의 DM 을 못 읽는다 — D-11).
 SLACK_USER_SCOPES = (
     "channels:history",
@@ -40,6 +40,8 @@ SLACK_USER_SCOPES = (
     "users:read",
     "chat:write",
     "files:write",
+    # 슬랙 첨부 받기(중계) — 파일 주소(`url_private`)는 이 권한 없이는 403 이다(BE 수정 판 4 실물).
+    "files:read",
 )
 SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"

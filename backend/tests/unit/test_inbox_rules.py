@@ -15,6 +15,8 @@ from ax_workspace.modules.external_channels.inbox import (
 )
 from ax_workspace.modules.external_channels.inbox_html import (
     CSP_META,
+    SAFE_HTML_PREFIX,
+    sanitize_css,
     parse_gmail_message,
     remote_image_urls,
     sanitize_mail_html,
@@ -46,7 +48,7 @@ from ax_workspace.platform.external_inbox_upstream import SafeImageFetcher, addr
 )
 def test_sanitizer_drops_every_active_or_tracking_construct(hostile: str) -> None:
     safe = sanitize_mail_html(f"<html><body><p>본문</p>{hostile}</body></html>")
-    body = safe[len(CSP_META):]
+    body = safe[len(SAFE_HTML_PREFIX):]
     for token in ("<script", "onerror", "onload", "javascript:", "<iframe", "<object", "<embed", "<form", "<svg",
                   "url(", "@import", "<meta", "<base", "<link", "data:text"):
         assert token not in body.lower(), (hostile, body)
@@ -169,3 +171,83 @@ def test_profile_image_is_judged_by_its_bytes() -> None:
     assert sniff_image(b"\xff\xd8\xff\xe0...") == "image/jpeg"
     assert sniff_image(b"GIF89a") is None
     assert sniff_image(b"<svg/>") is None
+
+
+
+# ── BE 수정 판 5 — 배경 이미지·레이아웃을 지우지 않고 바꾼다 ───────────────────────────────────
+
+
+def _proxy(url: str) -> str:
+    from urllib.parse import quote
+
+    return f"/api/inbox/mail/11111111-1111-1111-1111-111111111111/remote-image?u={quote(url, safe='')}"
+
+
+def test_backgrounds_and_css_urls_are_proxied_not_dropped() -> None:
+    document = (
+        '<html><head><style>.hero{background-image:url("https://img.example/hero.png");color:#123}'
+        "@import url(https://evil/x.css); .x{width:expression(alert(1))} @media (max-width:600px){.w{width:100%!important}}"
+        "</style></head>"
+        '<body bgcolor="#F2F6F9" style="font-family:Noto Sans">'
+        '<table background="https://img.example/bg.jpg" width="756" align="center" cellpadding="0"><tr>'
+        '<td style="width:600px;background:url(https://img.example/td.png) no-repeat;color:#000;text-align:center">배너</td>'
+        '<td style="background:url(javascript:alert(1))">x</td>'
+        "</tr></table></body></html>"
+    )
+    safe = sanitize_mail_html(document, remote_url=_proxy)
+    assert safe.startswith(SAFE_HTML_PREFIX)
+    assert 'background="/api/inbox/mail/11111111-1111-1111-1111-111111111111/remote-image?u=https%3A%2F%2Fimg.example%2Fbg.jpg"' in safe
+    assert "width:600px" in safe and "text-align:center" in safe  # 레이아웃 선언은 남는다
+    assert 'width="756"' in safe and 'align="center"' in safe and 'cellpadding="0"' in safe
+    assert "@media" in safe and "color:#123" in safe  # <style> 블록이 남는다
+    assert "@import" not in safe and "expression(" not in safe and "javascript:" not in safe
+    assert "background-color:#F2F6F9" in safe  # body 배경은 감싸개로
+    assert remote_image_urls(safe) >= {"https://img.example/hero.png", "https://img.example/bg.jpg", "https://img.example/td.png"}
+    assert "https://img.example/" not in safe.replace("u=https%3A%2F%2Fimg.example", "")  # 원격 주소가 직접 남지 않는다
+
+
+def test_css_cannot_escape_the_style_element() -> None:
+    css = sanitize_css('a{color:red}</style><script>alert(1)</script>', None)
+    assert "<" not in css
+
+
+def test_redirects_are_followed_with_an_ssrf_check_on_every_hop(monkeypatch) -> None:
+    from ax_workspace.platform import external_inbox_upstream as upstream
+
+    class Response:
+        def __init__(self, status, headers, body=b""):
+            self.status, self._headers, self._body = status, headers, body
+
+        def getheader(self, name, default=None):
+            return self._headers.get(name, default)
+
+        def read(self, limit):
+            return self._body[:limit]
+
+    plan = {
+        "cdn.example": Response(302, {"Location": "https://img2.example/real.png"}),
+        "img2.example": Response(200, {"Content-Type": "application/octet-stream"}, b"\x89PNG\r\n\x1a\n" + b"x" * 10),
+        "hop.example": Response(302, {"Location": "http://internal.example/admin"}),
+    }
+
+    class Connection:
+        def __init__(self, host, address, port, *, timeout):
+            self.host = host
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return plan[self.host]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(upstream, "_PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr(upstream, "_PinnedHTTPConnection", Connection)
+    addresses = {"cdn.example": "93.184.216.34", "img2.example": "93.184.216.35", "hop.example": "93.184.216.36", "internal.example": "10.0.0.5"}
+    fetcher = SafeImageFetcher(resolver=lambda host, port, type: [(0, 0, 0, "", (addresses[host], port))])
+    data, content_type = fetcher.fetch("https://cdn.example/track?id=1")
+    assert content_type == "image/png" and data.startswith(b"\x89PNG")  # 이름이 틀린 type 도 바이트로 판별
+    with pytest.raises(RemoteImageRejected):
+        fetcher.fetch("https://hop.example/x")  # 리다이렉트가 사설 주소로 가면 그 홉에서 거절

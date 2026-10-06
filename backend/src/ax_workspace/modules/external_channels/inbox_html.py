@@ -23,17 +23,23 @@ import binascii
 from dataclasses import dataclass, field
 import hashlib
 import html as html_lib
+import re
+from collections.abc import Callable
 from typing import Any, Iterator
+from urllib import parse as urllib_parse
 from urllib.parse import urlsplit
 
 import nh3
 from lxml import etree, html as lxml_html
 
-SAFE_HTML_VERSION = 1
+#: 판 2(BE 수정 판 5) — `<style>` 블록 보존 · CSS `url()`·`background` 를 프록시로 · body 배경을 감싸개로.
+SAFE_HTML_VERSION = 2
 CSP_META = (
     '<meta http-equiv="Content-Security-Policy" '
     "content=\"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'\">"
 )
+#: 저장된 안전본의 머리 — 판이 바뀌면 옛 안전본을 버리고 다시 만든다.
+SAFE_HTML_PREFIX = f'{CSP_META}<meta name="ax-safe-html" content="{SAFE_HTML_VERSION}">'
 REMOTE_SRC_ATTRIBUTE = "data-ax-remote-src"
 QUOTE_SUMMARY = "이전 내용 보기"
 
@@ -52,8 +58,10 @@ _ATTRIBUTES = {
     "*": _GENERIC_ATTRIBUTES,
     "a": {"href", "name", "target"},
     "img": {"src", "alt", REMOTE_SRC_ATTRIBUTE},
-    "td": {"colspan", "rowspan", "nowrap"},
-    "th": {"colspan", "rowspan", "nowrap", "scope"},
+    "td": {"colspan", "rowspan", "nowrap", "background"},
+    "th": {"colspan", "rowspan", "nowrap", "scope", "background"},
+    "table": {"background"},
+    "tr": {"background"},
     "col": {"span"},
     "colgroup": {"span"},
     "font": {"face", "size"},
@@ -198,8 +206,55 @@ def _rewrite_images(root: Any, cid_urls: dict[str, str]) -> None:
             image.attrib.pop("src", None)
 
 
+_CSS_URL = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL)
+_CSS_FORBIDDEN = ("@import", "expression(", "javascript:", "behavior:", "-moz-binding", "vbscript:")
+_PROXIED = "/api/inbox/mail/"
+
+
+def _css_url(target: str, remote_url: Callable[[str], str] | None) -> str | None:
+    target = html_lib.unescape(target.strip())
+    lowered = target.lower()
+    if lowered.startswith(_RASTER_DATA_PREFIXES) or lowered.startswith(_PROXIED):
+        return target
+    if remote_url is not None and _is_remote(target):
+        return remote_url(target)
+    return None
+
+
+def sanitize_css(css: str, remote_url: Callable[[str], str] | None) -> str:
+    """CSS 한 덩이 — 원격을 부르는 길을 닫되 **지우지 않고 바꾼다**(BE 수정 판 5). `url()` 은 원격이면 우리 이미지 프록시로,
+    래스터 data: 는 그대로, 그 밖은 `none`. `@import`·`expression()`·`javascript:` 가 든 선언은 그 줄만 걷는다.
+    `<` 는 남기지 않는다 — `<style>` 밖으로 빠져나가지 못하게."""
+    css = css.replace("<", " ").replace("\\", "")
+    kept = []
+    for chunk in re.split(r"(;|\{|\})", css):
+        if any(token in chunk.lower() for token in _CSS_FORBIDDEN):
+            continue
+        kept.append(_CSS_URL.sub(lambda match: (f"url('{proxied}')" if (proxied := _css_url(match.group(2), remote_url)) else "none"), chunk))
+    return "".join(kept)
+
+
+def _rewrite_backgrounds(root: Any, remote_url: Callable[[str], str] | None) -> None:
+    """`<td background=…>`·`<table background>` — 배너를 그리는 옛 방식. 지우지 않고 프록시 주소로 바꾼다."""
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+        value = element.get("background")
+        if value is not None:
+            proxied = _css_url(value, remote_url)
+            if proxied:
+                element.set("background", proxied)
+            else:
+                del element.attrib["background"]
+        style = element.get("style")
+        if style and "url(" in style.lower():
+            element.set("style", sanitize_css(style, remote_url))
+
+
 def _attribute_filter(tag: str, attribute: str, value: str) -> str | None:
     lowered = value.strip().lower()
+    if attribute == "background":
+        return value if lowered.startswith(_PROXIED) or lowered.startswith(_RASTER_DATA_PREFIXES) else None
     if attribute == "href":
         return value if lowered.startswith(("http://", "https://", "mailto:", "tel:", "#")) else None
     if attribute == "src":
@@ -211,27 +266,44 @@ def _attribute_filter(tag: str, attribute: str, value: str) -> str | None:
     if attribute == REMOTE_SRC_ATTRIBUTE:
         return value if _is_remote(value) else None
     if attribute == "style":
-        # CSS 로 원격을 부르는 길(url()·@import·expression)을 닫는다. CSP 가 한 겹 더 막는다.
-        if any(token in lowered for token in ("url(", "@import", "expression(", "javascript:", "behavior:")):
-            return None
-        return value
+        # 원격 `url()` 은 앞에서 프록시로 바뀌었다. 남은 위험한 것(@import·expression·javascript:)은 그 선언만 걷고
+        # 나머지 레이아웃(폭·정렬·색)은 남긴다 — 통째로 지우면 메일이 좁아지고 색이 빠진다(BE 수정 판 5). CSP 가 한 겹 더.
+        return sanitize_css(value, None)
     if attribute == "target":
         return "_blank"
     return value
 
 
-def sanitize_mail_html(document: str, *, cid_urls: dict[str, str] | None = None) -> str:
-    """원문 HTML → 렌더용 안전본(CSP meta + 소독한 body). 같은 입력이면 같은 출력이다."""
+def sanitize_mail_html(
+    document: str, *, cid_urls: dict[str, str] | None = None, remote_url: Callable[[str], str] | None = None
+) -> str:
+    """원문 HTML → 렌더용 안전본(CSP meta + 소독한 `<style>` + 소독한 body). 같은 입력이면 같은 출력이다.
+
+    `remote_url` 은 원격 주소 → 우리 이미지 프록시 주소(그 메일의 `remote-image?u=`). 있으면 CSS `url()`·`background`
+    속성을 지우지 않고 그 주소로 바꾼다. `<img>` 는 종전대로 `data-ax-remote-src` 로 둔다(화면이 프록시로 그린다).
+    """
     fragment = ""
+    styles: list[str] = []
+    wrapper_style = ""
     if document and document.strip():
         try:
             root = lxml_html.document_fromstring(document)
         except (etree.ParserError, ValueError):
             root = None
         if root is not None:
+            # 뉴스레터는 `<style>`(글꼴·링크 색·모바일 @media)에 기댄다 — 위험한 것만 걷고 남긴다(BE 수정 판 5).
+            styles = [sanitize_css(element.text or "", remote_url) for element in root.iter("style")]
             body = root.find("body")
             container = body if body is not None else root
+            if body is not None:
+                # body 의 배경색·글꼴은 감싸개 div 로 옮긴다 — body 는 안전본에 없다.
+                bgcolor = (body.get("bgcolor") or "").strip()
+                wrapper_style = sanitize_css(
+                    ((f"background-color:{bgcolor};" if re.fullmatch(r"#?[0-9A-Za-z]{1,20}", bgcolor) else "") + (body.get("style") or "")),
+                    remote_url,
+                )
             _rewrite_images(container, cid_urls or {})
+            _rewrite_backgrounds(container, remote_url)
             _wrap_quotes(container)
             fragment = "".join(
                 [html_lib.escape(container.text or "")]
@@ -247,7 +319,10 @@ def sanitize_mail_html(document: str, *, cid_urls: dict[str, str] | None = None)
         link_rel="noopener noreferrer",
         strip_comments=True,
     )
-    return f"{CSP_META}{cleaned}"
+    style_block = "".join(f"<style>{css}</style>" for css in styles if css.strip())
+    if wrapper_style.strip():
+        cleaned = f'<div style="{html_lib.escape(wrapper_style, quote=True)}">{cleaned}</div>'
+    return f"{SAFE_HTML_PREFIX}{style_block}{cleaned}"
 
 
 def text_to_safe_html(text: str) -> str:
@@ -263,7 +338,7 @@ def text_to_safe_html(text: str) -> str:
             f"<details><summary>{QUOTE_SUMMARY}</summary>"
             f'<pre style="white-space:pre-wrap;font-family:inherit">{html_lib.escape(chr(10).join(quote))}</pre></details>'
         )
-    return f"{CSP_META}{body}"
+    return f"{SAFE_HTML_PREFIX}{body}"
 
 
 def remote_image_urls(safe_html: str) -> set[str]:
@@ -274,7 +349,11 @@ def remote_image_urls(safe_html: str) -> set[str]:
         root = lxml_html.document_fromstring(safe_html)
     except (etree.ParserError, ValueError):
         return set()
-    return {
+    proxied = {
+        urllib_parse.unquote(match)
+        for match in re.findall(r"/api/inbox/mail/[0-9a-f-]+/remote-image\?u=([^\"')\s&]+)", html_lib.unescape(safe_html))
+    }
+    return proxied | {
         html_lib.unescape(value).strip()
         for value in (image.get(REMOTE_SRC_ATTRIBUTE) for image in root.iter("img"))
         if value

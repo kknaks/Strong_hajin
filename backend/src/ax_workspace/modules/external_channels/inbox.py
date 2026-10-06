@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import logging
 
 import base64
@@ -32,6 +34,7 @@ from ax_workspace.modules.external_channels.domain import ExternalChannelError, 
 from ax_workspace.modules.external_channels.events import USER_EVENTS_CHANNEL, UserEvent, UserEventType
 from ax_workspace.modules.external_channels.inbox_html import (
     CSP_META,
+    SAFE_HTML_PREFIX,
     bare_address,
     gmail_attachment_aid,
     iter_parts,
@@ -528,8 +531,8 @@ class InboxApplication:
 
     def _safe_html(self, message: Any, integration: Any, parts: Any = None) -> str:
         """안전본이 없으면(또는 옛 판이면) 원문에서 만들어 채운다 — 원문 `raw` 는 건드리지 않는다(D-28)."""
-        if message.safe_html and message.safe_html.startswith(CSP_META):
-            return message.safe_html
+        if message.safe_html and message.safe_html.startswith(SAFE_HTML_PREFIX):
+            return message.safe_html  # 옛 판(판 1)은 버리고 다시 만든다
         parts = parts or parse_gmail_message(message.raw or {})
         cid_urls = {
             content_id: f"/api/inbox/mail/{message.id}/attachments/{gmail_attachment_aid(str(integration.id), message.external_key, part_id)}"
@@ -537,7 +540,12 @@ class InboxApplication:
             if part_id
         }
         if parts.html:
-            safe = sanitize_mail_html(parts.html, cid_urls=cid_urls)
+            safe = sanitize_mail_html(
+                parts.html,
+                cid_urls=cid_urls,
+                # CSS `url()`·`background` 는 그 메일의 이미지 프록시로 — 프록시는 이 안전본에 실제로 있는 주소만 받는다.
+                remote_url=lambda url: f"/api/inbox/mail/{message.id}/remote-image?u={quote(url, safe='')}",
+            )
         else:
             safe = text_to_safe_html(parts.text or message.preview or "")
         message.safe_html = safe
@@ -971,6 +979,8 @@ class InboxApplication:
         return refreshed.access_token
 
     def _mark_disconnected(self, integration: Any, reason: str) -> None:
+        # 연동을 끊는 자리는 언제나 흔적을 남긴다 — 조용히 끊기면 원인을 못 찾는다(BE 수정 판 4).
+        logger.warning("inbox disconnects %s integration %s: %s", integration.kind, integration.id, reason)
         now = self._clock()
         integration.status = IntegrationStatus.DISCONNECTED
         integration.disconnected_reason = reason

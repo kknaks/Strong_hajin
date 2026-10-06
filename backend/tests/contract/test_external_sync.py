@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -491,3 +492,85 @@ def test_restart_gap_fill_also_picks_up_new_replies_in_old_threads(tmp_path) -> 
     slack.threads[ts(1)].append({"ts": ts(7), "text": "답 2", "thread_ts": ts(1)})
     ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None).tick()
     assert ts(7) in {m.external_key for m in _messages(sessions, mina)}
+
+
+# ── BE 수정 판 4 — 403 은 토큰 폐기가 아니다 · 남의 토큰 폐기로 내 연동을 끊지 않는다 ─────────────────────
+
+
+def _http_error(status: int, body: dict):
+    import io
+    from urllib import error as urlerror
+
+    def raise_(request, timeout):
+        raise urlerror.HTTPError(request.full_url, status, "x", {}, io.BytesIO(json.dumps(body).encode()))
+
+    return raise_
+
+
+def test_gmail_errors_are_classified_by_reason_not_by_403_alone(monkeypatch, caplog) -> None:
+    from ax_workspace.modules.external_channels.sync import UpstreamCallDenied, UpstreamRateLimited
+    from ax_workspace.platform.external_gmail import GmailApi
+
+    api = GmailApi("cid", "secret")
+    target = "ax_workspace.platform.external_gmail.urlrequest.urlopen"
+    denied = {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Request had insufficient authentication scopes.",
+                        "errors": [{"reason": "insufficientPermissions"}]}}
+    monkeypatch.setattr(target, _http_error(403, denied))
+    with caplog.at_level("WARNING"), pytest.raises(UpstreamCallDenied):
+        api.history("token", "100")
+    assert any("insufficientPermissions" in r.getMessage() and "PERMISSION_DENIED" in r.getMessage() for r in caplog.records)
+    rate = {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "User-rate limit exceeded.",
+                      "errors": [{"reason": "userRateLimitExceeded"}]}}
+    monkeypatch.setattr(target, _http_error(403, rate))
+    with pytest.raises(UpstreamRateLimited):
+        api.list_inbox("token")
+    monkeypatch.setattr(target, _http_error(401, {"error": {"code": 401, "status": "UNAUTHENTICATED"}}))
+    with pytest.raises(UpstreamAuthRevoked):
+        api.profile("token")
+    monkeypatch.setattr(target, _http_error(400, {"error": "invalid_grant", "error_description": "Token has been expired or revoked."}))
+    with pytest.raises(UpstreamAuthRevoked):
+        api.refresh("refresh")
+
+
+def test_a_denied_mail_or_call_keeps_the_gmail_integration_connected(tmp_path) -> None:
+    from ax_workspace.modules.external_channels.sync import UpstreamCallDenied
+
+    settings, client, app, store, sessions, cipher = _stack(tmp_path)
+    mail = _gmail_member(client, app, expires_at=datetime.now(UTC) + timedelta(hours=1))
+    gmail = FakeGmail()
+    real_get = gmail.get_message
+
+    def get_message(token, message_id):
+        if message_id == "m2":
+            raise UpstreamCallDenied("gmail messages: PERMISSION_DENIED")
+        return real_get(token, message_id)
+
+    gmail.get_message = get_message
+    sync = ExternalSync(store, cipher=cipher, slack=None, gmail=gmail, gmail_topic=None)
+    sync.tick()
+    sync.tick()
+    assert sorted(m.external_key for m in _messages(sessions, mail)) == ["m1", "m3"]  # 그 메일 하나만 건너뛴다
+    gmail.history = lambda token, start, page_token=None: (_ for _ in ()).throw(UpstreamCallDenied("history: PERMISSION_DENIED"))
+    sync.tick(due_mail=[mail])
+    [row] = client.get("/api/integrations", headers=MINA).json()
+    assert row["status"] == "connected" and row["backfill_count"] == 2  # 끊기지 않는다 — 그 호출만 물러선다
+
+
+def test_slack_token_revocation_events_only_disconnect_the_named_user(tmp_path, caplog) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    jiho = _slack_member(settings, client, "jiho", JIHO, [{"room_id": "C1", "type": "channel"}])
+    sync = ExternalSync(store, cipher=cipher, slack=FakeSlack(), gmail=None, gmail_topic=None)
+    # 같은 워크스페이스의 다른 사람 토큰이 폐기됐다 — 우리 연동 누구도 끊지 않는다.
+    sync.handle_slack_event({"team_id": TEAM, "event": {"type": "tokens_revoked", "tokens": {"oauth": ["U-someone"], "bot": []}}})
+    assert {row["status"] for row in client.get("/api/integrations", headers=MINA).json()} == {"connected"}
+    with caplog.at_level("WARNING"):
+        sync.handle_slack_event({"team_id": TEAM, "event": {"type": "tokens_revoked", "tokens": {"oauth": ["U-jiho"]}}})
+    assert client.get("/api/integrations", headers=JIHO).json()[0]["status"] == "disconnected"
+    assert client.get("/api/integrations", headers=MINA).json()[0]["status"] == "connected"
+    assert any("tokens_revoked" in r.getMessage() for r in caplog.records)
+    sync.handle_slack_event({"team_id": "T-OTHER", "event": {"type": "app_uninstalled"}})
+    assert client.get("/api/integrations", headers=MINA).json()[0]["status"] == "connected"
+    sync.handle_slack_event({"team_id": TEAM, "event": {"type": "app_uninstalled"}})
+    assert client.get("/api/integrations", headers=MINA).json()[0]["status"] == "disconnected"
+    del mina, jiho

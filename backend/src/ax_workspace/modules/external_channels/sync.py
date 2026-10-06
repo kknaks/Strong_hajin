@@ -68,6 +68,15 @@ class UpstreamUnavailable(Exception):
     """상류가 잠깐 안 된다(5xx·네트워크) 또는 그 방만 못 읽는다. 다음 차례에 다시."""
 
 
+class UpstreamCallDenied(UpstreamUnavailable):
+    """상류가 **그 호출만** 거절했다(403 — 특정 메시지·라벨 접근 거부 · 조직 정책 등). 토큰 폐기가 아니다 — 연동을 끊지
+    않고 그 호출만 실패로 둔다(BE 수정 판 4). 토큰 폐기는 401·`invalid_grant`(토큰 갱신 실패)일 때만이다."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class UpstreamRoomDenied(UpstreamUnavailable):
     """이 토큰으로 그 방을 볼 수 없다(`channel_not_found`·`not_in_channel`·`access_denied`) — 그 방만 멈춘다(F-1)."""
 
@@ -210,12 +219,17 @@ class ExternalSync:
         self._gap_fill_pending: set[str] | None = None
         #: 이번 실행에서 그 회원 토큰으로 접근을 다시 확인한 방(F-1 — 이미 들어간 방도 실행마다 재확인).
         self._verified_this_run: set[str] = set()
+        #: 연동마다 잇따른 일시 실패 수 — 물러서는 시간을 늘린다(같은 403 이 반복되면 덜 두드린다 · 판 4).
+        self._failures: dict[str, int] = {}
 
     # ── 슬랙 실시간 — 팬아웃 ──────────────────────────────────────────────────────────
 
     def handle_slack_event(self, payload: dict[str, Any]) -> int:
         """Socket Mode `events_api` 봉투의 `payload` 하나. 저장한 행 수를 돌려준다(팬아웃 합)."""
         event = payload.get("event") or {}
+        if event.get("type") in {"tokens_revoked", "app_uninstalled"}:
+            self._slack_revocation(str(payload.get("team_id") or event.get("team") or ""), event)
+            return 0
         if event.get("type") != "message" or not event.get("channel"):
             return 0
         team_id = str(payload.get("team_id") or event.get("team") or "")
@@ -243,6 +257,23 @@ class ExternalSync:
                 message = {key: value for key, value in event.items() if key not in {"channel_type", "event_ts"}}
                 saved += self._save_slack(token, room, [message], mode="live")
         return saved
+
+    def _slack_revocation(self, team_id: str, event: dict[str, Any]) -> None:
+        """슬랙이 알린 토큰 폐기·앱 삭제. **그 이벤트가 가리키는 사용자의 연동만** 끊는다 — 같은 워크스페이스의 남의 토큰
+        폐기로 내 연동을 끊지 않는다(BE 수정 판 4). 앱 삭제는 그 워크스페이스 전부다."""
+        revoked_users = set(((event.get("tokens") or {}).get("oauth")) or [])
+        for integration in self._store.active_integrations(IntegrationKind.SLACK):
+            if integration.account_key != team_id:
+                continue
+            user_id = (integration.account_meta or {}).get("user_id")
+            if event.get("type") == "app_uninstalled":
+                reason = "app_uninstalled"
+            elif user_id and user_id in revoked_users:
+                reason = "token_revoked"
+            else:
+                continue
+            logger.warning("slack %s for integration %s (user %s) — disconnecting", event.get("type"), integration.id, user_id)
+            self._store.mark_disconnected(integration.id, reason)
 
     # ── 주기 한 바퀴 ─────────────────────────────────────────────────────────────────
 
@@ -465,14 +496,17 @@ class ExternalSync:
             try:
                 token = self._gmail_token(integration)
                 busy |= self._mail_step(token, integration, polled=integration.id in due)
+                self._failures.pop(integration.id, None)
             except UpstreamAuthRevoked as error:
                 logger.warning("gmail integration %s lost its token: %s", integration.id, error.reason)
                 self._store.mark_disconnected(integration.id, error.reason)
             except UpstreamRateLimited as error:
                 self._back_off(integration.id, error.retry_after)
             except UpstreamUnavailable as error:
-                logger.warning("gmail integration %s sync deferred: %s", integration.id, error)
-                self._back_off(integration.id, 30)
+                failures = self._failures[integration.id] = self._failures.get(integration.id, 0) + 1
+                delay = min(1800, 30 * 2 ** min(failures - 1, 6))
+                logger.warning("gmail integration %s sync deferred %ds (failure %d): %s", integration.id, delay, failures, error)
+                self._back_off(integration.id, delay)
         return busy
 
     def _mail_step(self, token: str, integration: IntegrationState, *, polled: bool) -> bool:
@@ -536,7 +570,12 @@ class ExternalSync:
         assert self._gmail is not None
         batch = []
         for message_id in dict.fromkeys(ids):
-            message = self._gmail.get_message(token, message_id)
+            try:
+                message = self._gmail.get_message(token, message_id)
+            except UpstreamCallDenied as denied:
+                # 그 메일 하나만 거절됐다 — 건너뛰고 표시한다(연동은 그대로 · 판 4).
+                logger.warning("gmail integration %s skipped message %s: %s", integration.id, message_id, denied.reason)
+                continue
             # 사이에 지워졌거나 받은편지함을 떠난 메일은 건너뛴다 — 받은편지함만 받는다(D-10).
             if message is None or "INBOX" not in (message.get("labelIds") or []):
                 continue

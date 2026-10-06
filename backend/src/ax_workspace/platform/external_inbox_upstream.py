@@ -23,6 +23,8 @@ import logging
 import socket
 import ssl
 from typing import Any
+
+import certifi
 from urllib import error as urlerror, parse as urlparse, request as urlrequest
 
 from ax_workspace.modules.external_channels.inbox import (
@@ -42,8 +44,29 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 #: 중계 한 번에 받는 최대 바이트 — 슬랙 파일·메일 첨부(받는 쪽 한도는 상류가 정한다). 메모리 보호용 상한.
 RELAY_LIMIT_BYTES = 200 * 1024 * 1024
 REMOTE_IMAGE_LIMIT_BYTES = 5 * 1024 * 1024
+REMOTE_IMAGE_MAX_REDIRECTS = 3
+
+
+def sniff_raster(data: bytes) -> str | None:
+    """바이트 머리로 본 래스터 형식. 받을 수 있는 것만 — SVG·HTML 은 None."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    if data.startswith(b"\x00\x00\x01\x00"):
+        return "image/x-icon"
+    return None
+
+
 REMOTE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "image/vnd.microsoft.icon"})
-SLACK_AUTH_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive", "missing_scope"})
+#: 토큰 자체가 죽었다는 슬랙 오류만. `missing_scope`(권한 하나 부족)는 **그 호출만** 실패다 — 연동을 끊지 않는다(BE 수정 판 4).
+SLACK_AUTH_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive"})
 
 
 def _read_limited(response: Any, limit: int) -> bytes:
@@ -61,8 +84,12 @@ def _call(request: urlrequest.Request, *, timeout: float, limit: int = RELAY_LIM
     except urlerror.HTTPError as error:
         status = error.code
         logger.warning("inbox upstream %s refused (%s)", host, status)
-        if status in (401, 403):
+        if status == 401:
             raise UpstreamUnauthorized(f"http_{status}") from None
+        if status == 403:
+            # 403 은 **그 자원만의 거절**이다 — 슬랙 파일 주소는 `files:read` 없으면 403, Gmail 은 속도 제한도 403 이다.
+            # 토큰 폐기로 보고 연동을 끊으면 멀쩡한 연동이 조용히 끊긴다(BE 수정 판 4 결함 2).
+            raise UpstreamFailed("forbidden", retryable=False) from None
         raise UpstreamFailed(f"http_{status}", retryable=status == 429 or status >= 500) from None
     except (urlerror.URLError, TimeoutError, OSError) as error:
         logger.warning("inbox upstream %s unreachable (%s)", host, type(error).__name__)
@@ -234,11 +261,22 @@ def address_is_public(address: str) -> bool:
     )
 
 
+def _image_tls_context() -> ssl.SSLContext:
+    """원격 이미지용 TLS — **certifi 묶음 + 시스템 루트** 둘 다 믿는다(BE 수정 판 5).
+
+    아무 메일 발신 서버나 상대한다. 시스템 묶음이 낡으면(로컬 macOS `/etc/ssl/cert.pem` 에 Sectigo R46 루트가 없어
+    삼성SDS 뉴스레터 이미지가 전부 `CERTIFICATE_VERIFY_FAILED` 였다) 검증이 실패한다 — 검증을 끄지 않고 루트를 넓힌다.
+    """
+    context = ssl.create_default_context(cafile=certifi.where())
+    context.load_default_certs()
+    return context
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """이미 검사한 주소로 붙되 인증서·SNI 는 원래 이름으로 확인한다."""
 
     def __init__(self, host: str, address: str, port: int, *, timeout: float) -> None:
-        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        super().__init__(host, port, timeout=timeout, context=_image_tls_context())
         self._address = address
 
     def connect(self) -> None:
@@ -262,6 +300,22 @@ class SafeImageFetcher:
         self._resolver = resolver
 
     def fetch(self, url: str) -> tuple[bytes, str]:
+        """원격 이미지 하나. 리다이렉트(추적·CDN·camo)는 **홉마다 SSRF 검사를 다시 하며** 몇 번까지 따른다.
+        실패는 사유와 함께 한 줄 로그를 남긴다 — 무엇이 왜 안 나오는지 운영에서 알 수 있게(BE 수정 판 5)."""
+        current = url
+        for _ in range(REMOTE_IMAGE_MAX_REDIRECTS + 1):
+            try:
+                outcome = self._fetch_once(current)
+            except (RemoteImageRejected, UpstreamFailed) as failure:
+                logger.warning("remote image refused: host=%s reason=%s", urlparse.urlsplit(current).hostname, getattr(failure, "code", None) or failure)
+                raise
+            if isinstance(outcome, tuple):
+                return outcome
+            current = urlparse.urljoin(current, outcome)
+        logger.warning("remote image refused: host=%s reason=too_many_redirects", urlparse.urlsplit(current).hostname)
+        raise UpstreamFailed("too_many_redirects", retryable=False)
+
+    def _fetch_once(self, url: str) -> tuple[bytes, str] | str:
         parts = urlparse.urlsplit(url)
         scheme = parts.scheme.lower()
         if scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
@@ -285,21 +339,29 @@ class SafeImageFetcher:
         if parts.query:
             path = f"{path}?{parts.query}"
         try:
-            connection.request("GET", path, headers={"Host": parts.netloc, "User-Agent": "ax-inbox-image-proxy", "Accept": "image/*"})
+            connection.request("GET", path, headers={
+                "Host": parts.netloc, "User-Agent": "Mozilla/5.0 (compatible; ax-inbox-image-proxy)", "Accept": "image/*,*/*;q=0.5",
+            })
             response = connection.getresponse()
+            if response.status in (301, 302, 303, 307, 308) and response.getheader("Location"):
+                return response.getheader("Location")  # 다음 홉 — 부르는 쪽이 같은 검사를 다시 한다
             if response.status != 200:
                 raise UpstreamFailed(f"http_{response.status}", retryable=False)
-            content_type = (response.getheader("Content-Type") or "").split(";")[0].strip().lower()
-            if content_type not in REMOTE_IMAGE_TYPES:
-                raise RemoteImageRejected("이미지가 아닙니다")
             declared = response.getheader("Content-Length")
             if declared and declared.isdigit() and int(declared) > self._limit:
                 raise RemoteImageRejected("이미지가 너무 큽니다")
             data = response.read(self._limit + 1)
             if len(data) > self._limit:
                 raise RemoteImageRejected("이미지가 너무 큽니다")
-            return data, content_type
-        except (OSError, http.client.HTTPException, ssl.SSLError):
-            raise UpstreamFailed("unreachable") from None
+            # 선언된 type 이 아니라 **바이트**로 가른다 — 없는 type · octet-stream · `image/jpg` 같은 틀린 이름도 실제 래스터면
+            # 받고, 래스터가 아니면(SVG·HTML 포함) 이름이 image/* 여도 받지 않는다. 내려보내는 type 도 바이트가 정한다.
+            sniffed = sniff_raster(data)
+            if sniffed is None:
+                raise RemoteImageRejected("이미지가 아닙니다")
+            return data, sniffed
+        except ssl.SSLError as error:
+            raise UpstreamFailed(f"tls_{getattr(error, 'reason', None) or 'error'}"[:40]) from None
+        except (OSError, http.client.HTTPException) as error:
+            raise UpstreamFailed(f"unreachable_{type(error).__name__}"[:40]) from None
         finally:
             connection.close()

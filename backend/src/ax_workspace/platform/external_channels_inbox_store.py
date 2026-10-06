@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ax_workspace.platform import user_events
@@ -257,17 +258,29 @@ class SqlAlchemyInboxStore:
             )
         )
         if exists is None:
-            self._session.add(ExternalReadStateRecord(member_id=member_id, message_id=message_id, read_at=at))
-            self._session.flush()
+            # 화면이 같은 메일 읽음을 겹쳐 보내면(카드 누름 + 본문 열림) 둘 다 「없음」을 보고 넣는다 — 진 쪽은 유니크 위반을
+            # savepoint 안에서 받아 「이미 읽음」으로 끝낸다(BE 수정 판 5 · 예전엔 500).
+            try:
+                with self._session.begin_nested():
+                    self._session.add(ExternalReadStateRecord(member_id=member_id, message_id=message_id, read_at=at))
+                    self._session.flush()
+            except IntegrityError:
+                pass
 
     def mark_room_read(self, member_id: str, room_id: UUID, key: str, up_to: datetime, at: datetime) -> None:
         state = self.room_read_state(member_id, room_id)
         if state is None:
-            self._session.add(
-                ExternalReadStateRecord(member_id=member_id, room_id=room_id, read_up_to_key=key, read_up_to_at=up_to, read_at=at)
-            )
-            self._session.flush()
-            return
+            try:
+                with self._session.begin_nested():
+                    self._session.add(
+                        ExternalReadStateRecord(member_id=member_id, room_id=room_id, read_up_to_key=key, read_up_to_at=up_to, read_at=at)
+                    )
+                    self._session.flush()
+                return
+            except IntegrityError:
+                state = self.room_read_state(member_id, room_id)  # 겹친 요청이 먼저 넣었다 — 그 행을 앞으로만 민다
+                if state is None:
+                    return
         current = state.read_up_to_at
         if current is not None and current.tzinfo is None and up_to.tzinfo is not None:
             current = current.replace(tzinfo=up_to.tzinfo)
@@ -286,9 +299,16 @@ class SqlAlchemyInboxStore:
                     )
                 )
             )
-            self._session.add_all(
-                ExternalReadStateRecord(member_id=member_id, message_id=message_id, read_at=at) for message_id in unread
-            )
+            try:
+                with self._session.begin_nested():
+                    self._session.add_all(
+                        ExternalReadStateRecord(member_id=member_id, message_id=message_id, read_at=at) for message_id in unread
+                    )
+                    self._session.flush()
+            except IntegrityError:
+                # 그 사이 낱장 읽음이 겹쳤다 — 한 통씩 다시(이미 있는 것은 건너뛴다).
+                for message_id in unread:
+                    self.mark_message_read(member_id, message_id, at)
         room_integrations = [row.id for row in integrations if row.kind != "mail"]
         if room_integrations:
             rooms = self._session.scalars(

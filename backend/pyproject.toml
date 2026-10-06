@@ -19,6 +19,7 @@ dependencies = [
   "markdown-it-py>=4,<5",
   "cryptography>=46",
   "websockets>=13",
+  "certifi>=2024.2.2",
   "nh3>=0.2.18",
   "lxml>=5",
 ]

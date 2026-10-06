@@ -7,17 +7,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import json
+import logging
 from typing import Any
 from urllib import error as urlerror, parse as urlparse, request as urlrequest
 
 from ax_workspace.modules.external_channels.sync import (
     HistoryExpired,
+    UpstreamCallDenied,
     UpstreamAuthRevoked,
     UpstreamRateLimited,
     UpstreamUnavailable,
 )
 
+logger = logging.getLogger(__name__)
+
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me/"
+#: 속도·할당량 사유 — Gmail 은 이것들을 403 으로도 낸다.
+RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded", "concurrentLimitExceeded"})
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 DEFAULT_TIMEOUT = 30.0
 
@@ -31,17 +37,25 @@ def _request(request: urlrequest.Request, what: str, timeout: float = DEFAULT_TI
             detail = json.loads(error.read().decode("utf-8"))
         except (ValueError, OSError):
             detail = {}
-        code = detail.get("error") if isinstance(detail, dict) else None
-        if isinstance(code, dict):
-            code = code.get("status") or code.get("message")
+        body = detail.get("error") if isinstance(detail, dict) else None
+        if isinstance(body, dict):
+            code = str(body.get("status") or body.get("message") or "")
+            reasons = {str(row.get("reason")) for row in body.get("errors") or [] if isinstance(row, dict)}
+            message = str(body.get("message") or "")[:200]
+        else:
+            code, reasons, message = str(body or ""), set(), str(detail.get("error_description") or "")[:200] if isinstance(detail, dict) else ""
+        # 무엇이 왜 거절됐는지 남긴다 — 상류의 상태·사유·문장만(토큰·메일 내용은 요청·응답 어디에도 여기 오지 않는다).
+        logger.warning("%s refused: http %s status=%s reasons=%s message=%s", what, error.code, code, sorted(reasons), message)
         if error.code == 401 or code in {"invalid_grant", "unauthorized_client"}:
             raise UpstreamAuthRevoked(str(code or "unauthorized")[:40]) from None
         if error.code == 404:
             raise LookupError(what) from None
-        if error.code == 429 or (error.code == 403 and ("rate" in str(code).lower() or "exhausted" in str(code).lower())):
-            raise UpstreamRateLimited(float(error.headers.get("Retry-After") or 30)) from None
+        if error.code == 429 or reasons & RATE_LIMIT_REASONS or "EXHAUSTED" in code:
+            # Gmail 은 속도 제한도 403·`PERMISSION_DENIED` 로 낸다 — 사유(`userRateLimitExceeded` …)로 가른다.
+            raise UpstreamRateLimited(float(error.headers.get("Retry-After") or 60)) from None
         if error.code == 403:
-            raise UpstreamAuthRevoked(str(code or "forbidden")[:40]) from None
+            # 그 호출만의 거절이다. **토큰 폐기로 보지 않는다**(BE 수정 판 4) — 폐기는 401·invalid_grant 일 때만.
+            raise UpstreamCallDenied(f"{what}: {code or 'forbidden'} {sorted(reasons)}"[:120]) from None
         raise UpstreamUnavailable(f"{what} http {error.code}") from None
     except (urlerror.URLError, TimeoutError, OSError, ValueError) as error:
         raise UpstreamUnavailable(f"{what} unreachable ({type(error).__name__})") from None

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -24,6 +25,8 @@ from ax_workspace.platform.persistence import (
     ExternalMessageRecord,
     ExternalRoomRecord,
 )
+
+logger = logging.getLogger(__name__)
 
 #: 한 번 저장에서 낱낱이 알리는 새 메시지 상한. 넘으면(메우기 등) 연동 변경 한 건으로 묶는다 — 8000바이트 NOTIFY 를
 #: 수백 번 내지 않는다. 화면은 어차피 API 로 다시 읽는다.
@@ -337,6 +340,7 @@ class SqlAlchemyExternalChannelsSyncStore:
             if row is None or row.removed_at is not None or row.status == "disconnected":
                 return
             now = self._clock()
+            logger.warning("external integration %s (%s) marked disconnected: %s", row.id, row.kind, reason)
             row.status = "disconnected"
             row.disconnected_reason = reason[:40]
             row.disconnected_at = now

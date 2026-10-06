@@ -9,7 +9,9 @@ from datetime import UTC, datetime, timedelta
 from email import message_from_bytes
 from email.policy import default as default_policy
 import hashlib
+import io
 import json
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -288,7 +290,9 @@ def test_mail_body_is_a_sanitized_copy_and_the_raw_stays(tmp_path) -> None:
     assert response.status_code == 200, response.text
     view = response.json()
     safe = view["safe_html"]
-    for forbidden in ("<script", "steal()", "onclick", "onload", "<form", "<iframe", "<object", "javascript:", "<style", "<input"):
+    # `<style>` 은 소독한 채 남는다(BE 수정 판 5 — 뉴스레터 레이아웃) — 원격을 부르는 CSS 는 없다.
+    assert "<style>p{color:red}</style>" in safe
+    for forbidden in ("<script", "steal()", "onclick", "onload", "<form", "<iframe", "<object", "javascript:", "@import", "<input"):
         assert forbidden not in safe, forbidden
     assert safe.startswith('<meta http-equiv="Content-Security-Policy"')
     assert '<img src="https://tracker.example' not in safe and 'data-ax-remote-src="https://tracker.example/pixel.gif"' in safe
@@ -648,3 +652,88 @@ def test_inbox_stream_refuses_a_cross_site_origin(tmp_path) -> None:
     assert closed.value.code == 4403
     with client.websocket_connect("/api/inbox/stream", headers={**MINA, "Origin": "http://localhost:5173"}) as stream:
         assert stream.receive_json() == {"type": "ready"}
+
+
+# ── BE 수정 판 4 — 멀쩡한 토큰이 조용히 끊기지 않는다 ─────────────────────────────────────────────
+
+
+def test_a_forbidden_slack_file_does_not_disconnect_the_integration(tmp_path, monkeypatch, caplog) -> None:
+    """결함 2 의 실물 경로 — `files:read` 없는 토큰으로 파일 주소를 받으면 403 이다. 그 첨부만 실패(502)이고 연동은 그대로."""
+    from urllib import error as urlerror
+
+    from ax_workspace.platform.external_inbox_upstream import SlackInboxApi
+
+    client, app, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    real = SlackInboxApi()
+
+    def forbidden(request, timeout):
+        raise urlerror.HTTPError(request.full_url, 403, "Forbidden", {}, io.BytesIO(b"<html>"))
+
+    monkeypatch.setattr("ax_workspace.platform.external_inbox_upstream.urlrequest.urlopen", forbidden)
+    fakes["slack"].download = real.download  # 실제 분류 코드를 지난다
+    response = client.get(f"/api/inbox/rooms/{ids['channel']}/attachments/slack-aid-1", headers=MINA)
+    assert response.status_code == 502 and response.json()["detail"]["reason"] == "forbidden"
+    slack = next(row for row in client.get("/api/integrations", headers=MINA).json() if row["kind"] == "slack")
+    assert slack["status"] == "connected"
+
+
+def test_missing_scope_is_one_failed_call_but_a_dead_token_disconnects_loudly(tmp_path, monkeypatch, caplog) -> None:
+    from ax_workspace.platform.external_inbox_upstream import SlackInboxApi
+
+    answers = iter([{"ok": False, "error": "missing_scope"}, {"ok": False, "error": "token_revoked"}])
+    monkeypatch.setattr("ax_workspace.platform.external_inbox_upstream._json", lambda request, timeout: next(answers))
+    api = SlackInboxApi()
+    with pytest.raises(UpstreamFailed) as one_call:
+        api.file_info("xoxp-x", "F1")
+    assert one_call.value.code == "missing_scope" and not isinstance(one_call.value, UpstreamUnauthorized)
+    with pytest.raises(UpstreamUnauthorized):
+        api.file_info("xoxp-x", "F1")
+
+    client, app, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    fakes["slack"].download = lambda token, link: (_ for _ in ()).throw(UpstreamUnauthorized("token_revoked"))
+    with caplog.at_level("WARNING"):
+        assert client.get(f"/api/inbox/rooms/{ids['channel']}/attachments/slack-aid-1", headers=MINA).status_code == 409
+    assert any("disconnects slack integration" in record.getMessage() for record in caplog.records)  # 조용히 끊지 않는다
+
+
+# ── BE 수정 판 5 — 배경 이미지도 프록시로 · 읽음 겹침이 500 이 아니다 ─────────────────────────────
+
+
+def test_background_images_reach_the_proxy_and_old_safe_copies_are_rebuilt(tmp_path) -> None:
+    client, _, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    banner = ('<html><head><style>.w{width:100%}</style></head><body bgcolor="#F2F6F9">'
+              '<table background="https://img.example/banner.jpg" width="756"><tr>'
+              '<td style="background-image:url(https://img.example/button.png);width:200px">구독</td></tr></table></body></html>')
+    with sessions() as session:
+        record = session.get(ExternalMessageRecord, UUID(ids["mails"][1]))
+        record.raw = gmail_raw(record.external_key, html=banner)
+        record.safe_html = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'\">옛 판 안전본"  # 판 1 캐시
+        session.commit()
+    safe = client.get(f"/api/inbox/mail/{ids['mails'][1]}", headers=MINA).json()["safe_html"]
+    assert "옛 판 안전본" not in safe and "<style>" in safe and "background-color:#F2F6F9" in safe
+    proxy = f"/api/inbox/mail/{ids['mails'][1]}/remote-image"
+    for target in ("https://img.example/banner.jpg", "https://img.example/button.png"):
+        assert f"{proxy}?u={quote(target, safe='')}" in safe
+        assert client.get(proxy, headers=MINA, params={"u": target}).status_code == 200
+    assert fakes["images"].fetched[-2:] == ["https://img.example/banner.jpg", "https://img.example/button.png"]
+    assert client.get(proxy, headers=MINA, params={"u": "https://img.example/not-in-this-mail.png"}).status_code == 400
+
+
+def test_overlapping_read_marks_do_not_fail(tmp_path) -> None:
+    """화면이 같은 메일 읽음을 겹쳐 보낸다 — 진 쪽은 유니크 위반 대신 「이미 읽음」(예전엔 500)."""
+    from ax_workspace.platform.external_channels_inbox_store import SqlAlchemyInboxStore
+
+    client, _, _, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    message_id = UUID(ids["mails"][1])
+    assert client.post(f"/api/inbox/mail/{message_id}/read", headers=MINA).status_code == 204
+    with sessions() as session:
+        store = SqlAlchemyInboxStore(session)
+        session.scalar = lambda *args, **kwargs: None  # 앞선 요청의 행을 아직 못 본 겹친 요청
+        store.mark_message_read("mina", message_id, datetime.now(UTC))
+        session.commit()
+    assert client.post(f"/api/inbox/mail/{message_id}/read", headers=MINA).status_code == 204
+    assert client.post("/api/inbox/read-all", headers=MINA).status_code == 204
