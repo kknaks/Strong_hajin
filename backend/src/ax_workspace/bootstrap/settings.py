@@ -37,6 +37,15 @@ def _tool_registry(raw: str | None) -> tuple[str, ...]:
     return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
+def _credential(raw: str | None) -> str:
+    """OAuth client 값 — 앞뒤 공백·줄바꿈과 **둘러싼 따옴표**를 걷는다. 로컬은 셸이 `. env` 로 따옴표를 벗기지만
+    k8s `--from-env-file`·Secret 은 따옴표·끝 줄바꿈을 그대로 실어 같은 파일에서 다른 값이 된다(운영 bad_client_secret 대비)."""
+    value = (raw or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1].strip()
+    return value
+
+
 def _origin(raw: str, name: str) -> str:
     origin = raw.strip().rstrip("/")
     parsed = urlsplit(origin)
@@ -213,14 +222,14 @@ class Settings:
             room_booking_company_id=int(os.getenv("TDL_COMPANY_ID", str(DEFAULT_ROOM_BOOKING_COMPANY_ID))),
             room_booking_notify=_flag(os.getenv("TDL_NOTIFY")),
             room_booking_timeout_seconds=float(os.getenv("TDL_HTTP_TIMEOUT_SECONDS", "20.0")),
-            google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""),
-            google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+            google_oauth_client_id=_credential(os.getenv("GOOGLE_OAUTH_CLIENT_ID")),
+            google_oauth_client_secret=_credential(os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")),
             gmail_pubsub_topic=os.getenv("GMAIL_PUBSUB_TOPIC", ""),
             gmail_pubsub_subscription=os.getenv("GMAIL_PUBSUB_SUBSCRIPTION", ""),
             google_pubsub_sa_key_file=os.getenv("GOOGLE_PUBSUB_SA_KEY_FILE", ""),
-            slack_client_id=os.getenv("SLACK_CLIENT_ID", ""),
-            slack_client_secret=os.getenv("SLACK_CLIENT_SECRET", ""),
-            slack_app_token=os.getenv("SLACK_APP_TOKEN", ""),
+            slack_client_id=_credential(os.getenv("SLACK_CLIENT_ID")),
+            slack_client_secret=_credential(os.getenv("SLACK_CLIENT_SECRET")),
+            slack_app_token=_credential(os.getenv("SLACK_APP_TOKEN")),
             external_token_encryption_key=os.getenv("AX_EXTERNAL_TOKEN_ENCRYPTION_KEY", ""),
             external_channel_storage_dir=os.getenv("AX_EXTERNAL_CHANNEL_STORAGE_DIR", ".scax/external-channels"),
             api_origin=os.getenv("AX_API_ORIGIN", ""),

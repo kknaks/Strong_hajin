@@ -552,3 +552,54 @@ def test_a_slack_app_with_token_rotation_fails_the_connection(tmp_path, monkeypa
     response = client.get("/api/integrations/slack/callback", params={"code": "c", "state": state})
     assert response.headers["location"].endswith("connect=error")
     assert client.get("/api/integrations", headers=MINA).json() == []
+
+
+# ── 운영 bad_client_secret (BE 수정 판 7) ─────────────────────────────────────────────────────
+
+
+def test_slack_token_exchange_sends_the_standard_form_with_the_authorize_redirect(tmp_path, monkeypatch, caplog) -> None:
+    """교환 = `oauth.v2.access` POST form(code·client_id·client_secret·redirect_uri) · redirect_uri 는 동의 URL 과 같은 값.
+    슬랙이 비밀값을 거절하면 무엇을 확인할지 로그에 남긴다 — 비밀값 원문은 남기지 않는다."""
+    from urllib.parse import parse_qs
+
+    client, *_ = _stack(tmp_path, providers=False, slack_client_id="1234567.890", slack_client_secret="s3cr3t-value-0000")
+    sent: list = []
+
+    class Answer(io.BytesIO):
+        headers: dict = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def urlopen(request, timeout):
+        sent.append((request.full_url, request.get_method(), request.headers, parse_qs(request.data.decode())))
+        return Answer(json.dumps({"ok": False, "error": "bad_client_secret"}).encode())
+
+    monkeypatch.setattr("ax_workspace.platform.external_oauth.urlrequest.urlopen", urlopen)
+    started = client.post("/api/integrations/slack/connect", headers=MINA).json()
+    authorize_redirect = parse_qs(urlsplit(started["authorize_url"]).query)["redirect_uri"][0]
+    with caplog.at_level("WARNING"):
+        response = client.get("/api/integrations/slack/callback", params={"code": "real-code", "state": started["state"]})
+    assert response.headers["location"].endswith("connect=error")
+    [(url, method, headers, form)] = sent
+    assert (url, method) == ("https://slack.com/api/oauth.v2.access", "POST")
+    assert headers["Content-type"] == "application/x-www-form-urlencoded"
+    assert form == {"code": ["real-code"], "client_id": ["1234567.890"], "client_secret": ["s3cr3t-value-0000"],
+                    "redirect_uri": [authorize_redirect]}
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "bad_client_secret" in logged and "Client Secret" in logged and "client_id=123456" in logged
+    assert "s3cr3t-value-0000" not in logged  # 원문은 어디에도 없다 — 지문(sha256 앞 8자)만
+
+
+def test_oauth_credentials_from_k8s_style_env_are_unquoted_and_trimmed(monkeypatch) -> None:
+    """k8s `--from-env-file`·Secret 은 따옴표·끝 줄바꿈을 그대로 싣는다 — 같은 파일이 운영에서 다른 값이 되지 않게."""
+    monkeypatch.setenv("SLACK_CLIENT_ID", ' "1234567.890" ')
+    monkeypatch.setenv("SLACK_CLIENT_SECRET", "abc123\n")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "'xapp-1-x'")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", '"g-secret"\r\n')
+    settings = Settings.from_environment()
+    assert settings.slack_client_id == "1234567.890" and settings.slack_client_secret == "abc123"
+    assert settings.slack_app_token == "xapp-1-x" and settings.google_oauth_client_secret == "g-secret"

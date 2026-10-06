@@ -118,4 +118,26 @@ mod live_tests {
         );
         assert!(summary.rooms >= 1, "서버가 고른 방이 없다 — 방 고르기가 안 됐다");
     }
+
+    /// **운영 재현** — 기기 토큰을 키체인에 넣고 **수집기 스레드**(= 운영 앱이 도는 경로: load→collect_once
+    /// →handshake)를 띄워 로그로 어디서 막히는지 본다. 운영 키체인 항목을 덮어썼다가 끝에 지운다.
+    /// `KAKAO_API_ORIGIN=… KAKAO_DEVICE_TOKEN=axdt_… cargo test … kakao_live_collector_thread`
+    #[test]
+    #[ignore = "실기기+API 전용 — 키체인을 덮어쓴다"]
+    fn kakao_live_collector_thread() {
+        let base = std::env::var("KAKAO_API_ORIGIN").expect("KAKAO_API_ORIGIN");
+        let token = std::env::var("KAKAO_DEVICE_TOKEN").expect("KAKAO_DEVICE_TOKEN");
+        keychain::store(&token).expect("키체인 store");
+        println!("[kakao] 키체인 load 재확인 = {:?}", keychain::load().map(|t| t[..t.len().min(10)].to_string()));
+        let shared = collector::spawn(base);
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        let s = shared.snapshot();
+        shared.stop();
+        keychain::clear();
+        println!(
+            "[kakao] === 스레드 스냅샷 === logged_in={} kakao_state={} reason={:?} version={} msgs={} atts={} err={:?}",
+            s.logged_in, s.kakao_state, s.reason, s.selected_rooms_version, s.uploaded_messages, s.uploaded_attachments, s.last_error
+        );
+        assert!(s.logged_in, "스레드가 토큰을 못 읽었다(load None)");
+    }
 }

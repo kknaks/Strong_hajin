@@ -41,3 +41,32 @@ pub fn clear() {
         let _ = e.delete_credential();
     }
 }
+
+#[cfg(test)]
+mod live {
+    //! keyring 왕복을 **같은 바이너리**에서 재현한다(= 운영 앱이 한 번 실행 안에서 store→load 하는 결).
+    //! 운영 키체인 항목은 건드리지 않게 **별도 서비스 이름**을 쓴다. 실기 전용이라 ignore.
+    use keyring::Entry;
+
+    #[test]
+    #[ignore = "실기기 전용 — 로그인 키체인 접근"]
+    fn keyring_round_trip() {
+        let e = Entry::new("app.ax.desktop.kakao-collector.selftest", "device-token")
+            .expect("엔트리");
+        e.set_password("axdt_selftest_value").expect("set_password");
+        let got = e.get_password();
+        println!("[keychain] round-trip got = {got:?}");
+        assert_eq!(got.ok().as_deref(), Some("axdt_selftest_value"), "keyring 왕복 실패");
+        let _ = e.delete_credential();
+    }
+
+    /// 운영 앱이 넣어 둔 실제 토큰을 **이 바이너리가 읽을 수 있나** — 서명/ACL 차이를 본다(읽기 전용).
+    #[test]
+    #[ignore = "실기기 전용 — 운영 키체인 항목 읽기(프롬프트 가능)"]
+    fn read_production_token() {
+        match super::load() {
+            Some(t) => println!("[keychain] 운영 토큰 load OK — {}…", &t[..t.len().min(10)]),
+            None => println!("[keychain] 운영 토큰 load NONE"),
+        }
+    }
+}

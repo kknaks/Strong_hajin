@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 import logging
 from typing import Any
@@ -161,6 +162,15 @@ class SlackUserOAuth:
             code_name = answer.get("error")
             reason = f"slack refused ({code_name if isinstance(code_name, str) else 'unknown'})"
             logger.warning("external oauth call to slack.com failed: %s", reason)
+            if code_name in {"bad_client_secret", "invalid_client_id"}:
+                # 슬랙은 **진짜 code 가 왔을 때만** 비밀값을 본다 — 가짜 code 로는 비밀값이 틀려도 invalid_code 다(판 7 실측).
+                # 그래서 이 오류가 곧 「env 의 값이 이 앱의 Client Secret 이 아니다」라는 유일한 증거다. 비교에 쓸 지문만 남긴다.
+                logger.error(
+                    "slack oauth credentials rejected (%s): client_id=%s… secret_sha256=%s… len=%d — "
+                    "SLACK_CLIENT_SECRET must be the app's *Client Secret* (Basic Information → App Credentials), "
+                    "not the Signing Secret or Verification Token; re-copy it if the secret was regenerated",
+                    code_name, self._client_id[:6], hashlib.sha256(self._client_secret.encode()).hexdigest()[:8], len(self._client_secret),
+                )
             raise OAuthExchangeFailed(reason)
         user = answer.get("authed_user") or {}
         team = answer.get("team") or {}
