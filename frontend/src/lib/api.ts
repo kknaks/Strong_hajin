@@ -58,6 +58,14 @@ import type {
   ProjectParticipation,
   WorkRequestMaterial,
   WorkRequestReadReceipt,
+  DeviceToken,
+  InboxMail,
+  InboxPage,
+  InboxRoomPage,
+  InboxSource,
+  Integration,
+  IntegrationRoom,
+  SlackAvailableRoom,
 } from "./viewModels";
 
 type ApiErrorBody = {
@@ -1508,4 +1516,207 @@ export async function updateTaskSchedule(
  */
 export async function listMeetingsInRange(from: string, to: string): Promise<MeetingRow[]> {
   return request<MeetingRow[]>(`/api/meetings?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+}
+
+/* ---- 외부 채널 연동 · 메시지함 · 프로필 (SPEC-008 §4 · WORK-011 FE-a·FE-b) ----
+ *
+ * 경로·요청·응답은 SPEC-008 §4.2·4.3·4.4·4.7 그대로다. 카톡 수집기 라우트(§4.6)는 **기기 토큰** 전용이라
+ * 웹이 부르지 않는다 — 여기에 없다.
+ */
+
+/** 여러 갈래(글자 + 파일 여럿)를 multipart 로 보낸다 — `request` 는 JSON 머리를 박으므로 따로 둔다. */
+async function sendForm<T>(path: string, form: FormData, init: { method?: string; headers?: Record<string, string> } = {}): Promise<T> {
+  const response = await fetch(path, { body: form, credentials: "same-origin", headers: init.headers, method: init.method ?? "POST" });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    const detail = typeof error.detail === "string" ? error.detail : response.statusText;
+    throw new ApiError(response.status, detail, error.detail);
+  }
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
+
+/** 연결 시작·다시 연결의 응답 — 서버가 회원에 묶은 일회용 `state` 를 박은 **동의 URL**(F-2). 302 가 아니다. */
+export type ConnectStart = { authorize_url: string; state: string };
+
+export async function listIntegrations(): Promise<Integration[]> {
+  return request<Integration[]>("/api/integrations");
+}
+
+/** 메일은 계정 여럿이라 409 가 없다(N-1). 슬랙은 이미 연결됐으면 409. */
+export async function startIntegrationConnect(kind: "mail" | "slack"): Promise<ConnectStart> {
+  return request<ConnectStart>(`/api/integrations/${kind}/connect`, { method: "POST" });
+}
+
+export async function reconnectIntegration(integrationId: string): Promise<ConnectStart> {
+  return request<ConnectStart>(`/api/integrations/${encodeURIComponent(integrationId)}/reconnect`, { method: "POST" });
+}
+
+/** 소프트 딜리트(D-27) — 화면에서만 사라지고 다시 연결하면 되살아난다(D-46). */
+export async function disconnectIntegration(integrationId: string): Promise<void> {
+  await request<void>(`/api/integrations/${encodeURIComponent(integrationId)}/disconnect`, { method: "POST" });
+}
+
+/** 고른 방(= 수집 방) — 슬랙·카톡 모두 **서버 정본**이라 브라우저에서도 보인다(N-7). */
+export async function listIntegrationRooms(integrationId: string): Promise<IntegrationRoom[]> {
+  return request<IntegrationRoom[]>(`/api/integrations/${encodeURIComponent(integrationId)}/rooms`);
+}
+
+/** 슬랙 방 고르기 창 — 서버가 사용자 토큰으로 그때 조회한다(그룹 DM 은 참여자 실명, D-12). 끊겼으면 409. */
+export async function listSlackAvailableRooms(
+  query = "",
+  cursor?: string | null,
+): Promise<{ rooms: SlackAvailableRoom[]; next_cursor: string | null }> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("q", query.trim());
+  if (cursor) params.set("cursor", cursor);
+  const tail = params.toString();
+  return request(`/api/integrations/slack/available-rooms${tail ? `?${tail}` : ""}`);
+}
+
+/** 고른 방 겉 정보 — 카톡 방 «목록»은 서버가 모르므로(R-F1) 고른 쪽이 함께 보낸다. */
+export type IntegrationRoomDetail = {
+  room_id: string;
+  type?: string | null;
+  name?: string | null;
+  member_count?: number | null;
+  is_bot?: boolean | null;
+};
+
+/** 방 추가(202) — 고른 방이 `backfilling` → `live`. `roomIds` 는 슬랙 channel id · 카톡 chatId(외부 id)다. */
+export async function addIntegrationRooms(integrationId: string, roomIds: string[], rooms: IntegrationRoomDetail[] = []): Promise<void> {
+  await request<void>(`/api/integrations/${encodeURIComponent(integrationId)}/rooms`, {
+    body: JSON.stringify(rooms.length ? { room_ids: roomIds, rooms } : { room_ids: roomIds }),
+    method: "POST",
+  });
+}
+
+export async function removeIntegrationRoom(integrationId: string, roomId: string): Promise<void> {
+  await request<void>(`/api/integrations/${encodeURIComponent(integrationId)}/rooms/${encodeURIComponent(roomId)}`, { method: "DELETE" });
+}
+
+/** 카톡 계정이 바뀐 뒤 「다시 연결」 — 웹 세션 라우트다(★2). 옛 계정의 방·대화는 소프트 딜리트로 남는다. */
+export async function resetKakaoAccount(): Promise<void> {
+  await request<void>("/api/integrations/kakao/reset-account", { method: "POST" });
+}
+
+/**
+ * 장수명 기기 토큰 발급 — **원문은 이 응답에서만** 온다(서버는 해시만). 부르는 쪽은 받자마자 데스크톱 셸의
+ * `kakao_store_device_token` 으로 넘기고 **화면·저장소에 남기지 않는다**(P-5). 새 발급은 옛 토큰을 철회한다(D-45).
+ */
+export async function issueDeviceToken(deviceName: string): Promise<{ token: string }> {
+  return request<{ token: string }>("/api/device-tokens", { body: JSON.stringify({ device_name: deviceName }), method: "POST" });
+}
+
+export async function listDeviceTokens(): Promise<DeviceToken[]> {
+  return request<DeviceToken[]>("/api/device-tokens");
+}
+
+export async function revokeDeviceToken(tokenId: string): Promise<void> {
+  await request<void>(`/api/device-tokens/${encodeURIComponent(tokenId)}`, { method: "DELETE" });
+}
+
+/** 메시지함 목록 — 메일은 한 통 = 카드 하나, 슬랙·카톡은 방 하나 = 카드 하나(D-08). 최신순. */
+export async function listInbox(input: { source?: InboxSource; unread?: boolean; cursor?: string | null } = {}): Promise<InboxPage> {
+  const params = new URLSearchParams();
+  if (input.source && input.source !== "all") params.set("source", input.source);
+  if (input.unread) params.set("unread", "true");
+  if (input.cursor) params.set("cursor", input.cursor);
+  const tail = params.toString();
+  return request<InboxPage>(`/api/inbox/messages${tail ? `?${tail}` : ""}`);
+}
+
+/** 메일 원문 — 머리 표 + **소독한 안전본 HTML**(F-3) + 첨부 메타 + 우리가 보낸 답장. */
+export async function getInboxMail(messageId: string): Promise<InboxMail> {
+  return request<InboxMail>(`/api/inbox/mail/${encodeURIComponent(messageId)}`);
+}
+
+/** 방 메시지 — 기본 최신 N, `cursor` 로 위(과거)로. `threadTs` 를 주면 그 스레드의 답글. */
+export async function getInboxRoomMessages(roomId: string, input: { cursor?: string | null; threadTs?: string | null } = {}): Promise<InboxRoomPage> {
+  const params = new URLSearchParams();
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.threadTs) params.set("thread_ts", input.threadTs);
+  const tail = params.toString();
+  return request<InboxRoomPage>(`/api/inbox/rooms/${encodeURIComponent(roomId)}/messages${tail ? `?${tail}` : ""}`);
+}
+
+export async function markInboxMailRead(messageId: string): Promise<void> {
+  await request<void>(`/api/inbox/mail/${encodeURIComponent(messageId)}/read`, { method: "POST" });
+}
+
+/** 그 방을 `upTo`(메시지 key = 슬랙 ts · 카톡 logId)까지 읽음. 뒤로 가지 않는다. */
+export async function markInboxRoomRead(roomId: string, upTo: string): Promise<void> {
+  await request<void>(`/api/inbox/rooms/${encodeURIComponent(roomId)}/read`, { body: JSON.stringify({ up_to_ts: upTo }), method: "POST" });
+}
+
+/** 모두 읽음 — 출처를 주면 그 출처만. */
+export async function markInboxAllRead(source: InboxSource = "all"): Promise<void> {
+  await request<void>(`/api/inbox/read-all${source !== "all" ? `?source=${source}` : ""}`, { method: "POST" });
+}
+
+/** 첨부 받기 — 메일·슬랙은 그때 서버가 그 사람 토큰으로 중계(저장 안 함), 카톡은 저장본. 만료=410. */
+export function inboxMailAttachmentUrl(messageId: string, aid: string): string {
+  return `/api/inbox/mail/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(aid)}`;
+}
+
+export function inboxRoomAttachmentUrl(roomId: string, aid: string): string {
+  return `/api/inbox/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(aid)}`;
+}
+
+/** 메일 본문의 원격 이미지 — 「이미지 보기」를 눌렀을 때만 **서버 프록시**로(추적 픽셀 차단 · N-5). */
+export function inboxRemoteImageUrl(messageId: string, url: string): string {
+  return `/api/inbox/mail/${encodeURIComponent(messageId)}/remote-image?u=${encodeURIComponent(url)}`;
+}
+
+/**
+ * 슬랙 답장(채널·스레드) — `202 {local_id}` 뒤 결과는 사용자 사건(`inbox.reply_result`)으로 온다(N-9).
+ * 「다시 보내기」는 **같은 `Idempotency-Key`** 로 보낸다 — 서버가 실패한 것만 다시 보낸다(AC-12).
+ */
+export async function replyToInboxRoom(
+  roomId: string,
+  input: { text: string; threadTs?: string | null; files: File[] },
+  idempotencyKey: string,
+): Promise<{ local_id: string }> {
+  const form = new FormData();
+  form.append("text", input.text);
+  if (input.threadTs) form.append("thread_ts", input.threadTs);
+  for (const file of input.files) form.append("files", file, file.name);
+  return sendForm(`/api/inbox/rooms/${encodeURIComponent(roomId)}/reply`, form, { headers: { "Idempotency-Key": idempotencyKey } });
+}
+
+/** 메일 답장·전체 답장 — 첨부 **합계** 25MB 초과는 413(W-11). 결과는 사용자 사건으로 온다. */
+export async function replyToInboxMail(
+  messageId: string,
+  input: { replyAll: boolean; body: string; to: string[]; cc: string[]; files: File[] },
+  idempotencyKey: string,
+): Promise<{ local_id: string }> {
+  const form = new FormData();
+  form.append("reply_all", input.replyAll ? "true" : "false");
+  form.append("body", input.body);
+  for (const address of input.to) form.append("to", address);
+  for (const address of input.cc) form.append("cc", address);
+  for (const file of input.files) form.append("files", file, file.name);
+  return sendForm(`/api/inbox/mail/${encodeURIComponent(messageId)}/reply`, form, { headers: { "Idempotency-Key": idempotencyKey } });
+}
+
+/** 사용자 사건 채널 — 새 메시지·답장 결과·연동 상태 변화가 밀려온다(회의 WS 와 다른 길 · N-6). */
+export function inboxStreamUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/inbox/stream`;
+}
+
+/** 프로필 이미지 — 고르면 **바로 저장**(즉시). 정사각형 1MB 이하 PNG·JPG. 초과 413 · 형식 415. */
+export async function uploadProfileImage(file: File): Promise<{ profile_image_url: string }> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return sendForm("/api/profile/image", form, { method: "PUT" });
+}
+
+export async function deleteProfileImage(): Promise<void> {
+  await request<void>("/api/profile/image", { method: "DELETE" });
+}
+
+/** 비밀번호 변경 — 현재 틀림 401 · 규칙 위반 422. 성공하면 다른 기기의 로그인·기기 토큰이 모두 풀린다. */
+export async function changePassword(current: string, next: string): Promise<void> {
+  await request<void>("/api/profile/password", { body: JSON.stringify({ current, new: next }), method: "POST" });
 }

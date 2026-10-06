@@ -37,8 +37,10 @@ describe("assistant character preference", () => {
     expect(container.querySelector(".scax-agent--ax [data-character-key]")?.getAttribute("data-character-key"))
       .toBe("red-panda");
 
+    // 캐릭터 고르기는 설정 › 프로필 설정으로 옮겨 왔다(WORK-011 FE-b · D-48)
     fireEvent.click(screen.getByRole("button", { name: "설정" }));
-    const picker = screen.getByRole("dialog", { name: "내 AX 캐릭터" });
+    fireEvent.click(await screen.findByRole("button", { name: "프로필 설정" }));
+    const picker = await screen.findByRole("region", { name: "AX 캐릭터" });
     fireEvent.click(within(picker).getByRole("radio", { name: /토끼/ }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -74,8 +76,11 @@ describe("assistant character preference", () => {
     expect(container.querySelector(".scax-agent--ax [data-character-key]")?.getAttribute("data-character-key"))
       .toBe("cream-cat");
 
-    fireEvent.click(screen.getByRole("button", { name: "내 AX 캐릭터" }));
-    const picker = screen.getByRole("dialog", { name: "내 AX 캐릭터" });
+    // 예전 진입점(신원 줄 · 설정 줄의 모달)은 없다 — 프로필 설정이 유일한 자리다(W-14)
+    expect(screen.queryByRole("button", { name: "내 AX 캐릭터" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "설정" }));
+    fireEvent.click(await screen.findByRole("button", { name: "프로필 설정" }));
+    const picker = await screen.findByRole("region", { name: "AX 캐릭터" });
     expect(within(picker).getByRole("status").textContent).toContain("저장값을 바꾸지 않습니다");
     fireEvent.click(within(picker).getByRole("radio", { name: /곰/ }));
 

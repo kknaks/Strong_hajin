@@ -37,8 +37,8 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   for (const c of ["scax-app-shell", "scax-app-main", "scax-side-nav", "scax-page-header", "scax-page-body", "scax-page-body__content"]) {
     expect(container.querySelector(`.${c}`), c).not.toBeNull();
   }
-  // 신원·접기·로고
-  expect(screen.getByRole("button", { name: "내 AX 캐릭터" })).toBeTruthy();
+  // 신원·접기·로고 — 신원 줄은 이제 누를 수 없다: 「내 AX 캐릭터」 모달 진입점은 프로필 설정으로 옮겨 없앴다(W-14)
+  expect(screen.queryByRole("button", { name: "내 AX 캐릭터" })).toBeNull();
   expect(screen.getByRole("button", { name: "메뉴 접기" })).toBeTruthy();
   expect(container.querySelector(".scax-side-nav__logo")?.textContent).toBe("MEDISOLVE");
   /* 아바타 URL 이 없으니 **`<img>` 는 안 그린다** — 없는 주소를 넣으면 깨진 이미지가 뜬다.
@@ -50,10 +50,10 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   expect(container.querySelector(".scax-side-nav__version")).toBeNull();
 
   const nav = within(screen.getByRole("navigation", { name: "제품 탐색" }));
-  const surfaces = ["홈", "업무", "캘린더", "프로젝트", "회의", "조직", "보고", "관계 탐색"];
+  const surfaces = ["홈", "업무", "캘린더", "프로젝트", "회의", "메시지함", "조직", "보고", "관계 탐색"];
   for (const label of surfaces) expect(nav.getByRole("button", { name: label }), label).toBeTruthy();
   expect(Array.from(container.querySelectorAll(".scax-nav-item")).map((item) => item.textContent)).toEqual(
-    ["알림", "설정", "홈", "업무", "캘린더", "프로젝트", "자료함", "회의", "조직", "보고", "관계 탐색"],
+    ["알림", "설정", "홈", "업무", "캘린더", "프로젝트", "자료함", "회의", "메시지함", "조직", "보고", "관계 탐색"],
   );
   expect(nav.getByRole("button", { name: "자료함" }).hasAttribute("disabled")).toBe(true);
   // 시안에만 있는 메뉴는 만들지 않았다
@@ -66,11 +66,11 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   expect(notifications.hasAttribute("disabled")).toBe(true);
   const settingsRow = nav.getByRole("button", { name: "설정" });
   expect(settingsRow.hasAttribute("disabled")).toBe(false);
-  // 설정은 화면 전환이 아니다 — 누르면 지금 쓰던 설정(내 AX 캐릭터)이 열린다
+  /* 설정은 이제 **화면이다**(WORK-011 FE-b) — 모달이 아니다. 좌 레일에 설정 메뉴가 서고 머리 제목은 고른 메뉴 이름이다. */
   fireEvent.click(settingsRow);
-  const picker = await screen.findByRole("dialog", { name: "내 AX 캐릭터" });
-  fireEvent.click(within(picker).getByRole("button", { name: "캐릭터 선택 닫기" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "내 AX 캐릭터" })).toBeNull());
+  expect(await screen.findByRole("region", { name: "설정 메뉴" })).toBeTruthy();
+  expect(container.querySelector(".scax-page-header__title")?.textContent).toBe("메일 연동");
+  expect(screen.queryByRole("dialog", { name: "내 AX 캐릭터" })).toBeNull();
 
   /* 접기 — 시안 31 의 머리 오른쪽 단추다. 접어도 «갈 수 있어야» 한다: 라벨이 사라져도
      글리프 단추의 접근성 이름은 남고, 눌러서 화면이 바뀐다. 알림은 접혀서도 여전히 못 누른다. */
@@ -93,7 +93,7 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
        바깥이 함께 스크롤하면 스크롤 주인이 둘이 되어 격자가 잘린다.
        WORK-005 FE-1: 프로젝트도 같은 편에 섰다 — 좌·우 레일과 본문(요약 스트립 + 진행 라인)이
        칸을 꽉 채우고 `.scax-pj-view` 가 «자기 안에서» 스크롤한다. 나머지 화면은 그대로 문서형이다. */
-    const fixed = label === "회의" || label === "캘린더" || label === "프로젝트";
+    const fixed = label === "회의" || label === "캘린더" || label === "프로젝트" || label === "메시지함";
     expect(scroll.classList.contains("scax-page-scroll--fixed"), `${label} fixed`).toBe(fixed);
     expect(scroll.children.length, `${label} 내용이 기둥 안에 있다`).toBeGreaterThan(0);
     // 스크롤 기둥은 본문 칸의 «직계 자식» 이어야 높이를 나눠 받는다

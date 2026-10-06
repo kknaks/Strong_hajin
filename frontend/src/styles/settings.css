@@ -1,0 +1,197 @@
+/* 설정 (WORK-011 FE-b · SPEC-008 §2.3~2.6) — 확정 시안 handoff/settings/css/settings.css 를 옮겼다.
+ * 원본에서 뺀 것은 시안 전용 상태 토글(`.scax-set-dev`) 한 줄뿐이다. 값은 그대로다.
+ */
+
+/* 좌 레일 — 설정 메뉴 (자료 트리 줄과 같은 규칙) */
+.scax-set-nav{display:flex;flex-direction:column;gap:var(--scax-space-050)}
+.scax-set-nav__group+.scax-set-nav__group{margin-top:var(--scax-space-400)}
+.scax-set-nav__caption{margin:0 0 var(--scax-space-150);padding:0 var(--scax-space-300);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-assistive)}
+.scax-set-nav__item{display:flex;align-items:center;gap:var(--scax-space-200);width:100%;min-height:32px;padding:var(--scax-space-150) var(--scax-space-300);border:0;border-radius:var(--scax-radius-md);background:none;text-align:left;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);color:var(--scax-color-ink);cursor:pointer}
+.scax-set-nav__item:hover{background:var(--scax-color-fill-weak)}
+.scax-set-nav__item:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-set-nav__item--on{background:var(--scax-color-accent-08);color:var(--scax-color-ink-strong);font-weight:var(--scax-fw-semibold)}
+.scax-set-nav__label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scax-set-nav__tail{flex:0 0 auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);font-weight:var(--scax-fw-regular);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+
+/* 본문 — `.scax-pj-view` 와 같은 여백·간격 */
+.scax-set-view{display:flex;flex-direction:column;gap:var(--scax-space-500);flex:1 1 auto;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow-y:auto}
+.scax-set-view__intro{max-width:760px;margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive);text-wrap:pretty}
+
+/* 섹션 상자 — `.scax-pj-gantt` 와 같은 상자 */
+.scax-set-card{display:flex;flex-direction:column;gap:var(--scax-space-400);flex:0 0 auto;padding:var(--scax-space-500);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-2xl);background:var(--scax-color-surface)}
+.scax-set-card__head{display:flex;align-items:baseline;gap:var(--scax-space-300)}
+.scax-set-card__title{margin:0;flex:1 1 auto;min-width:0;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);letter-spacing:var(--scax-text-body1-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-set-card__legend{flex:0 0 auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-set-card__end{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto}
+.scax-set-card__note{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive);text-wrap:pretty}
+
+/* 적재 상태 — `.scax-pj-summary` 와 같은 셀 */
+.scax-set-sync{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:var(--scax-space-300)}
+.scax-set-sync__cell{display:flex;flex-direction:column;gap:var(--scax-space-150);padding:var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface)}
+.scax-set-sync__key{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-assistive)}
+.scax-set-sync__val{font-size:24px;line-height:32px;font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong);font-variant-numeric:tabular-nums}
+.scax-set-sync__cell--control{gap:var(--scax-space-200)}
+
+/* 연동 대상 행 — `.scax-pj-sub__row` 와 같은 상자 */
+.scax-set-list{display:flex;flex-direction:column;gap:var(--scax-space-200);margin:0;padding:0;list-style:none}
+.scax-set-row{display:flex;align-items:center;gap:var(--scax-space-300);padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface)}
+.scax-set-row__who{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-width:0}
+.scax-set-row__name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);letter-spacing:var(--scax-text-label1-ls);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-strong)}
+.scax-set-row__meta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-set-row__end{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto}
+.scax-set-row__dot{flex:0 0 auto;width:6px;height:6px;border-radius:var(--scax-radius-pill);background:var(--scax-color-accent)}
+.scax-set-row__dot--idle{background:var(--scax-color-line-strong)}
+
+/* 소제목 — 우 레일 블록 제목과 같은 급 */
+.scax-set-sub{display:flex;flex-direction:column;gap:var(--scax-space-250)}
+.scax-set-sub__title{display:flex;align-items:center;gap:var(--scax-space-150);margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-assistive)}
+
+.scax-set-add{display:flex;align-items:flex-end;gap:var(--scax-space-250);flex-wrap:wrap}
+.scax-set-add>.scax-field{flex:1 1 220px}
+
+/* 입력 — DS `.scax-field` 안에 서는 칸 (높이는 DS 컨트롤 md) */
+.scax-set-input{width:100%;height:var(--scax-control-height-md);padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);font:inherit;font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-strong)}
+.scax-set-input:focus{outline:0;border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-set-input::placeholder{color:var(--scax-color-ink-assistive)}
+
+/* 스위치 (알림 설정) */
+.scax-switch-row{display:flex;align-items:center;gap:var(--scax-space-400);min-height:44px}
+.scax-switch-row+.scax-switch-row{border-top:1px solid var(--scax-color-line-weak)}
+.scax-switch-row__who{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-width:0}
+.scax-switch{position:relative;flex:0 0 auto;width:40px;height:22px;padding:0;border:0;border-radius:var(--scax-radius-pill);background:var(--scax-color-line-strong);cursor:pointer;transition:background var(--scax-duration-fast) ease}
+.scax-switch--on{background:var(--scax-color-accent)}
+.scax-switch:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-switch__knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:var(--scax-radius-pill);background:var(--scax-color-surface);transition:transform var(--scax-duration-fast) ease}
+.scax-switch--on .scax-switch__knob{transform:translateX(18px)}
+
+/* 아바타 편집 */
+.scax-set-avatar{display:flex;align-items:center;gap:var(--scax-space-400)}
+.scax-set-avatar__img{width:64px;height:64px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
+.scax-set-avatar__side{display:flex;flex-direction:column;gap:var(--scax-space-200);min-width:0}
+.scax-set-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--scax-space-400);max-width:620px}
+.scax-set-form--row{grid-template-columns:minmax(0,.9fr) minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,.9fr);gap:var(--scax-space-300);max-width:none;align-items:end}
+.scax-set-form--pw{grid-template-columns:repeat(3,minmax(0,1fr));max-width:720px}
+.scax-set-form--one{grid-template-columns:minmax(0,300px)}
+.scax-set-foot{display:flex;align-items:center;gap:var(--scax-space-200);justify-content:flex-end}
+
+/* ===== 메일·슬랙 실시간 연동 (2026-10-06) ===== */
+
+/* 적재 상태 셋째 칸 — 수집 주기 Select 대신 「실시간」 */
+.scax-set-live{display:inline-flex;align-items:center;gap:var(--scax-space-200);font-size:24px;line-height:32px;font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-set-live__dot{width:8px;height:8px;border-radius:var(--scax-radius-pill);background:var(--scax-color-accent);box-shadow:0 0 0 4px var(--scax-color-accent-08)}
+.scax-set-live--paused{font-size:var(--scax-text-body1-size);line-height:32px;color:var(--scax-color-danger)}
+.scax-set-live--paused .scax-set-live__dot{background:var(--scax-color-danger);box-shadow:0 0 0 4px var(--scax-color-danger-soft)}
+
+/* 줄 오른쪽 상태 — 실시간 / 과거 채우는 중 / 연결 끊김 / 멈춤 */
+.scax-set-state{display:inline-flex;align-items:center;gap:var(--scax-space-150);white-space:nowrap;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);font-weight:var(--scax-fw-medium)}
+.scax-set-state__dot{width:6px;height:6px;border-radius:var(--scax-radius-pill);background:currentColor}
+.scax-set-state--live{color:var(--scax-color-accent)}
+.scax-set-state--backfill{color:var(--scax-color-progress-ink)}
+.scax-set-state--backfill .scax-set-state__dot{animation:scax-set-blink 1.2s ease-in-out infinite}
+.scax-set-state--broken{color:var(--scax-color-danger)}
+.scax-set-state--paused{color:var(--scax-color-ink-assistive)}
+@keyframes scax-set-blink{0%,100%{opacity:1}50%{opacity:.3}}
+.scax-set-link{padding:0;border:0;background:none;font:inherit;font-weight:var(--scax-fw-semibold);color:var(--scax-color-danger);text-decoration:underline;cursor:pointer}
+.scax-set-link:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* 줄 머리 표식 — Gmail · 워크스페이스 · 방 종류 */
+.scax-set-row__mark{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:28px;height:28px;border-radius:var(--scax-radius-md);background:var(--scax-color-fill-weak);font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-neutral)}
+.scax-set-row__mark--gmail{background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+.scax-set-row__mark--slack{background:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse)}
+.scax-set-row__mark--private{background:var(--scax-color-warning-soft);color:var(--scax-color-warning-ink)}
+.scax-set-row__mark--dm,.scax-set-row__mark--group{background:var(--scax-color-accent-08);color:var(--scax-color-accent)}
+.scax-set-row--broken{border-color:var(--scax-color-danger-soft);background:var(--scax-color-danger-soft)}
+
+/* 연결 전 — 설명 한 줄 + 연결 단추 */
+.scax-set-connect{display:flex;align-items:center;gap:var(--scax-space-400);flex-wrap:wrap}
+.scax-set-connect__desc{flex:1 1 320px;margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);color:var(--scax-color-ink-neutral);text-wrap:pretty}
+.scax-set-card__note--danger{color:var(--scax-color-danger)}
+.scax-set-foot--start{justify-content:flex-start}
+
+/* 확인 창 문구 */
+.scax-set-confirm{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding-left:var(--scax-space-500);list-style:disc;font-size:var(--scax-text-label1-size);line-height:1.62;color:var(--scax-color-ink-alt)}
+
+/* 방 고르기 창 */
+.scax-set-pick{height:min(640px, calc(100vh - var(--scax-space-1200)))}
+.scax-set-pick__tools{display:flex;flex-direction:column;gap:var(--scax-space-300);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600) var(--scax-space-200)}
+.scax-set-pick__tools .scax-textfield{min-height:40px}
+.scax-set-pick__tools .scax-textfield__input{height:auto;padding:0;border:0;border-radius:0;background:none;box-shadow:none}
+.scax-set-pick__tools .scax-segmented{align-self:flex-start}
+.scax-set-pick__body{gap:var(--scax-space-400);padding-top:var(--scax-space-200)}
+.scax-set-pick__group{display:flex;flex-direction:column;gap:var(--scax-space-100)}
+.scax-set-pick__caption{display:flex;align-items:center;gap:var(--scax-space-150);margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-assistive)}
+.scax-set-pick__count{font-weight:var(--scax-fw-regular);font-variant-numeric:tabular-nums}
+.scax-set-pick__list{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.scax-set-pick__row{display:flex;align-items:center;gap:var(--scax-space-300);min-height:44px;padding:0 var(--scax-space-250);border-radius:var(--scax-radius-md);cursor:pointer}
+.scax-set-pick__row:hover{background:var(--scax-color-fill-weak)}
+.scax-set-pick__row--on{background:var(--scax-color-accent-05)}
+.scax-set-pick__row--added{cursor:default}
+.scax-set-pick__row--added:hover{background:none}
+.scax-set-pick__row--added .scax-checkbox__input:checked+.scax-checkbox__box{border-color:var(--scax-color-line);background:var(--scax-color-fill-weak);color:var(--scax-color-ink-assistive);cursor:default}
+.scax-set-pick__name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);font-weight:var(--scax-fw-medium);color:var(--scax-color-ink-strong)}
+.scax-set-pick__meta{margin-left:auto;flex:0 0 auto;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-set-pick__added{flex:0 0 auto;padding:0 var(--scax-space-150);border-radius:var(--scax-radius-xs);background:var(--scax-color-fill-weak);font-size:var(--scax-text-caption2-size);line-height:20px;font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-alt)}
+.scax-set-pick__skel{padding:var(--scax-space-300) var(--scax-space-250)}
+.scax-set-pick__hint{margin-right:auto;align-self:center;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-set-app{flex:0 0 auto;padding:0 var(--scax-space-100);border-radius:var(--scax-radius-xs);background:var(--scax-color-fill-weak);font-size:var(--scax-text-caption2-size);line-height:18px;font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-alt)}
+
+
+/* ===== 프로필 설정 (2026-10-06 — 앞 판 「계정 설정」) ===== */
+
+/* 머리 — 조직 명부 값(읽기 전용) */
+.scax-set-me{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:var(--scax-space-500);row-gap:var(--scax-space-200);padding:var(--scax-space-500);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-2xl);background:var(--scax-color-surface-alt)}
+.scax-set-me__avatar{grid-row:1 / span 2;width:56px;height:56px;border-radius:var(--scax-radius-pill);object-fit:cover;background:var(--scax-color-fill-weak)}
+.scax-set-me__avatar--initial,.scax-set-avatar__initial{display:inline-flex;align-items:center;justify-content:center;background:var(--scax-color-accent-08);font-weight:var(--scax-fw-bold);color:var(--scax-color-accent)}
+.scax-set-me__avatar--initial{font-size:var(--scax-text-headline-size)}
+.scax-set-me__facts{display:flex;flex-wrap:wrap;gap:var(--scax-space-200) var(--scax-space-600);margin:0}
+.scax-set-me__facts>div{display:flex;flex-direction:column;gap:2px}
+.scax-set-me__facts dt{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-set-me__facts dd{margin:0;font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-set-me__note{margin:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+
+/* 프로필 이미지 — 원형 미리보기 + DS DropZone */
+.scax-set-avatar{align-items:flex-start;gap:var(--scax-space-500)}
+.scax-set-avatar__frame{position:relative;flex:0 0 auto;width:96px;height:96px;border-radius:var(--scax-radius-pill);overflow:hidden}
+.scax-set-avatar__frame .scax-set-avatar__img{width:96px;height:96px}
+.scax-set-avatar__initial{width:100%;height:100%;font-size:36px}
+.scax-set-avatar__frame--busy>:not(.scax-set-avatar__busy){opacity:.35}
+.scax-set-avatar__busy{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-set-avatar__side{flex:1 1 auto;max-width:560px;gap:var(--scax-space-250)}
+.scax-set-avatar__row{display:flex;align-items:center;gap:var(--scax-space-300)}
+.scax-set-avatar__row .scax-set-row__meta{flex:1 1 auto}
+
+/* 오류 한 줄 — 용량 초과 · 캐릭터 저장 실패 · 비밀번호 */
+.scax-set-error{margin:0;padding:var(--scax-space-200) var(--scax-space-300);border:1px solid var(--scax-color-danger);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-danger)}
+.scax-set-error--field{padding:0;border:0;background:none}
+.scax-set-input--error{border-color:var(--scax-color-danger)}
+
+/* AX 캐릭터 — 앱 「내 AX 캐릭터」 고르기와 같은 짜임(4열 · 카드 · 이름 · 사용 가능) */
+.scax-set-chars{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--scax-space-250);max-width:760px}
+.scax-set-char{display:grid;justify-items:center;gap:var(--scax-space-150);min-width:0;padding:var(--scax-space-300) var(--scax-space-200);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);font:inherit;cursor:pointer}
+.scax-set-char:hover{background:var(--scax-color-fill-weak)}
+.scax-set-char:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-set-char[aria-checked="true"]{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
+.scax-set-char:disabled{cursor:default;opacity:.6}
+.scax-set-char[aria-checked="true"]:disabled{opacity:1}
+.scax-set-char__face{display:grid;place-items:center;width:42px;height:42px;border:1px solid var(--scax-color-line);border-radius:42% 42% 46% 46%;background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption2-size);color:var(--scax-color-ink-assistive)}
+.scax-set-char b{overflow:hidden;max-width:100%;font-size:var(--scax-text-label2-size);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong);text-overflow:ellipsis;white-space:nowrap}
+.scax-set-char small{font-size:var(--scax-text-caption2-size);color:var(--scax-color-ink-assistive)}
+/* 비밀번호 칸 아래 오류가 서도 세 칸의 머리가 같은 줄에 서게 */
+.scax-set-form--row.scax-set-form--pw{align-items:start}
+
+/* ===== 카카오톡 연동 (2026-10-06) — Mac 앱 상태 카드 · 방 표식 ===== */
+.scax-set-kstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--scax-space-300)}
+.scax-set-kstat{display:flex;flex-direction:column;gap:var(--scax-space-100);min-width:0;padding:var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xl);background:var(--scax-color-surface)}
+.scax-set-kstat__label{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-set-kstat__value{display:inline-flex;align-items:center;gap:var(--scax-space-150);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-set-kstat__value .scax-set-state__dot{flex:0 0 auto;width:8px;height:8px}
+.scax-set-kstat__value--on .scax-set-state__dot{background:var(--scax-color-accent)}
+.scax-set-kstat__value--off{color:var(--scax-color-danger)}
+.scax-set-kstat__value--off .scax-set-state__dot{background:var(--scax-color-danger)}
+.scax-set-kstat__value--idle{color:var(--scax-color-ink-assistive)}
+.scax-set-kstat__value--idle .scax-set-state__dot{background:var(--scax-color-line-strong)}
+.scax-set-kstat__value--plain .scax-set-state__dot{display:none}
+.scax-set-kstat__sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive)}
+.scax-set-row__mark--kakao-direct,.scax-set-row__mark--kakao-group{background:var(--scax-color-warning-soft);color:var(--scax-color-warning-ink)}
+.scax-set-applink{display:inline-flex;align-items:center;gap:var(--scax-space-100);flex:0 0 auto;height:var(--scax-control-height-md);padding:0 var(--scax-space-400);border-radius:var(--scax-radius-md);background:var(--scax-color-accent);font-size:var(--scax-text-label1-size);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-inverse);text-decoration:none}
+.scax-set-applink:hover{background:var(--scax-color-accent-strong)}

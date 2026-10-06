@@ -6,7 +6,6 @@ import { BrowserOperationScope, hasPendingBrowserOperation } from "./lib/browser
 import { getMemberDirectory, getSession, isStaleActionError, logout, setAssistantCharacterPreference } from "./lib/api";
 import { AppBody, AppHeader, AppShell } from "./shell/AppShell";
 import { AssistantLauncher } from "./features/assistant/AssistantCharacter";
-import { AssistantCharacterPicker } from "./features/assistant/AssistantCharacterPicker";
 import {
   advanceAssistantCompletionObservation,
   deriveAssistantPresentationState,
@@ -17,6 +16,8 @@ import { BrowserInteractionPage } from "./features/browser/BrowserInteractionPag
 import { ChatDrawer } from "./features/chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
+import { InboxPage } from "./features/inbox/InboxPage";
+import { SettingsPage, type SettingsTab } from "./features/settings/SettingsPage";
 import { axDraftCard, personName, shellDownload } from "./lib/labels";
 import { onShellDownload, openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
@@ -42,6 +43,8 @@ const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: strin
   // 자료함 독립 화면은 아직 없다. 기존 자료 열기 경로를 새 라우트로 대체하지 않는다.
   { id: "materials", label: "자료함", icon: "document", disabled: true },
   { id: "meetings", label: "회의", icon: "persons" },
+  /* 메시지함 — 메일·슬랙·카톡이 쌓이는 독립 화면(WORK-011 FE-a · SPEC-008 §2 Placement). 「업무 > 수신함」과 다르다(D-06). */
+  { id: "inbox", label: "메시지함", icon: "inbox" },
   { id: "org", label: "조직", icon: "company" },
   { id: "report", label: "보고", icon: "document" },
   // 데모 기간에는 사이드 탭에서 닫는다. 화면 자체와 다른 진입 경로는 그대로 둔다.
@@ -57,7 +60,27 @@ const surfaceLabel: Record<ProductSurface, string> = {
   project: "프로젝트",
   org: "조직",
   graph: "관계 탐색",
+  inbox: "메시지함",
+  settings: "설정",
 };
+
+/**
+ * 첫 화면을 주소의 쿼리로 고른다 — OAuth 콜백이 `?surface=settings&tab=…&connect=ok|denied` 로 돌아온다
+ * (SPEC-008 §4.2 N-2 · 라우터 없는 SPA 라 쿼리다). 읽은 뒤 주소에서 지운다 — 새로고침이 결과를 다시 알리지 않게.
+ */
+function readLanding(): { surface: ProductSurface; tab?: SettingsTab; connect: "ok" | "denied" | null } {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("surface") !== "settings") return { surface: "today", connect: null };
+  const tabParam = params.get("tab");
+  const tab: SettingsTab | undefined =
+    tabParam === "mail" || tabParam === "slack" || tabParam === "kakao" || tabParam === "account" ? tabParam : undefined;
+  const connectParam = params.get("connect");
+  const connect = connectParam === "ok" || connectParam === "denied" ? connectParam : null;
+  const url = new URL(window.location.href);
+  ["surface", "tab", "connect"].forEach((key) => url.searchParams.delete(key));
+  window.history.replaceState(null, "", url);
+  return { surface: "settings", tab, connect };
+}
 
 export default function App() {
   const [browserInteractionId, setBrowserInteractionId] = useState(() => new URLSearchParams(window.location.search).get('interaction'));
@@ -94,7 +117,8 @@ export default function App() {
   const [focusProjectId, setFocusProjectId] = useState<string | null>(null);
   const capabilities = session?.capabilities ?? null;
   const organizationNames = session?.organizations.map((organization) => organization.name) ?? [];
-  const [surface, changeSurface] = useState<ProductSurface>("today");
+  const [landing] = useState(readLanding);
+  const [surface, changeSurface] = useState<ProductSurface>(landing.surface);
   /**
    * 화면이 내는 알림 — **전부 토스트 한 자리다** (4차 발주 6).
    *
@@ -159,7 +183,6 @@ export default function App() {
   // 새 셸의 내비는 덮개가 아니라 180 ↔ 65px 접힘이다 (바퀴 2).
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [isAxOpen, setIsAxOpen] = useState(false);
-  const [isCharacterPickerOpen, setIsCharacterPickerOpen] = useState(false);
   const [characterPreferenceBusy, setCharacterPreferenceBusy] = useState(false);
   const [characterPreferenceError, setCharacterPreferenceError] = useState<string | null>(null);
   // Settlement seam: the visible surface registers its own reload here, so an approved AX effect can re-read every
@@ -175,6 +198,9 @@ export default function App() {
   /* 지우는 것은 «화면이 떠날 때» 그 화면이 한다(등록 effect 의 cleanup). 여기서 surface 를 보고
      지우면 안 된다 — 자식 effect 가 부모보다 먼저 도므로, 새 화면이 방금 등록한 것을 부모가 덮어 지운다. */
   const registerSurfaceActions = useCallback((node: React.ReactNode) => setSurfaceActions(node), []);
+  /* 머리 제목을 화면이 바꿔 다는 자리 — 설정은 고른 메뉴 이름(「메일 연동」…)이 제목이다(시안). 떠날 때 지운다. */
+  const [surfaceTitle, setSurfaceTitle] = useState<string | null>(null);
+  const registerSurfaceTitle = useCallback((title: string | null) => setSurfaceTitle(title), []);
   const surfaceRefresh = useRef<(() => Promise<void>) | null>(null);
   const registerSurfaceRefresh = useCallback((refresh: (() => Promise<void>) | null) => {
     surfaceRefresh.current = refresh;
@@ -399,38 +425,27 @@ export default function App() {
           logo="MEDISOLVE"
           onCollapse={() => setNavCollapsed((collapsed) => !collapsed)}
           onSelect={(id) => setSurface(id as ProductSurface)}
-          onUserClick={() => {
-            setCharacterPreferenceError(null);
-            setIsCharacterPickerOpen(true);
-          }}
           /*
            * 시안 31 의 기둥 «머리» — 신원 줄 아래에 알림·설정 두 줄이 서고 그 밑을 가로선이 가른다.
            * 자리는 `SideNav` 가 이미 갖고 있던 `utilityItems`(구분선 위 그룹)다 — 새로 만들지 않았다.
            *
            * · 알림: **갈 화면이 없다.** 그래서 «진짜» disabled 로 세운다 — 눌리지도, 키보드로 실행되지도
            *   않는다. 시안의 파란 점(안 읽은 것)은 셀 값이 없으므로 넣지 않는다. 기능을 새로 만들지 않았다.
-           * · 설정: 기둥 «바닥» 에 있던 그 설정을 이 자리로 **옮겼다.** 여는 것도 그대로
-           *   (`AssistantCharacterPicker`) — 새 설정 화면을 만들지 않았다. 화면 전환이 아니므로
-           *   `onActivate` 로 직접 걸어 `surface` 라우팅에 설정 id 가 흘러들지 않게 했다.
+           * · 설정: 이제 **화면이다**(WORK-011 FE-b · SPEC-008 §5 프론트) — 메일·슬랙·카톡 연동과 프로필 설정.
+           *   예전에 이 줄과 신원 줄이 열던 「내 AX 캐릭터」 모달은 **없앴다** — 캐릭터는 프로필 설정에서 고른다
+           *   (D-48 · 검수 W-14 「진입점 둘 다」). 그래서 신원 줄은 누를 수 없는 글자로 선다.
            */
           utilityItems={[
             { id: "notifications", label: shellNav.notifications, icon: "bell", disabled: true },
-            {
-              id: "settings",
-              label: shellNav.settings,
-              icon: "setting",
-              onActivate: () => {
-                setCharacterPreferenceError(null);
-                setIsCharacterPickerOpen(true);
-              },
-            },
+            { id: "settings", label: shellNav.settings, icon: "setting" },
           ]}
           user={{
             name: personName(currentPersonaName),
+            // 프로필 이미지(SPEC-008 §4.7 W-15) — 없으면 `SideNav` 가 이름 첫 글자를 그린다.
+            avatar: session.profile_image_url ?? undefined,
             // 소속이 여럿이면 한 줄에 다 담기지 않는다. 잘라서 보여 주고 전체는 hover 로 읽는다.
             role: organizationNames.length > 0 ? organizationNames.join(" · ") : "소속 없음",
           }}
-          userActionLabel="내 AX 캐릭터"
           /* 바닥에 남는 것은 로그아웃 하나다 — 설정은 시안대로 기둥 «머리» 로 옮겼다(위 `utilityItems`).
              두 자리에 같은 것을 두지 않는다. 로그아웃의 자리·동작은 그대로다. */
           footerActions={
@@ -445,7 +460,7 @@ export default function App() {
         actions={surfaceActions}
         /* 바퀴 6a M-3: 브레드크럼을 지웠다. 회의 상세에서 목록으로 돌아가는 유일한 길이라 바퀴 2 가
            살려 뒀던 것인데, 이제 목록 칸이 상시 옆에 서서 돌아갈 길이 UI 에 들어 있다. 시안도 머리는 한 줄이다. */
-        title={surfaceLabel[surface]}
+        title={surfaceTitle ?? surfaceLabel[surface]}
       />
       <AppBody railLeft={surfaceRails.left} railRight={surfaceRails.right}>
         {/* 4차 발주 6: 오류·재조회 띠는 여기 있었다. 셋 다 화면 아래 공통 토스트로 갔다 — 본문을
@@ -456,7 +471,7 @@ export default function App() {
               자기 안에서 스크롤한다(`styles/calendar.css` 의 `.scax-cal-main`). 바깥이 스크롤하면 주인이 둘이 된다. */}
           {/* 프로젝트도 «한 화면에 갇히는» 화면이다 (WORK-005) — 요약 스트립과 진행 라인이 칸을 채우고
               `.scax-pj-view` 가 자기 안에서 스크롤한다. 바깥이 또 스크롤하면 주인이 둘이 된다. */}
-          <div className={surface === "meetings" || surface === "calendar" || surface === "project" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
+          <div className={surface === "meetings" || surface === "calendar" || surface === "project" || surface === "inbox" || surface === "settings" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
           {surface === "today" && (
             <TodayPage
               {...pageProps}
@@ -533,6 +548,33 @@ export default function App() {
             />
           )}
           {surface === "org" && <OrgPage {...pageProps} />}
+          {/* 메시지함·설정 (WORK-011) — 둘 다 «한 화면에 갇히는» 화면이다. 좌 레일은 셸 슬롯에 서고 본문이 자기 안에서 스크롤한다. */}
+          {surface === "inbox" && (
+            <InboxPage
+              meName={currentPersonaName}
+              onError={setError}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterRails={registerSurfaceRails}
+              onRegisterRefresh={registerSurfaceRefresh}
+            />
+          )}
+          {surface === "settings" && (
+            <SettingsPage
+              characterBusy={characterPreferenceBusy}
+              characterError={characterPreferenceError}
+              connectResult={landing.connect}
+              initialTab={landing.tab}
+              onChooseCharacter={(characterKey) => void chooseAssistantCharacter(characterKey)}
+              onError={setError}
+              onNotice={setToast}
+              onProfileImage={(url) =>
+                setSession((current) => (current ? { ...current, profile_image_url: url } : current))
+              }
+              onRegisterRails={registerSurfaceRails}
+              onRegisterTitle={registerSurfaceTitle}
+              session={session}
+            />
+          )}
           {surface === "graph" && (
             <RelationGraphPage
               onError={setError}
@@ -600,19 +642,6 @@ export default function App() {
             />
           ))}
         </div>
-      )}
-
-      {isCharacterPickerOpen && (
-        <AssistantCharacterPicker
-          busy={characterPreferenceBusy}
-          currentKey={session.assistant_character?.character_key ?? "cream-cat"}
-          error={characterPreferenceError}
-          onClose={() => {
-            setCharacterPreferenceError(null);
-            setIsCharacterPickerOpen(false);
-          }}
-          onSelect={(characterKey) => void chooseAssistantCharacter(characterKey)}
-        />
       )}
 
       {isAxOpen && (
