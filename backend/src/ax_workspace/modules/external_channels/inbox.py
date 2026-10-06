@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from collections import OrderedDict
 import logging
+import time
+import threading
 
 import base64
 from collections.abc import Callable, Sequence
@@ -167,6 +170,51 @@ class SlackUpstream(Protocol):
     def upload_files(
         self, access_token: str, channel: str, thread_ts: str | None, text: str, files: Sequence["OutgoingFile"]
     ) -> dict[str, Any]: ...
+
+
+class RelayCache:
+    """중계한 첨부 바이트를 **잠깐**(기본 10분) 프로세스 메모리에 둔다 — 방을 다시 열 때 슬랙·Gmail 을 다시 부르지 않게
+    (BE 수정 판 6 · 실측 첨부 하나 300~800ms). 디스크·DB 에 저장하지 않는다(D-29 의 「저장하지 않는다」는 그대로).
+    키에 연동이 들어가 회원끼리 섞이지 않고, 큰 파일은 담지 않으며, 전체 상한을 넘으면 오래된 것부터 버린다."""
+
+    def __init__(self, *, ttl_seconds: float = 600, max_item_bytes: int = 5 * 1024 * 1024, max_total_bytes: int = 64 * 1024 * 1024) -> None:
+        self._ttl = ttl_seconds
+        self._max_item = max_item_bytes
+        self._max_total = max_total_bytes
+        self._lock = threading.Lock()
+        self._items: "OrderedDict[tuple, tuple[float, Download]]" = OrderedDict()
+        self._total = 0
+
+    def get(self, key: tuple) -> "Download | None":
+        now = time.monotonic()
+        with self._lock:
+            entry = self._items.get(key)
+            if entry is None:
+                return None
+            if now - entry[0] > self._ttl:
+                self._total -= len(entry[1].data)
+                del self._items[key]
+                return None
+            self._items.move_to_end(key)
+            return entry[1]
+
+    def put(self, key: tuple, value: "Download") -> None:
+        size = len(value.data)
+        if size > self._max_item:
+            return
+        with self._lock:
+            old = self._items.pop(key, None)
+            if old is not None:
+                self._total -= len(old[1].data)
+            self._items[key] = (time.monotonic(), value)
+            self._total += size
+            while self._total > self._max_total and self._items:
+                _, (_, dropped) = self._items.popitem(last=False)
+                self._total -= len(dropped.data)
+
+
+#: 슬랙 이미지 썸네일 — 큰 것부터(대화 미리보기 폭에 충분한 것).
+SLACK_THUMB_KEYS = ("thumb_720", "thumb_480", "thumb_360", "thumb_160")
 
 
 class ImageFetcher(Protocol):
@@ -420,8 +468,10 @@ class InboxApplication:
         slack: SlackUpstream,
         images: ImageFetcher,
         storage: BlobStorage,
+        relay_cache: RelayCache | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self._relay_cache = relay_cache
         self._repository = repository
         self._cipher = cipher
         self._mail = mail
@@ -631,6 +681,9 @@ class InboxApplication:
             raise InboxNotFound("attachment was not found")
         self._require_connected(integration)
         part_id = str(part.get("partId") or "")
+        cache_key = ("mail", str(integration.id), message.external_key, aid)
+        if self._relay_cache is not None and (hit := self._relay_cache.get(cache_key)) is not None:
+            return hit
 
         def fetch(token: str) -> bytes:
             assert self._mail is not None
@@ -643,9 +696,12 @@ class InboxApplication:
             return self._mail.attachment(token, message.external_key, str(attachment_id))
 
         data = self._with_token(integration, fetch)
-        return Download(str(part.get("filename") or "attachment"), str(part.get("mimeType") or "application/octet-stream"), data)
+        download = Download(str(part.get("filename") or "attachment"), str(part.get("mimeType") or "application/octet-stream"), data)
+        if self._relay_cache is not None:
+            self._relay_cache.put(cache_key, download)
+        return download
 
-    def room_attachment(self, principal: Principal, room_id: UUID, aid: str) -> Download:
+    def room_attachment(self, principal: Principal, room_id: UUID, aid: str, *, variant: str | None = None) -> Download:
         room, integration = self._owned_room(principal, room_id)
         found = self._repository.attachment_in_room(room.id, aid)
         if found is None:
@@ -667,9 +723,14 @@ class InboxApplication:
             (item for item in (message.raw or {}).get("files") or [] if isinstance(item, dict) and item.get("id") == file_id),
             {},
         )
+        # 대화 안 미리보기는 원본이 아니라 썸네일로 충분하다(`?variant=thumb` · 이미지일 때만 · BE 수정 판 6).
+        thumb = next((listed.get(key) for key in SLACK_THUMB_KEYS if listed.get(key)), None) if variant == "thumb" else None
+        cache_key = ("room", str(integration.id), aid, "thumb" if thumb else "full")
+        if self._relay_cache is not None and (hit := self._relay_cache.get(cache_key)) is not None:
+            return hit
 
         def fetch(token: str) -> tuple[bytes, str | None]:
-            url = listed.get("url_private_download") or listed.get("url_private")
+            url = thumb or listed.get("url_private_download") or listed.get("url_private")
             if not url:
                 info = self._slack.file_info(token, file_id)
                 url = info.get("url_private_download") or info.get("url_private")
@@ -678,7 +739,11 @@ class InboxApplication:
             return self._slack.download(token, str(url))
 
         data, upstream_type = self._with_token(integration, fetch)
-        return Download(attachment.name, attachment.mime or upstream_type or "application/octet-stream", data)
+        mime = (upstream_type if thumb else None) or attachment.mime or upstream_type or "application/octet-stream"
+        download = Download(attachment.name, mime, data)
+        if self._relay_cache is not None:
+            self._relay_cache.put(cache_key, download)
+        return download
 
     def remote_image(self, principal: Principal, message_id: UUID, url: str) -> Download:
         message, integration = self._owned_mail(principal, message_id)

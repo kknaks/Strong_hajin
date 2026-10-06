@@ -73161,7 +73161,7 @@
           "alternative": "메시지함·설정 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·메시지·첨부는 회원 소유라 남의 것은 404 로 가린다.",
           "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
         },
-        "http_signature": "(room_id: UUID, aid: str, principal: Principal) -> Response"
+        "http_signature": "(room_id: UUID, aid: str, variant: Literal['thumb'] | None, principal: Principal) -> Response"
       },
       {
         "http": "GET /api/inbox/mail/{message_id}/remote-image",

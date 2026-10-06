@@ -214,7 +214,8 @@ def _seed(sessions, cipher, *, member="mina", mail_status="connected", token_exp
         ]):
             raw = {"ts": ts, "user": user, "text": f"슬랙 {index}", **({"thread_ts": thread} if thread else {})}
             if index == 0:
-                raw["files"] = [{"id": "F1", "name": "사진.png", "url_private_download": "https://files.slack.com/F1"}]
+                raw["files"] = [{"id": "F1", "name": "사진.png", "url_private_download": "https://files.slack.com/F1",
+                                 "thumb_480": "https://files.slack.com/F1-thumb480"}]
             row = ExternalMessageRecord(
                 integration_id=slack.id, room_id=channel.id, source_kind="slack", container_key="C1", external_key=ts, thread_key=thread,
                 sent_at=now + timedelta(minutes=10 + index), author=user, preview=f"슬랙 {index}", raw=raw, created_at=now,
@@ -368,6 +369,11 @@ def test_read_is_per_member_room_up_to_ts_and_read_all(tmp_path) -> None:
 # ── 첨부 중계 · 이미지 프록시 ─────────────────────────────────────────────────────────────────
 
 
+def _forget_relays(client) -> None:
+    """중계 첨부의 짧은 메모리 캐시(BE 수정 판 6)를 비운다 — 상류 실패 경로를 재는 시험용."""
+    client.app.state.workflow_application.__dict__.pop("_inbox_relay_cache", None)
+
+
 def test_mail_attachment_is_relayed_with_the_members_token_and_not_stored(tmp_path) -> None:
     client, _, fakes, cipher, sessions = _stack(tmp_path)
     ids = _seed(sessions, cipher)
@@ -395,6 +401,7 @@ def test_expired_mail_token_is_refreshed_and_a_rejected_one_disconnects(tmp_path
 
     fakes["mail"].reject_token = "access-refreshed"
     fakes["mail"].refresh = lambda token: (_ for _ in ()).throw(UpstreamUnauthorized("invalid_grant"))
+    _forget_relays(client)  # 방금 받은 첨부의 짧은 캐시를 비워 상류 거절 경로를 그대로 잰다
     response = client.get(url, headers=MINA)
     assert response.status_code == 409 and response.json()["detail"]["code"] == "integration_disconnected"
     with sessions() as session:
@@ -410,6 +417,7 @@ def test_slack_attachment_relay_and_upstream_failure_is_502(tmp_path) -> None:
     assert response.status_code == 200 and response.content == b"slack-bytes"
     assert response.headers["content-type"] == "image/png" and response.headers["content-disposition"].startswith("inline;")
     fakes["slack"].download = lambda token, link: (_ for _ in ()).throw(UpstreamFailed("http_503"))
+    _forget_relays(client)
     assert client.get(url, headers=MINA).status_code == 502
     assert client.get(url, headers=JIHO).status_code == 404
 
@@ -737,3 +745,42 @@ def test_overlapping_read_marks_do_not_fail(tmp_path) -> None:
         session.commit()
     assert client.post(f"/api/inbox/mail/{message_id}/read", headers=MINA).status_code == 204
     assert client.post("/api/inbox/read-all", headers=MINA).status_code == 204
+
+
+# ── BE 수정 판 6 — 방을 다시 열면 첨부가 즉시 · 미리보기는 썸네일 ─────────────────────────────────
+
+
+def test_relayed_attachments_are_briefly_cached_and_thumbnails_are_smaller(tmp_path) -> None:
+    client, _, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    fetched: list[str] = []
+
+    def download(token, link):
+        fetched.append(link)
+        return (b"thumb" if "thumb" in link else b"full-size-bytes"), "image/png"
+
+    fakes["slack"].download = download
+    url = f"/api/inbox/rooms/{ids['channel']}/attachments/slack-aid-1"
+    first = client.get(url, headers=MINA)
+    assert first.status_code == 200 and first.content == b"full-size-bytes"
+    assert first.headers["cache-control"] == "private, max-age=600"  # 이 브라우저가 잠깐 기억해도 된다(내용이 aid 로 고정)
+    assert client.get(url, headers=MINA).content == b"full-size-bytes"
+    assert fetched == ["https://files.slack.com/F1"]  # 두 번째는 슬랙을 다시 부르지 않는다
+    thumb = client.get(url, headers=MINA, params={"variant": "thumb"})
+    assert thumb.content == b"thumb" and fetched[-1] == "https://files.slack.com/F1-thumb480"
+    assert client.get(url, headers=JIHO).status_code == 404  # 캐시가 소유 검사를 건너뛰지 않는다
+    assert client.get(url, headers=MINA, params={"variant": "huge"}).status_code == 422
+
+
+def test_relay_cache_keeps_to_its_limits() -> None:
+    from ax_workspace.modules.external_channels.inbox import Download, RelayCache
+
+    cache = RelayCache(ttl_seconds=600, max_item_bytes=10, max_total_bytes=20)
+    cache.put(("a",), Download("a", "image/png", b"x" * 11))
+    assert cache.get(("a",)) is None  # 큰 파일은 담지 않는다
+    for key in ("b", "c", "d"):
+        cache.put((key,), Download(key, "image/png", b"x" * 8))
+    assert cache.get(("b",)) is None and cache.get(("d",)) is not None  # 상한을 넘으면 오래된 것부터 버린다
+    stale = RelayCache(ttl_seconds=0)
+    stale.put(("e",), Download("e", "image/png", b"1"))
+    assert stale.get(("e",)) is None

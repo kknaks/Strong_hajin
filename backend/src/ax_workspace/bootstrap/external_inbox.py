@@ -27,6 +27,7 @@ from ax_workspace.modules.external_channels.inbox import (
     MailUpstream,
     MailView,
     OutgoingFile,
+    RelayCache,
     ReplyAccepted,
     RoomMessagesPage,
     SlackUpstream,
@@ -118,7 +119,13 @@ class ExternalInboxOperations:
             slack=self.inbox_slack_api,
             images=self.inbox_image_fetcher,
             storage=self.external_storage,
+            relay_cache=self.inbox_relay_cache,
         )
+
+    @property
+    def inbox_relay_cache(self) -> RelayCache:
+        """중계 첨부의 짧은 메모리 캐시 — 프로세스 하나에 하나(BE 수정 판 6)."""
+        return self.__dict__.setdefault("_inbox_relay_cache", RelayCache())
 
     def _inbox_unit(self, work: Callable[[SqlAlchemyInboxStore], T], *, write: bool = True) -> T:
         with self._session_factory() as session:
@@ -169,8 +176,8 @@ class ExternalInboxOperations:
     def inbox_mail_attachment(self, principal: Principal, message_id: UUID, aid: str) -> Download:
         return self._inbox_unit(lambda store: self._inbox(store).mail_attachment(principal, message_id, aid))
 
-    def inbox_room_attachment(self, principal: Principal, room_id: UUID, aid: str) -> Download:
-        return self._inbox_unit(lambda store: self._inbox(store).room_attachment(principal, room_id, aid))
+    def inbox_room_attachment(self, principal: Principal, room_id: UUID, aid: str, variant: str | None = None) -> Download:
+        return self._inbox_unit(lambda store: self._inbox(store).room_attachment(principal, room_id, aid, variant=variant))
 
     def inbox_remote_image(self, principal: Principal, message_id: UUID, url: str) -> Download:
         return self._inbox_unit(lambda store: self._inbox(store).remote_image(principal, message_id, url))

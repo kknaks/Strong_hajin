@@ -10,7 +10,7 @@ handshake 전 · 410 카톡 첨부 만료 · 413 한도 · 415 형식 · 400 이
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
@@ -59,6 +59,8 @@ from ax_workspace.modules.organization_access.profile_settings import (
 )
 
 CLOSE_UNAUTHORIZED = 4401
+#: 첨부 응답 — 내용이 aid 로 고정이라 이 브라우저(private)가 잠깐 기억해도 된다. 방을 다시 열면 즉시(BE 수정 판 6).
+ATTACHMENT_CACHE = "private, max-age=600"
 CLOSE_FORBIDDEN_ORIGIN = 4403
 
 
@@ -221,16 +223,21 @@ def register_inbox_routes(app: FastAPI) -> None:
             download = app.state.workflow_application.inbox_mail_attachment(principal, message_id, aid)
         except Exception as error:
             raise _inbox_error(error) from error
-        return _download(download)
+        return _download(download, cache=ATTACHMENT_CACHE)
 
     @app.get("/api/inbox/rooms/{room_id}/attachments/{aid}")
-    def inbox_room_attachment(room_id: UUID, aid: str, principal: Principal = Depends(developer_principal)) -> Response:
-        """슬랙 = 그 회원 토큰으로 중계 · 카톡 = 저장본(만료 410)."""
+    def inbox_room_attachment(
+        room_id: UUID,
+        aid: str,
+        variant: Literal["thumb"] | None = None,
+        principal: Principal = Depends(developer_principal),
+    ) -> Response:
+        """슬랙 = 그 회원 토큰으로 중계 · 카톡 = 저장본(만료 410). `variant=thumb` 이면 슬랙 이미지의 썸네일(대화 미리보기용)."""
         try:
-            download = app.state.workflow_application.inbox_room_attachment(principal, room_id, aid)
+            download = app.state.workflow_application.inbox_room_attachment(principal, room_id, aid, variant)
         except Exception as error:
             raise _inbox_error(error) from error
-        return _download(download)
+        return _download(download, cache=ATTACHMENT_CACHE)
 
     @app.get("/api/inbox/mail/{message_id}/remote-image")
     def inbox_remote_image(

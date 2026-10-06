@@ -9,9 +9,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+import hashlib
 import json
 import logging
+import re
 import threading
+import time
 from typing import Any
 from urllib import error as urlerror, parse as urlparse, request as urlrequest
 
@@ -74,11 +79,135 @@ def call(method: str, token: str, params: dict[str, Any] | None = None, *, post:
     return body
 
 
+USER_CACHE_TTL_SECONDS = 600
+ROOM_LIST_CACHE_TTL_SECONDS = 90
+#: 속도 제한이면 이만큼까지는 기다렸다 한 번 더 — 그보다 길면 묵은 캐시를 쓰거나 실패로(Retry-After 존중).
+RATE_LIMIT_WAIT_LIMIT_SECONDS = 3.0
+#: 방 목록 한 쪽을 풀 때 나란히 부르는 상한 — 슬랙 속도 제한을 넘지 않을 만큼만.
+LIST_WORKERS = 6
+_MPDM_NAME = re.compile(r"^mpdm-(.+)-\d+$")
+
+
+@dataclass(frozen=True, slots=True)
+class SlackUser:
+    name: str | None
+    handle: str | None
+    is_bot: bool
+    avatar: str | None
+
+
+def _user_from(payload: dict[str, Any]) -> SlackUser:
+    profile = payload.get("profile") or {}
+    return SlackUser(
+        name=profile.get("display_name") or profile.get("real_name") or payload.get("real_name") or payload.get("name"),
+        handle=payload.get("name"),
+        is_bot=bool(payload.get("is_bot") or payload.get("is_app_user") or payload.get("id") == "USLACKBOT"),
+        avatar=profile.get("image_72") or profile.get("image_48"),
+    )
+
+
+def _call_respecting_retry(method: str, token: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """속도 제한이면 Retry-After 가 짧을 때만 기다렸다 한 번 더 부른다. 길면 그대로 올린다(부르는 쪽이 판단)."""
+    try:
+        return call(method, token, params)
+    except UpstreamRateLimited as limited:
+        if limited.retry_after > RATE_LIMIT_WAIT_LIMIT_SECONDS:
+            raise
+        time.sleep(limited.retry_after)
+        return call(method, token, params)
+
+
+class SlackUserCache:
+    """워크스페이스 사용자 이름표 — **`users.list` 몇 쪽으로 한 번에** 받아 10분 기억한다(BE 수정 판 6).
+
+    방 목록(DM 상대·그룹 DM 참여자)과 연동 워커(방 이름·보낸 사람 이름표)가 **같은 캐시**를 쓴다. 예전에는 사람마다
+    `users.info` 를 하나씩 불러 첫 쪽이 20초였다. 키는 토큰의 지문이다(그 토큰이 보는 워크스페이스 · 토큰은 보관 안 함).
+    캐시에 없는 id(다른 워크스페이스 사람 · 방금 들어온 사람)만 `users.info` 로 하나씩 메운다.
+    """
+
+    def __init__(self, *, ttl: float = USER_CACHE_TTL_SECONDS) -> None:
+        self._ttl = ttl
+        self._lock = threading.Lock()
+        self._entries: dict[str, tuple[float, dict[str, SlackUser], dict[str, str]]] = {}
+        self._missing: dict[str, set[str]] = {}
+
+    @staticmethod
+    def _key(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+    def _load(self, token: str) -> tuple[dict[str, SlackUser], dict[str, str]]:
+        users: dict[str, SlackUser] = {}
+        cursor = None
+        while True:
+            body = _call_respecting_retry("users.list", token, {"limit": 200, "cursor": cursor})
+            for member in body.get("members") or []:
+                if member.get("id"):
+                    users[str(member["id"])] = _user_from(member)
+            cursor = (body.get("response_metadata") or {}).get("next_cursor") or None
+            if not cursor:
+                break
+        handles = {user.handle: user_id for user_id, user in users.items() if user.handle}
+        return users, handles
+
+    def directory(self, token: str) -> tuple[dict[str, SlackUser], dict[str, str]]:
+        key = self._key(token)
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None and now - entry[0] < self._ttl:
+                return entry[1], entry[2]
+        try:
+            users, handles = self._load(token)
+        except UpstreamRateLimited:
+            if entry is not None:  # 속도 제한이면 묵은 이름표라도 쓴다
+                return entry[1], entry[2]
+            raise
+        with self._lock:
+            self._entries[key] = (time.monotonic(), users, handles)
+            self._missing.pop(key, None)
+        return users, handles
+
+    def user(self, token: str, user_id: str) -> SlackUser | None:
+        users, _ = self.directory(token)
+        found = users.get(user_id)
+        if found is not None:
+            return found
+        if user_id in self._missing.get(self._key(token), set()):
+            return None
+        try:
+            payload = call("users.info", token, {"user": user_id}).get("user") or {}
+        except UpstreamRoomDenied:  # user_not_found — 다음에 다시 묻지 않는다
+            with self._lock:
+                self._missing.setdefault(self._key(token), set()).add(user_id)
+            return None
+        found = _user_from(payload)
+        with self._lock:
+            entry = self._entries.get(self._key(token))
+            if entry is not None:
+                entry[1][user_id] = found
+                if found.handle:
+                    entry[2][found.handle] = user_id
+        return found
+
+    def by_handle(self, token: str, handle: str) -> SlackUser | None:
+        users, handles = self.directory(token)
+        user_id = handles.get(handle)
+        return users.get(user_id) if user_id else None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+#: 프로세스 하나에 하나 — API 의 방 목록과 연동 워커가 같은 것을 쓴다.
+SLACK_USERS = SlackUserCache()
+
+
 class SlackWebApi:
     """`modules/external_channels/sync.SlackApi` 의 실물."""
 
-    def __init__(self) -> None:
-        self._names: dict[tuple, Any] = {}
+    def __init__(self, users: SlackUserCache | None = None) -> None:
+        self._users = users or SLACK_USERS
 
     def history(self, token, channel, *, cursor=None, oldest=None, limit=200):
         body = call("conversations.history", token, {"channel": channel, "cursor": cursor, "oldest": oldest, "limit": limit})
@@ -102,32 +231,16 @@ class SlackWebApi:
                 return members
 
     def user_name(self, token, user_id):
-        key = (token[-8:], user_id)
-        if key not in self._names:
-            try:
-                user = call("users.info", token, {"user": user_id}).get("user") or {}
-            except UpstreamUnavailable:
-                return None
-            profile = user.get("profile") or {}
-            self._names[key] = profile.get("display_name") or profile.get("real_name") or user.get("real_name") or user.get("name")
-        return self._names[key]
+        try:
+            user = self._users.user(token, user_id)
+        except (UpstreamUnavailable, UpstreamRateLimited):
+            return None
+        return user.name if user else None
 
     def user_tag(self, token, user_id):
-        """이름표 하나 — 이름·봇 여부·작은 아바타(BE 수정 판 3). 못 찾는 id 는 None."""
-        key = ("tag", token[-8:], user_id)
-        if key not in self._names:
-            try:
-                user = call("users.info", token, {"user": user_id}).get("user") or {}
-            except UpstreamRoomDenied:
-                self._names[key] = None
-                return None
-            profile = user.get("profile") or {}
-            self._names[key] = {
-                "name": profile.get("display_name") or profile.get("real_name") or user.get("real_name") or user.get("name"),
-                "is_bot": bool(user.get("is_bot") or user.get("is_app_user")),
-                "avatar": profile.get("image_72") or profile.get("image_48"),
-            }
-        return self._names[key]
+        """이름표 하나 — 이름·봇 여부·작은 아바타. 워크스페이스 이름표 캐시에서 꺼낸다(BE 수정 판 6)."""
+        user = self._users.user(token, user_id)
+        return {"name": user.name, "is_bot": user.is_bot, "avatar": user.avatar} if user else None
 
     @staticmethod
     def identity(token: str) -> dict[str, Any]:
@@ -145,23 +258,28 @@ def room_type(info: dict[str, Any]) -> str:
     return "channel"
 
 
+def group_dm_handles(name: str) -> list[str] | None:
+    """`mpdm-kim--lee--park-1` → `["kim", "lee", "park"]`. 형식이 다르면 None(참여자 목록을 따로 묻는다)."""
+    match = _MPDM_NAME.match(name or "")
+    if not match:
+        return None
+    handles = [handle for handle in match.group(1).split("--") if handle]
+    return handles or None
+
+
 class SlackRoomDirectory:
-    """방 고르기 목록·접근 확인(F-1·F-2 · `application.SlackRoomDirectory` 의 실물). 이름은 프로세스 안에 잠깐 기억한다."""
+    """방 고르기 목록·접근 확인(F-1·F-2 · `application.SlackRoomDirectory` 의 실물).
 
-    def __init__(self) -> None:
-        self._users: dict[tuple[str, str], tuple[str | None, bool]] = {}
+    빨라야 한다(BE 수정 판 6 — 첫 쪽 20초 → 2초 목표): 이름은 워크스페이스 이름표 캐시 한 번(`users.list`), 그룹 DM 은
+    `mpdm-…` 이름의 사용자명으로 풀고(참여자 호출 없음), 목록 쪽은 회원 토큰·커서마다 90초 기억한다(「방 추가」 창을
+    다시 열면 즉시).
+    """
 
-    def _user(self, token: str, user_id: str) -> tuple[str | None, bool]:
-        key = (token[-8:], user_id)
-        if key not in self._users:
-            if user_id == "USLACKBOT":
-                self._users[key] = ("Slackbot", True)
-            else:
-                user = call("users.info", token, {"user": user_id}).get("user") or {}
-                profile = user.get("profile") or {}
-                name = profile.get("display_name") or profile.get("real_name") or user.get("real_name") or user.get("name")
-                self._users[key] = (name, bool(user.get("is_bot") or user.get("is_app_user")))
-        return self._users[key]
+    def __init__(self, users: SlackUserCache | None = None, *, list_ttl: float = ROOM_LIST_CACHE_TTL_SECONDS) -> None:
+        self._users = users or SLACK_USERS
+        self._list_ttl = list_ttl
+        self._lock = threading.Lock()
+        self._pages: dict[tuple[str, str | None], tuple[float, list[SlackRoomInfo], str | None]] = {}
 
     def _info(self, token: str, channel: dict[str, Any]) -> SlackRoomInfo:
         kind = room_type(channel)
@@ -169,14 +287,20 @@ class SlackRoomDirectory:
         is_bot = False
         member_count = channel.get("num_members") if isinstance(channel.get("num_members"), int) else None
         if kind == "dm" and channel.get("user"):
-            resolved, is_bot = self._user(token, str(channel["user"]))
-            name = resolved or name
+            user = self._users.user(token, str(channel["user"]))
+            if user is not None:
+                name, is_bot = user.name or name, user.is_bot
             member_count = 2
         elif kind == "group_dm":
-            members = call("conversations.members", token, {"channel": channel["id"], "limit": 100}).get("members") or []
-            names = [self._user(token, member)[0] for member in members]
-            name = ", ".join(sorted(filter(None, names))) or name  # `mpdm-…` 대신 참여자 실명(D-12)
-            member_count = len(members)
+            handles = group_dm_handles(name)
+            people = [self._users.by_handle(token, handle) for handle in handles] if handles else []
+            if not handles or any(person is None for person in people):
+                # 형식이 다르거나 모르는 사람이 있다 — 그때만 참여자를 묻는다.
+                members = call("conversations.members", token, {"channel": channel["id"], "limit": 100}).get("members") or []
+                people = [self._users.user(token, member) for member in members]
+            names = [person.name for person in people if person is not None and person.name]
+            name = ", ".join(sorted(names)) or name  # `mpdm-…` 대신 참여자 실명(D-12)
+            member_count = len(people)
         return SlackRoomInfo(room_id=str(channel["id"]), type=kind, name=name[:300], is_bot=is_bot, member_count=member_count)
 
     def _translate(self, work):
@@ -203,15 +327,30 @@ class SlackRoomDirectory:
         return self._translate(work)
 
     def list_page(self, token: str, cursor: str | None) -> tuple[list[SlackRoomInfo], str | None]:
+        key = (SlackUserCache._key(token), cursor)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._pages.get(key)
+            if cached is not None and now - cached[0] < self._list_ttl:
+                return list(cached[1]), cached[2]
+
         def work() -> tuple[list[SlackRoomInfo], str | None]:
-            # `users.conversations` = 그 회원이 **참여한** 방만(공개·비공개·DM·그룹 DM). 고를 수 있는 것은 이것뿐이다.
-            body = call("users.conversations", token, {
-                "types": "public_channel,private_channel,im,mpim", "exclude_archived": "true", "limit": 100, "cursor": cursor,
-            })
-            rooms = [self._info(token, channel) for channel in body.get("channels") or [] if channel.get("id")]
+            # 방 목록과 이름표를 **동시에** 받는다. `users.conversations` = 그 회원이 참여한 방만(공개·비공개·DM·그룹 DM).
+            with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
+                warm = pool.submit(self._users.directory, token)
+                body = _call_respecting_retry("users.conversations", token, {
+                    "types": "public_channel,private_channel,im,mpim", "exclude_archived": "true", "limit": 100, "cursor": cursor,
+                })
+                warm.result()
+                channels = [channel for channel in body.get("channels") or [] if channel.get("id")]
+                # 대부분 캐시에서 풀린다. 형식이 다른 그룹 DM·이름표에 없는 사람만 따로 묻고, 그것도 나란히.
+                rooms = list(pool.map(lambda channel: self._info(token, channel), channels))
             return rooms, ((body.get("response_metadata") or {}).get("next_cursor") or None)
 
-        return self._translate(work)
+        rooms, next_cursor = self._translate(work)
+        with self._lock:
+            self._pages[key] = (time.monotonic(), rooms, next_cursor)
+        return list(rooms), next_cursor
 
 
 class SlackSocketMode:
