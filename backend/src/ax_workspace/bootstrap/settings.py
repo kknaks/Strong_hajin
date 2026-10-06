@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import os
 from urllib.parse import urlsplit
@@ -96,6 +96,25 @@ class Settings:
     room_booking_notify: bool = False
     #: 한 번의 왕복 상한(초). [만들기] 가 이 값만큼 기다릴 수 있다 — 그래서 짧다.
     room_booking_timeout_seconds: float = 20.0
+    #: 외부 채널 연동 (SPEC-008 §5 「토큰·env」). 외부 서비스 값은 그 서비스 접두어, 내부 값은 `AX_`.
+    #: 회의실 예약과 같은 결로 **값이 비면 그 연동이 스스로 없다고 말한다** — 부팅은 멀쩡하다.
+    #: 비밀값은 `repr=False` — 설정을 찍는 로그에 값이 실리지 않는다.
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = field(default="", repr=False)
+    gmail_pubsub_topic: str = ""
+    gmail_pubsub_subscription: str = ""
+    google_pubsub_sa_key_file: str = ""
+    slack_client_id: str = ""
+    slack_client_secret: str = field(default="", repr=False)
+    #: Socket Mode 앱 토큰. **연동 워커 한 곳만** 쓴다(단일 소유 · SPEC-008 §5 동기화).
+    slack_app_token: str = field(default="", repr=False)
+    #: 저장 토큰을 잠그는 대칭키 하나(Fernet). 키 회전은 범위 밖(OQ-801).
+    external_token_encryption_key: str = field(default="", repr=False)
+    #: 카톡 첨부·프로필 이미지 저장본의 hostPath (SPEC-008 §5 저장).
+    external_channel_storage_dir: str = ".scax/external-channels"
+    #: OAuth 콜백이 닿는 API 의 origin. 운영은 웹과 같은 origin 하나라 비우면 `web_origin` 을 쓴다.
+    #: 로컬은 API(8001)와 프론트(5176)가 갈라져 있어 local-stack 이 따로 넘긴다 (SPEC-008 §4.2 redirect_uri).
+    api_origin: str = ""
 
     def __post_init__(self) -> None:
         if self.ai_provider not in AI_PROVIDERS:
@@ -115,6 +134,15 @@ class Settings:
                 "AX_WEB_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment"
             )
         object.__setattr__(self, "web_origin", origin)
+        object.__setattr__(self, "api_origin", (self.api_origin or origin).strip().rstrip("/"))
+
+    @property
+    def gmail_oauth_configured(self) -> bool:
+        return bool(self.google_oauth_client_id and self.google_oauth_client_secret)
+
+    @property
+    def slack_oauth_configured(self) -> bool:
+        return bool(self.slack_client_id and self.slack_client_secret)
 
     @property
     def room_booking_configured(self) -> bool:
@@ -182,6 +210,17 @@ class Settings:
             room_booking_company_id=int(os.getenv("TDL_COMPANY_ID", str(DEFAULT_ROOM_BOOKING_COMPANY_ID))),
             room_booking_notify=_flag(os.getenv("TDL_NOTIFY")),
             room_booking_timeout_seconds=float(os.getenv("TDL_HTTP_TIMEOUT_SECONDS", "20.0")),
+            google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""),
+            google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+            gmail_pubsub_topic=os.getenv("GMAIL_PUBSUB_TOPIC", ""),
+            gmail_pubsub_subscription=os.getenv("GMAIL_PUBSUB_SUBSCRIPTION", ""),
+            google_pubsub_sa_key_file=os.getenv("GOOGLE_PUBSUB_SA_KEY_FILE", ""),
+            slack_client_id=os.getenv("SLACK_CLIENT_ID", ""),
+            slack_client_secret=os.getenv("SLACK_CLIENT_SECRET", ""),
+            slack_app_token=os.getenv("SLACK_APP_TOKEN", ""),
+            external_token_encryption_key=os.getenv("AX_EXTERNAL_TOKEN_ENCRYPTION_KEY", ""),
+            external_channel_storage_dir=os.getenv("AX_EXTERNAL_CHANNEL_STORAGE_DIR", ".scax/external-channels"),
+            api_origin=os.getenv("AX_API_ORIGIN", ""),
         )
 
 

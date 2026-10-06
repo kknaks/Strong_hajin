@@ -143,6 +143,18 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 ## ERD 밖 테이블
 
 - `auth_sessions`: 로그인 세션(HttpOnly cookie).
+- **외부 채널 연동** (SPEC-008 · WORK-011 BE-1 · DEC-008 D-24~D-27·D-46) — 연동이 aggregate 이고 **연결한 회원 것**이다. 남의 연동·방·기기 토큰은 404 로 가린다. 지우지 않는다: 연결 해제·방 빼기·카톡 계정 reset 은 `removed_at` 소프트 딜리트뿐이고 같은 주소·워크스페이스·방을 다시 고르면 **그 행이 되살아난다**(물리 삭제 없음 · 보존 기한 없음). 같은 방을 동료 둘이 골라도 사람마다 한 벌씩 저장하므로 중복 방지 키가 전부 **연동 범위**다. 모듈은 `modules/external_channels/`(BE-1 `domain`·`events`·`application` / BE-2 `sync` / BE-3 `inbox`·`kakao_ingest`).
+  - `external_integrations`: 회원 × `kind`(mail·slack·kakao) × `account_key`(메일 주소·슬랙 team id·카톡 `kakao`) unique. `status` connected·backfilling·disconnected·removed. 토큰은 `AX_EXTERNAL_TOKEN_ENCRYPTION_KEY` Fernet 으로 잠근 값만(`*_token_encrypted`). 동기화 상태 칸(`sync_cursor`=Gmail historyId · `watch_expires_at` · `backfill_*` · `synced_count`·`last_synced_at` · `disconnected_*`)과 카톡 수집기 칸(`selected_rooms_version` · `account_reset_at` · `collector_status`/`collector_reported_at` — 90초 무보고 = 앱 꺼짐)을 함께 갖는다.
+  - `external_rooms`: 고른 방(슬랙·카톡 모두 서버 정본). `id` = API `room_id`, `external_id` = 슬랙 channel·카톡 chatId, `(integration_id, external_id)` unique. 저장 `status` 는 backfilling·live 이고 `paused` 는 카톡 수집기 상태에서 읽을 때 파생한다. `last_message_key`(슬랙 ts·카톡 logId)가 마지막 반영 지점이다.
+  - `external_messages`: 원문 그대로(`raw` JSON · 메일 렌더용 소독본 `safe_html` 은 별개 칸). 중복 키 `(integration_id, container_key, external_key)` — 슬랙 (연동, channel, ts) · Gmail (연동, '', message id) · 카톡 (연동, chatId, logId).
+  - `external_attachments`: 메일·슬랙 = 참조(`state=reference`, 받을 때 중계) · 카톡 = 저장 경로(`storage_key`, hostPath `AX_EXTERNAL_CHANNEL_STORAGE_DIR`). 카톡 `aid` = SHA-256("{integration_id}:{chatId}:{logId}:{seq}") hex.
+  - `external_read_states`: 사용자별 읽음 — 방은 `read_up_to_*`, 메일은 단건(CHECK 로 둘 중 하나).
+  - `external_sent_replies`: 우리가 보낸 답장 기록(D-47). `(member_id, idempotency_key)` unique, `id` = 202 의 `local_id`.
+  - `external_device_tokens`: Mac 수집기의 장수명 기기 토큰. **SHA-256 해시만** 보관 · 새 발급이 같은 회원의 옛 토큰을 철회(D-45) · `Authorization: Bearer` 는 카톡 수집 라우트(handshake·BE-3 수신 라우트)에서만 통하고 웹 라우트는 받지 않는다.
+  - `external_oauth_states`: 연결 시작이 발급한 일회용 `state`(해시 · 10분). 콜백은 쿠키가 아니라 이것으로 회원을 찾는다.
+  - `profile_images`: 회원당 프로필 이미지 저장 경로(바이트는 hostPath).
+  - 사용자 사건 채널: Postgres `NOTIFY ax_user_events`(워커·back → back WS) · `ax_external_sync`(back → 연동 워커 깨움). 페이로드 계약은 `modules/external_channels/events.py`.
+  - 운영 스키마는 `backend/migrations/manual/2026-10-06-external-channels.sql`(새 표라 인덱스도 같은 파일 — 빈 표라 잠금 걱정이 없다).
 - `daily_reports`, `report_drafts`, `daily_report_submissions`: 보고 SPEC 영역.
 - `workflow_definitions`, `workflow_definition_versions`, `workflow_runs`, `workflow_node_executions`, `provider_calls`: 개인 일일보고 생성 runtime.
 - `meetings`, `meeting_attendees`: 회의 identity와 참석 관계. `status`는 여섯이다 — `scheduled`·`in_progress`·`summarizing`·`done`·`failed`·`cancelled`(SCAX-SPEC-004 §5.1). 「완료」에서 「정리 중」으로 돌아가는 전이는 없고, `cancelled → scheduled`는 자동 취소가 풀리는 한 갈래뿐이다. 제목·목적·장소·참석자는 비어 있을 수 있다 — 「바로 시작」한 회의는 아무 값 없이 선다. 사외 참석자는 `external_attendees` JSON에 이름만 담고 계정을 만들지 않는다. 자동 취소는 스케줄러 없이 **조회 시점 판정**이다: 종료 시각까지 줄이 하나도 없이 지난 「예정」이 「취소됨」이 되고, 줄이 생기면 도로 「예정」이 된다. **지난 날짜로 세운 회의(`created_at >= ends_at`)는 이 규칙에 걸리지 않는다** — 기다린 적이 없으므로 「예정」으로 남아 목록의 「지난」 구획에 선다. 열람의 축은 **참석과 공유 둘뿐**이다 — 조직 범위로 남의 회의를 여는 셋째 축은 없고, `meeting.read.private`가 조직 범위 안에서 닿는 자리는 캘린더 투영(`list`) 하나로 남긴다.

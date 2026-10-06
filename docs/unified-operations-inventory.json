@@ -2965,7 +2965,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 160,
+    "http_count": 173,
     "tool_count": 129,
     "tools": [
       {
@@ -72685,6 +72685,279 @@
           "reconsider_when": "AX 가 관계 정리를 제안하게 될 때"
         },
         "http_signature": "(task_id: UUID, successor_task_id: UUID, expected_version: int, principal: Principal) -> TaskSuccessorReleaseResult"
+      },
+      {
+        "http": "POST /api/integrations/{kind}/connect",
+        "http_handler": "start_integration_connect",
+        "screen_callers": [],
+        "operation": "start_integration_connect",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "start_integration_connect"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "연결 시작은 설정의 「Google로 연결」·「슬랙 연결」 단추 하나다. 돌려주는 것은 사람이 OS 브라우저에서 눌러야 하는 동의 URL 이라 에이전트가 대신 끝낼 수 없다(SPEC-008 §4.2 F-2).",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(kind: Literal['mail', 'slack'], response: Response, principal: Principal) -> ConnectStart"
+      },
+      {
+        "http": "GET /api/integrations/{kind}/callback",
+        "http_handler": "integration_callback",
+        "screen_callers": [],
+        "operation": "integration_callback",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "complete_integration_callback"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "외부 동의 화면이 브라우저를 돌려보내는 OAuth 콜백이다. 세션이 아니라 일회용 state 로 회원을 찾는 인증 경계라 도구로 내지 않는다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(kind: Literal['mail', 'slack'], code: str | None, state: str | None, error: str | None) -> Response"
+      },
+      {
+        "http": "POST /api/integrations/{integration_id}/reconnect",
+        "http_handler": "reconnect_integration",
+        "screen_callers": [],
+        "operation": "reconnect_integration",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "reconnect_integration"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "끊긴 연동의 「다시 연결」 단추 — 연결 시작과 같은 동의 URL 을 낸다. 사람의 동의 없이는 끝나지 않는다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(integration_id: UUID, response: Response, principal: Principal) -> ConnectStart"
+      },
+      {
+        "http": "POST /api/integrations/{integration_id}/disconnect",
+        "http_handler": "disconnect_integration",
+        "screen_callers": [],
+        "operation": "disconnect_integration",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "disconnect_integration"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "연결 해제는 설정의 확인 창을 거친 사람의 결정이다(SPEC-008 §2.3). 에이전트가 대신 끊을 근거가 없다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(integration_id: UUID, principal: Principal) -> Response"
+      },
+      {
+        "http": "GET /api/integrations",
+        "http_handler": "list_integrations",
+        "screen_callers": [],
+        "operation": "list_integrations",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "list_integrations"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "연동 목록은 설정 화면·메시지함 배너가 읽는 상태판이다. 2단계(AX 판단) 전에는 에이전트가 읽을 일이 없다(SPEC-008 §1 Out of Scope).",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(principal: Principal) -> list[IntegrationView]"
+      },
+      {
+        "http": "GET /api/integrations/kakao/handshake",
+        "http_handler": "kakao_handshake",
+        "screen_callers": [],
+        "operation": "kakao_handshake",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "kakao_handshake"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "Mac 수집기 전용 라우트다 — 기기 토큰만 통하고 세션·도구 경로는 받지 않는다(SPEC-008 §4.6 · R3-F1 범위).",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(principal: Principal) -> KakaoHandshakeView"
+      },
+      {
+        "http": "POST /api/integrations/kakao/reset-account",
+        "http_handler": "kakao_reset_account",
+        "screen_callers": [],
+        "operation": "kakao_reset_account",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "kakao_reset_account"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "카톡 계정이 바뀐 뒤 사람이 설정에서 「다시 연결」을 누를 때만 일어난다(SPEC-008 §2.5 W-4 · 4차 검수 ★2).",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(principal: Principal) -> Response"
+      },
+      {
+        "http": "GET /api/integrations/{integration_id}/rooms",
+        "http_handler": "list_integration_rooms",
+        "screen_callers": [],
+        "operation": "list_integration_rooms",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "integration_rooms"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "고른 방 목록은 설정의 「수집 방」 카드가 읽는다. 메시지함 조회 자체가 1단계 범위 밖의 도구다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(integration_id: UUID, principal: Principal) -> list[RoomView]"
+      },
+      {
+        "http": "POST /api/integrations/{integration_id}/rooms",
+        "http_handler": "add_integration_rooms",
+        "screen_callers": [],
+        "operation": "add_integration_rooms",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "add_integration_rooms"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "방 고르기는 설정의 고르기 창에서 사람이 체크해 더한다 — 카톡 방 목록은 Mac 로컬에만 있다(R-F1).",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(integration_id: UUID, request: AddIntegrationRoomsRequest, principal: Principal) -> Response"
+      },
+      {
+        "http": "DELETE /api/integrations/{integration_id}/rooms/{room_id}",
+        "http_handler": "remove_integration_room",
+        "screen_callers": [],
+        "operation": "remove_integration_room",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "remove_integration_room"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "방 빼기는 설정의 「빼기」 단추다 — 소프트 딜리트이고 사람이 고른다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(integration_id: UUID, room_id: UUID, principal: Principal) -> Response"
+      },
+      {
+        "http": "POST /api/device-tokens",
+        "http_handler": "issue_device_token",
+        "screen_callers": [],
+        "operation": "issue_device_token",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "issue_device_token"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "기기 토큰은 앱 웹뷰가 받아 곧바로 키체인에 넣는 비밀이다(SPEC-008 §4.2 · R3-F1). 도구 결과로 흘리면 안 된다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(request: IssueDeviceTokenRequest, response: Response, principal: Principal) -> DeviceTokenIssued"
+      },
+      {
+        "http": "GET /api/device-tokens",
+        "http_handler": "list_device_tokens",
+        "screen_callers": [],
+        "operation": "list_device_tokens",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "list_device_tokens"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "기기 토큰 목록은 설정의 기기 관리 화면만 읽는다 — 보안 경계다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(principal: Principal) -> list[DeviceTokenView]"
+      },
+      {
+        "http": "DELETE /api/device-tokens/{token_id}",
+        "http_handler": "revoke_device_token",
+        "screen_callers": [],
+        "operation": "revoke_device_token",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "revoke_device_token"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "기기 토큰 철회는 설정의 보안 조작이다 — 인증 경계라 도구로 내지 않는다.",
+          "alternative": "설정·메시지함 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·기기 토큰은 회원 소유라 남의 것은 404 로 가린다.",
+          "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
+        },
+        "http_signature": "(token_id: UUID, principal: Principal) -> Response"
       }
     ],
     "status": "verified",

@@ -53,6 +53,7 @@ name = "ax-workspace"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "kiwipiepy" },
     { name = "markdown-it-py" },
@@ -80,6 +81,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=46" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "kiwipiepy", specifier = ">=0.23.2" },
     { name = "markdown-it-py", specifier = ">=4,<5" },

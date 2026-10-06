@@ -40,6 +40,9 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
     # 확인하면 스키마가 멀쩡해도 local-stack 이 영원히 거절한다.
     assert "to_regclass('meeting_transcripts')" in recipe
     assert "follow_up_candidates" in recipe
+    # 외부 채널 연동(WORK-011 BE-1) — 표지와 그 grep 패턴을 함께 본다.
+    assert "to_regclass('external_integrations')" in recipe
+    assert "answer_document|external_integrations'" in recipe
     assert "follow_up_candidate_id" in recipe
     assert "Run 'make sync-demo-schema'" in recipe
     # Supervise: an early exit of any required process stops the rest and fails the target (plain `wait` cannot see it).
@@ -57,6 +60,20 @@ def test_acceptance_never_resets_the_database_someone_is_working_in() -> None:
     assert "ACCEPTANCE_DATABASE_URL ?=" in text
     # 그 데이터베이스는 postgres-up이 만들어 둔다. 없으면 suite가 연결에서 죽는다.
     assert "ax_test_acceptance" in _recipe("postgres-up")
+
+
+def test_local_api_loads_the_external_channel_secrets_without_printing_them() -> None:
+    """SPEC-008 §5 비밀값 위치 — `~/.config/{google,slack}/env` 를 Soniox 와 같은 결로 싣는다(값은 찍지 않는다)."""
+    text = MAKEFILE.read_text(encoding="utf-8")
+    assert 'GOOGLE_ENV = set -a; [ -f "$(GOOGLE_ENV_FILE)" ] && . "$(GOOGLE_ENV_FILE)"; set +a;' in text
+    assert 'SLACK_ENV = set -a; [ -f "$(SLACK_ENV_FILE)" ] && . "$(SLACK_ENV_FILE)"; set +a;' in text
+    for target in ("api", "api-e2e"):
+        recipe = _recipe(target)
+        assert recipe.lstrip().startswith("@"), f"{target} must not echo its environment"
+        assert "$(GOOGLE_ENV)" in recipe and "$(SLACK_ENV)" in recipe, target
+    # OAuth 콜백이 프론트로 돌아오게 local-stack 의 API 가 웹·API origin 을 안다(SPEC-008 §4.2 N-2 · W-9).
+    assert 'AX_WEB_ORIGIN="$(E2E_WEB_ORIGIN)"' in _recipe("api-e2e")
+    assert 'AX_API_ORIGIN="$(E2E_API_ORIGIN)"' in _recipe("api-e2e")
 
 
 def test_stack_target_is_declared_phony_and_documented() -> None:

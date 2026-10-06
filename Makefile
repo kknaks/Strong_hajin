@@ -7,6 +7,12 @@ THECONNECT_ENV_FILE ?= $(HOME)/.config/theconnect/env
 # 사옥 회의실 예약 시스템(THE CONNECT) 계정 — Soniox 와 같은 결로, 값은 어디에도 찍지 않는다.
 # 파일이 없으면 예약 기능이 스스로 없다고 말한다: 회의는 그대로 서고 회의실만 잡히지 않는다.
 THECONNECT_ENV = set -a; [ -f "$(THECONNECT_ENV_FILE)" ] && . "$(THECONNECT_ENV_FILE)"; set +a;
+# 외부 채널 연동(SPEC-008 §5 비밀값 위치) — Gmail OAuth·Pub/Sub 과 슬랙 OAuth·앱 토큰. Soniox·THE CONNECT 와 같은 결로
+# 값은 어디에도 찍지 않는다. 파일이 없으면 그 연동이 스스로 없다고 말한다(연결 시작이 503 integration_not_configured).
+GOOGLE_ENV_FILE ?= $(HOME)/.config/google/env
+GOOGLE_ENV = set -a; [ -f "$(GOOGLE_ENV_FILE)" ] && . "$(GOOGLE_ENV_FILE)"; set +a;
+SLACK_ENV_FILE ?= $(HOME)/.config/slack/env
+SLACK_ENV = set -a; [ -f "$(SLACK_ENV_FILE)" ] && . "$(SLACK_ENV_FILE)"; set +a;
 POSTGRES_TEST_URL ?= postgresql+psycopg://ax:ax@localhost:54329/ax_test
 # Acceptance는 자기 데이터베이스에서 돈다. reset으로 시작하는 suite가 사람이 쓰던 DATABASE_URL의
 # 조직·자료를 지우지 않게 한다.
@@ -19,6 +25,10 @@ E2E_FRONTEND_PORT ?= 5176
 # 방화벽/네트워크가 허용하는 누구나 닿을 수 있다는 뜻이므로 신뢰된 내부망에서만 그렇게 연다.
 E2E_API_HOST ?= 127.0.0.1
 E2E_FRONTEND_HOST ?= 127.0.0.1
+# OAuth 콜백이 닿는 API 와 돌아갈 프론트의 origin (SPEC-008 §4.2). Google 에 등록된 로컬 redirect 가
+# `http://127.0.0.1:8001/...` 이라 바인딩 주소(E2E_*_HOST)와 별개로 127.0.0.1 로 둔다.
+E2E_API_ORIGIN ?= http://127.0.0.1:$(E2E_API_PORT)
+E2E_WEB_ORIGIN ?= http://127.0.0.1:$(E2E_FRONTEND_PORT)
 ACCEPTANCE_API_PORT ?= 18111
 ACCEPTANCE_FRONTEND_PORT ?= 15186
 PROTECTED_IMAGE ?= scax-protected:test
@@ -251,7 +261,7 @@ reset-catalog:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.reset_demo --catalog-only
 
 api:
-	@$(SONIOX_ENV) $(THECONNECT_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
+	@$(SONIOX_ENV) $(THECONNECT_ENV) $(GOOGLE_ENV) $(SLACK_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --reload
 
 conversation-worker:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" uv run python -m ax_workspace.entrypoints.conversation_worker
@@ -282,7 +292,7 @@ storybook-build:
 	cd frontend && npm run build-storybook
 
 api-e2e:
-	@$(SONIOX_ENV) $(THECONNECT_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" uv run uvicorn ax_workspace.entrypoints.http:app --host "$(E2E_API_HOST)" --port "$(E2E_API_PORT)"
+	@$(SONIOX_ENV) $(THECONNECT_ENV) $(GOOGLE_ENV) $(SLACK_ENV) cd backend && DATABASE_URL="$(DATABASE_URL)" AX_WEB_ORIGIN="$(E2E_WEB_ORIGIN)" AX_API_ORIGIN="$(E2E_API_ORIGIN)" uv run uvicorn ax_workspace.entrypoints.http:app --host "$(E2E_API_HOST)" --port "$(E2E_API_PORT)"
 
 frontend-e2e:
 	cd frontend && VITE_API_TARGET="http://127.0.0.1:$(E2E_API_PORT)" npm run dev -- --host "$(E2E_FRONTEND_HOST)" --port "$(E2E_FRONTEND_PORT)"
@@ -303,7 +313,7 @@ local-stack:
 		cleanup() { for pid in $$pids; do stop_process_tree "$$pid"; done; for pid in $$pids; do wait "$$pid" 2>/dev/null || true; done; }; \
 		trap cleanup EXIT INT TERM; \
 		$(MAKE) postgres-up; \
-		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('daily_report_generations'), to_regclass('task_checklist_items'), to_regclass('task_schedules'), to_regclass('meeting_transcripts'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'answer_document')" 2>/dev/null | grep -q 'durable_jobs|daily_report_generations|task_checklist_items|task_schedules|meeting_transcripts|assistant_character_preferences|action_material_drafts|notifications|progress_state|follow_up_candidates|follow_up_candidate_id|answer_document' \
+		if ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('durable_jobs'), to_regclass('daily_report_generations'), to_regclass('task_checklist_items'), to_regclass('task_schedules'), to_regclass('meeting_transcripts'), to_regclass('assistant_character_preferences'), to_regclass('action_material_drafts'), to_regclass('notifications'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'progress_state'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_turns' AND column_name = 'follow_up_candidates'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'follow_up_candidate_id'), (SELECT column_name FROM information_schema.columns WHERE table_name = 'conversation_messages' AND column_name = 'answer_document'), to_regclass('external_integrations')" 2>/dev/null | grep -q 'durable_jobs|daily_report_generations|task_checklist_items|task_schedules|meeting_transcripts|assistant_character_preferences|action_material_drafts|notifications|progress_state|follow_up_candidates|follow_up_candidate_id|answer_document|external_integrations' \
 			|| ! docker compose exec -T postgres psql -U ax -d "$$(printf '%s' "$(DATABASE_URL)" | sed -E 's#.*/([^/?]+)(\?.*)?$$#\1#')" -tAc "SELECT to_regclass('notifications')" 2>/dev/null | grep -qx 'notifications'; then \
 			echo "SCAX schema is not initialized or is behind the current code in $(DATABASE_URL). Run 'make sync-demo-schema' to add safe missing tables or columns; use 'make reset-demo' only for a disposable fresh demo DB. Then run 'make local-stack' again." >&2; \
 			exit 2; \
@@ -467,7 +477,7 @@ acceptance-e2e:
 		done; \
 		if [ "$(ACCEPTANCE_MANAGE_POSTGRES)" = "1" ]; then $(MAKE) postgres-up; fi; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" reset-demo; \
-		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" E2E_API_PORT="$(ACCEPTANCE_API_PORT)" api-e2e >"$$acceptance_dir/api.log" 2>&1 & api_pid=$$!; \
+		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" E2E_API_PORT="$(ACCEPTANCE_API_PORT)" E2E_FRONTEND_PORT="$(ACCEPTANCE_FRONTEND_PORT)" api-e2e >"$$acceptance_dir/api.log" 2>&1 & api_pid=$$!; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" conversation-worker >"$$acceptance_dir/worker.log" 2>&1 & worker_pid=$$!; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" material-worker >"$$acceptance_dir/material-worker.log" 2>&1 & material_pid=$$!; \
 		$(MAKE) DATABASE_URL="$(ACCEPTANCE_DATABASE_URL)" meeting-worker >"$$acceptance_dir/meeting-worker.log" 2>&1 & meeting_pid=$$!; \

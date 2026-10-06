@@ -17,6 +17,7 @@ dependencies = [
   "pyyaml>=6,<7",
   "kiwipiepy>=0.23.2",
   "markdown-it-py>=4,<5",
+  "cryptography>=46",
 ]
 
 [build-system]

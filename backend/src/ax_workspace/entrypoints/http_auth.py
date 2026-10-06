@@ -99,6 +99,31 @@ def connection_principal(connection: Any) -> Principal | None:
     return None
 
 
+def device_principal(request: Request) -> Principal:
+    """수집기(Mac 앱) 라우트의 사람 — **기기 토큰 `Authorization: Bearer`** 만 본다 (SPEC-008 §4.6 · R3-F1).
+
+    범위를 가르는 것이 이 함수의 일이다: 세션 쿠키와 개발 페르소나 헤더는 여기서 **받지 않고**, 반대로 웹 라우트의
+    `current_principal` 은 Bearer 를 보지 않는다. 토큰 하나가 만료 없는 전체 계정 권한이 되지 않게 한다.
+    철회된 토큰·비활성 회원은 같은 401 이다 — 어느 쪽인지 말하지 않는다.
+    """
+    header = request.headers.get("Authorization") or ""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="기기 토큰이 필요합니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    principal = request.app.state.workflow_application.device_token_principal(token.strip())
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="기기 토큰이 유효하지 않습니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
+
+
 # Backwards-compatible name used by existing routes.
 developer_principal = current_principal
 
