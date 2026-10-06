@@ -773,6 +773,9 @@ def test_organization_profile_is_a_persisted_authorized_projection(tmp_path) -> 
         "assistant_character": {"character_key": "cream-cat", "version": 0},
         # 프로필 이미지 주소 한 칸(SPEC-008 §4.7 · W-15). 올린 것이 없으면 null — 화면은 이니셜 아바타.
         "profile_image_url": None,
+        # 프로필 머리의 읽기 전용 명부 값(BE 수정 판 3) — 민아는 보직이 없고 직무는 기획이다.
+        "position": None,
+        "job": "기획",
         "organizations": [{"id": "product", "name": "제품팀"}, {"id": "scax", "name": "SCAX"}],
         "roles": ["구성원"],
         "capabilities": [

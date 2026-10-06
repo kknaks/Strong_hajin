@@ -1,6 +1,8 @@
 """카톡 수신(기기 토큰) · 프로필 이미지 · 비밀번호 변경 계약 (SPEC-008 §4.6·§4.7 · WORK-011 BE-3)."""
 from __future__ import annotations
 
+import hashlib
+
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -135,6 +137,13 @@ def test_attachments_are_slotted_uploaded_to_host_path_and_served_from_the_saved
     assert client.post(upload, headers=_bearer(jiho_token), files={"file": ("a.jpg", b"JPEG", "image/jpeg")}).status_code == 404
     assert client.post(upload, headers=_bearer(token), files={"file": ("a.jpg", b"JPEG", "image/jpeg")}).status_code == 201
     assert (storage / "kakao" / integration / aid).read_bytes() == b"JPEG"
+    # 받을 자리(pending)가 아닌 첨부는 받지 않는다(BE-2·3 검수 W-5) — 저장본 덮어쓰기 · 동영상(표시만 · D-31) · 만료
+    assert client.post(upload, headers=_bearer(token), files={"file": ("a.jpg", b"OTHER", "image/jpeg")}).status_code == 409
+    assert (storage / "kakao" / integration / aid).read_bytes() == b"JPEG"
+    for log, seq in ((201, 1), (202, 0)):
+        closed = client.post(f"/api/integrations/kakao/attachments/{kakao_attachment_aid(integration, '18200', log, seq)}",
+                             headers=_bearer(token), files={"file": ("x", b"x", "video/mp4")})
+        assert closed.status_code == 409 and closed.json()["detail"]["code"] == "attachment_not_accepted"
     with sessions() as session:
         stored = session.scalar(select(ExternalAttachmentRecord).where(ExternalAttachmentRecord.aid == aid))
         assert stored.state == "stored" and stored.storage_key == f"kakao/{integration}/{aid}"
@@ -201,7 +210,8 @@ def test_profile_image_is_saved_at_once_served_and_deleted(tmp_path) -> None:
     assert client.get("/api/profile/image", headers=JIHO).status_code == 404
     replaced = client.put("/api/profile/image", headers=MINA, files={"file": ("me.jpg", JPG, "image/jpeg")}).json()
     assert client.get("/api/profile/image", headers=MINA).headers["content-type"] == "image/jpeg"
-    assert len(list((storage / "profiles" / "mina").iterdir())) == 1  # 바꾸면 옛 저장본은 지운다
+    # 자리 이름은 회원 id 의 SHA-256 앞 32자다 — id 에 어떤 글자가 와도 키가 깨지지 않는다(검수 W-10).
+    assert len(list((storage / "profiles" / hashlib.sha256(b"mina").hexdigest()[:32]).iterdir())) == 1  # 바꾸면 옛 저장본은 지운다
     assert replaced["profile_image_url"].startswith("/api/profile/image?v=")
     assert client.delete("/api/profile/image", headers=MINA).status_code == 204
     assert client.get("/api/profile/image", headers=MINA).status_code == 404

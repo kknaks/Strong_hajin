@@ -41,6 +41,10 @@ KAKAO_ATTACHMENT_LIMIT_BYTES = SLACK_FILE_LIMIT_BYTES
 STORED_KINDS = frozenset({"image", "album", "file"})
 
 
+class KakaoAttachmentSlotClosed(ExternalChannelError):
+    """그 첨부는 받을 자리가 아니다 — 동영상·음성(표시만 · D-31)·만료·너무 큼·이미 저장됨. 409(BE-2·3 검수 W-5)."""
+
+
 class KakaoRoomNotSelected(ExternalChannelError):
     """서버의 고른 방이 아닌 방으로 올렸다 — 403(R-F1 정정)."""
 
@@ -270,6 +274,10 @@ class KakaoIngestApplication:
         attachment = self._repository.kakao_attachment(integration.id, aid.strip().lower(), lock=True)
         if attachment is None:
             raise InboxNotFound("attachment was not found")
+        if attachment.state != "pending":
+            # 메시지 묶음이 「받을 자리」(pending)로 연 첨부만 받는다 — 앱이 D-31 을 어겨도 서버가 저장하지 않고, 저장본을
+            # 덮어쓰지도 않는다.
+            raise KakaoAttachmentSlotClosed(f"이 첨부는 받지 않습니다({attachment.state})")
         content_type = (mime or attachment.mime or "application/octet-stream")[:200]
         key = kakao_storage_key(integration.id, attachment.aid)
         self._storage.put(key, data, content_type)

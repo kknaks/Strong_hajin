@@ -37,6 +37,22 @@ def _tool_registry(raw: str | None) -> tuple[str, ...]:
     return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
+def _origin(raw: str, name: str) -> str:
+    origin = raw.strip().rstrip("/")
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f"{name} must be an HTTP(S) origin without credentials, path, query or fragment")
+    return origin
+
+
 class RuntimeProfile(StrEnum):
     DEVELOPMENT = "development"
     TEST = "test"
@@ -119,22 +135,9 @@ class Settings:
     def __post_init__(self) -> None:
         if self.ai_provider not in AI_PROVIDERS:
             raise ValueError(f"AX_AI_PROVIDER must be one of {AI_PROVIDERS}")
-        origin = self.web_origin.strip().rstrip("/")
-        parsed = urlsplit(origin)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.path
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError(
-                "AX_WEB_ORIGIN must be an HTTP(S) origin without credentials, path, query or fragment"
-            )
-        object.__setattr__(self, "web_origin", origin)
-        object.__setattr__(self, "api_origin", (self.api_origin or origin).strip().rstrip("/"))
+        object.__setattr__(self, "web_origin", _origin(self.web_origin, "AX_WEB_ORIGIN"))
+        # API origin 도 같은 검사를 지난다 — 경로·쿼리가 붙으면 OAuth redirect_uri 가 조용히 틀어진다(검수 W-4).
+        object.__setattr__(self, "api_origin", _origin(self.api_origin or self.web_origin, "AX_API_ORIGIN"))
 
     @property
     def gmail_oauth_configured(self) -> bool:

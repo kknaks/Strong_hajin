@@ -139,6 +139,16 @@ class GmailInboxApi:
         return _json(request, timeout=max(self._timeout, 120.0))
 
 
+#: 슬랙 파일이 사는 도메인 — 회원 토큰을 실어 보내도 되는 곳은 이것과 그 하위뿐이다.
+SLACK_FILE_DOMAINS = ("slack.com", "slack-edge.com", "slack-files.com")
+
+
+def slack_file_host(host: str | None) -> bool:
+    """`host == d` 또는 `host` 가 `.d` 로 끝날 때만 — 점이 없으면 `evilslack.com` 도 통과한다(BE-2·3 검수 W-2)."""
+    host = (host or "").lower().rstrip(".")
+    return any(host == domain or host.endswith("." + domain) for domain in SLACK_FILE_DOMAINS)
+
+
 class SlackInboxApi:
     def __init__(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._timeout = timeout
@@ -170,7 +180,7 @@ class SlackInboxApi:
 
     def download(self, access_token: str, url: str) -> tuple[bytes, str | None]:
         parts = urlparse.urlsplit(url)
-        if parts.scheme != "https" or not (parts.hostname or "").endswith(("slack.com", "slack-edge.com", "slack-files.com")):
+        if parts.scheme != "https" or not slack_file_host(parts.hostname):
             # 원문에 적힌 주소라도 슬랙 밖이면 토큰을 실어 보내지 않는다.
             raise UpstreamFailed("not_a_slack_file_url", retryable=False)
         request = urlrequest.Request(url, headers={"Authorization": f"Bearer {access_token}"})

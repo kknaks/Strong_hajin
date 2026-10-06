@@ -75,6 +75,18 @@ class InvalidRoomSelection(ExternalChannelError):
     """고른 방 요청이 그 연동 종류에 맞지 않는다(빈 id · 모르는 방 종류) — 422."""
 
 
+class IntegrationDisconnected(ExternalChannelError):
+    """연동이 끊겨 상류를 부를 수 없다 — 「다시 연결」(409 · SPEC-008 §4.3 available-rooms)."""
+
+
+class RoomAccessDenied(ExternalChannelError):
+    """그 회원의 토큰으로는 그 방을 볼 수 없다 — 남의 DM·비공개 채널 id 를 고른 경우(BE-2·3 검수 F-1)."""
+
+
+class UpstreamUnavailableError(ExternalChannelError):
+    """상류(슬랙)가 지금 답하지 않는다 — 502(Case Matrix 「상류 429·5xx」)."""
+
+
 class DeviceTokenRejected(ExternalChannelError):
     """기기 토큰이 없거나 철회됐다 — 401."""
 

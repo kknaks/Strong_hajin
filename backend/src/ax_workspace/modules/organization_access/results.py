@@ -68,6 +68,9 @@ class MyOrganizationProfileView(OrganizationProfileView):
     assistant_character: AssistantCharacterResult
     #: 프로필 이미지 주소(`GET /api/profile/image?v=…`) — 없으면 null 이고 화면은 이니셜 아바타를 그린다(SPEC-008 §4.7).
     profile_image_url: NotRequired[str | None]
+    #: 프로필 머리의 읽기 전용 명부 값(SPEC-008 §2.6 · BE 수정 판 3) — 주 보직의 직책 · 주 직무. 없으면 null.
+    position: NotRequired[str | None]
+    job: NotRequired[str | None]
 
 
 class MemberHierarchyView(TypedDict):

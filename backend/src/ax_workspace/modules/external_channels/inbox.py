@@ -13,9 +13,11 @@
 """
 from __future__ import annotations
 
+import logging
+
 import base64
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
@@ -144,7 +146,7 @@ class TokenCipher(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RefreshedToken:
-    access_token: str
+    access_token: str = field(repr=False)
     expires_at: datetime | None
 
 
@@ -277,6 +279,16 @@ class RoomMessageView(TypedDict):
     thread_key: str | None
     raw: dict[str, Any]
     attachments: list[AttachmentView]
+    #: 슬랙 「슬랙에서 열기」 — 워크스페이스 주소를 아는 연동만(BE 수정 판 3). 카톡·모르면 null.
+    permalink: str | None
+
+
+class UserTagView(TypedDict):
+    """보낸 사람·멘션 id → 이름표(BE 수정 판 3). 연동 워커가 그 회원 토큰으로 풀어 방에 모아 둔 것이다."""
+
+    name: str | None
+    is_bot: bool
+    avatar: str | None
 
 
 class RoomHeaderView(TypedDict):
@@ -288,12 +300,16 @@ class RoomHeaderView(TypedDict):
     member_count: int | None
     external_id: str
     read_up_to_key: str | None
+    #: 방 자체의 슬랙 주소(머리 「슬랙에서 열기」). 카톡·모르면 null.
+    permalink: str | None
 
 
 class RoomMessagesPage(TypedDict):
     room: RoomHeaderView
     messages: list[RoomMessageView]
     next_cursor: str | None
+    #: `{user id: 이름표}` — 이 방에서 본 보낸 사람·멘션(슬랙). 카톡은 비어 있다(작성자 이름이 이미 글자다).
+    users: dict[str, UserTagView]
 
 
 class ReplyAcceptedView(TypedDict):
@@ -344,10 +360,14 @@ def _attachment_view(row: Any) -> AttachmentView:
 
 
 def _reply_view(row: Any) -> SentReplyView:
+    payload = dict(row.payload or {})
+    if payload.get("files"):
+        # 첨부 대기 저장본의 키는 서버 안쪽 값이다 — 화면에 내지 않는다.
+        payload["files"] = [{key: value for key, value in item.items() if key != "storage_key"} for item in payload["files"]]
     return {
         "local_id": str(row.id),
         "status": row.status,
-        "payload": row.payload or {},
+        "payload": payload,
         "error": row.error,
         "created_at": iso(row.created_at) or "",
         "sent_at": iso(row.sent_at),
@@ -360,13 +380,29 @@ def _kinds_for(source: str) -> set[str]:
     return {IntegrationKind.MAIL, IntegrationKind.SLACK, IntegrationKind.KAKAO} if source == "all" else {source}
 
 
+def slack_workspace_url(integration: Any) -> str | None:
+    """`https://<domain>.slack.com/` — 연동 워커·개발 토큰 이음새가 `auth.test` 로 알아 둔 값(BE 수정 판 3)."""
+    url = str((integration.account_meta or {}).get("url") or "")
+    return (url if url.endswith("/") else url + "/") if url.startswith("https://") else None
+
+
+def slack_permalink(workspace: str, channel: str, ts: str, thread_ts: str | None) -> str:
+    """슬랙이 쓰는 퍼머링크 모양 `…/archives/<channel>/p<ts 점 없이>` — 답글이면 스레드를 함께 연다."""
+    link = f"{workspace}archives/{channel}/p{ts.replace('.', '')}"
+    if thread_ts and thread_ts != ts:
+        link += f"?thread_ts={thread_ts}&cid={channel}"
+    return link
+
+
 def reply_subject(subject: str | None) -> str:
-    """`Re:` 고정 — 이미 `Re:` 면 겹치지 않는다(§2.8)."""
-    base = (subject or "").strip()
+    """`Re:` 고정 — 이미 `Re:` 면 겹치지 않는다(§2.8). 접힌 머리의 개행은 공백으로 편다(머리 주입 방지)."""
+    base = " ".join((subject or "").split())
     return base if base.lower().startswith("re:") else f"Re: {base}".rstrip()
 
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class InboxApplication:
@@ -520,7 +556,9 @@ class InboxApplication:
         next_cursor = encode_cursor(aware(page[-1].sent_at), _id_key(page[-1].id)) if len(rows) > limit and page else None
         attachments = self._repository.attachments_of([row.id for row in page])
         state = self._repository.room_read_state(str(principal.id), room.id)
+        workspace = slack_workspace_url(integration) if integration.kind == IntegrationKind.SLACK else None
         return {
+            "users": dict((room.room_meta or {}).get("users") or {}),
             "room": {
                 "room_id": str(room.id),
                 "integration_id": str(integration.id),
@@ -530,6 +568,7 @@ class InboxApplication:
                 "member_count": room.member_count,
                 "external_id": room.external_id,
                 "read_up_to_key": state.read_up_to_key if state else None,
+                "permalink": f"{workspace}archives/{room.external_id}" if workspace else None,
             },
             # 화면은 위에서 아래로 읽는다 — 페이지 안은 오래된 것부터, `next_cursor` 는 더 과거로.
             "messages": [
@@ -541,6 +580,7 @@ class InboxApplication:
                     "thread_key": row.thread_key,
                     "raw": row.raw or {},
                     "attachments": [_attachment_view(item) for item in attachments.get(row.id, [])],
+                    "permalink": slack_permalink(workspace, room.external_id, row.external_key, row.thread_key) if workspace else None,
                 }
                 for row in reversed(page)
             ],
@@ -705,6 +745,9 @@ class InboxApplication:
                     taken.add(address)
         if not recipients:
             raise InvalidInboxRequest("받는 사람이 없습니다")
+        if any("\r" in item or "\n" in item for item in [*recipients, *copies]):
+            # 개행이 든 주소는 메일 머리를 하나 더 끼워 넣을 수 있다 — 접수에서 거절한다(BE-2·3 검수 W-1).
+            raise InvalidInboxRequest("주소에 줄바꿈을 넣을 수 없습니다")
         if any("@" not in bare_address(item) for item in [*recipients, *copies]):
             raise InvalidInboxRequest("주소가 올바르지 않습니다")
         payload = {
@@ -761,7 +804,9 @@ class InboxApplication:
         return ReplyAccepted(str(row.id), deliver=True)
 
     def deliver_reply(self, local_id: UUID, files: Sequence[OutgoingFile]) -> str:
-        """202 뒤에 보낸다. 결과(`sent`/`failed`)는 그 회원의 사건 채널로 — 상류 429/5xx 도 여기서 실패로 알린다."""
+        """연동 워커가 내구 잡(`external.reply_deliver`)으로 보낸다 — 202 와 전송 사이에 프로세스가 죽어도 잡이 남아
+        다시 보낸다(BE 수정 판 1). 결과(`sent`/`failed`)는 그 회원의 사건 채널로 — 상류 429/5xx 도 실패로 알린다.
+        `sending` 이 아니면(이미 보냈거나 실패) 아무것도 하지 않는다 — 잡 재전달이 두 번째 effect 를 내지 않는다."""
         reply = self._repository.reply_by_id(local_id)
         if reply is None or reply.status != "sending":
             return reply.status if reply is not None else "missing"
@@ -781,11 +826,31 @@ class InboxApplication:
             error = failure
             reply.status = "failed"
             reply.error = getattr(failure, "code", "failed")[:500]
+        except Exception:  # noqa: BLE001 — 알 수 없는 실패도 「보내는 중」에 멈추지 않고 「실패」로 닫는다(검수 W-1)
+            logger.exception("reply %s failed unexpectedly", reply.id)
+            reply.status = "failed"
+            reply.error = "internal_error"
+            self._announce_result(reply, retryable=False)
+            return reply.status
+        self._announce_result(reply, retryable=bool(getattr(error, "retryable", False)) if error is not None else None)
+        return reply.status
+
+    def abandon_reply(self, local_id: UUID, code: str) -> str:
+        """보낼 수 없게 된 답장(첨부 저장본 유실 · 재시도 한도 초과)을 「실패」로 닫고 알린다 — 「보내는 중」에 멈추지 않는다."""
+        reply = self._repository.reply_by_id(local_id)
+        if reply is None or reply.status != "sending":
+            return reply.status if reply is not None else "missing"
+        reply.status = "failed"
+        reply.error = code[:500]
+        self._announce_result(reply, retryable=True)
+        return reply.status
+
+    def _announce_result(self, reply: Any, *, retryable: bool | None) -> None:
         reply.updated_at = self._clock()
         data: dict[str, Any] = {"local_id": str(reply.id), "status": reply.status}
-        if error is not None:
+        if retryable is not None:
             data["error"] = reply.error
-            data["retryable"] = bool(getattr(error, "retryable", False))
+            data["retryable"] = retryable
         self._repository.notify(
             USER_EVENTS_CHANNEL,
             UserEvent(
@@ -798,7 +863,6 @@ class InboxApplication:
                 data=data,
             ).to_payload(),
         )
-        return reply.status
 
     def _send_slack(self, reply: Any, integration: Any, files: Sequence[OutgoingFile]) -> str | None:
         room = self._repository.room_by_id(reply.room_id)

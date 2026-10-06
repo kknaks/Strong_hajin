@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -31,7 +31,7 @@ ARRIVAL_EVENTS_PER_SAVE = 20
 
 _INTEGRATION_FIELDS = frozenset({
     "status", "sync_cursor", "watch_expires_at", "backfill_cursor", "backfill_done_at", "access_token_encrypted",
-    "token_expires_at", "last_error",
+    "token_expires_at", "last_error", "account_meta",
 })
 _ROOM_FIELDS = frozenset({"status", "backfill_cursor", "backfill_done_at", "room_type", "name", "member_count", "room_meta"})
 
@@ -46,6 +46,7 @@ def _integration_state(row: ExternalIntegrationRecord) -> IntegrationState:
     return IntegrationState(
         id=str(row.id), member_id=row.member_id, kind=row.kind, status=row.status, account_key=row.account_key,
         access_token_encrypted=row.access_token_encrypted, refresh_token_encrypted=row.refresh_token_encrypted,
+        account_meta=dict(row.account_meta or {}),
         token_expires_at=_aware(row.token_expires_at), sync_cursor=row.sync_cursor, backfill_cursor=row.backfill_cursor,
         backfill_done_at=_aware(row.backfill_done_at), watch_expires_at=_aware(row.watch_expires_at),
         last_synced_at=_aware(row.last_synced_at),
@@ -58,6 +59,7 @@ def _room_state(room: ExternalRoomRecord, integration: ExternalIntegrationRecord
         room_type=room.room_type, name=room.name, last_message_key=room.last_message_key,
         backfill_cursor=room.backfill_cursor, backfill_count=room.backfill_count or 0,
         backfill_done_at=_aware(room.backfill_done_at), access_token_encrypted=integration.access_token_encrypted,
+        verified=bool((room.room_meta or {}).get("verified_at")), access_lost=(room.room_meta or {}).get("access_lost"),
     )
 
 
@@ -109,12 +111,17 @@ class SqlAlchemyExternalChannelsSyncStore:
         return self._rooms(ExternalIntegrationRecord.kind == "slack")
 
     def slack_fanout_targets(self, team_id: str, channel: str) -> list[RoomState]:
-        """이벤트 1건의 `(team, channel)` 을 고른 «모든» 연동의 방 — 사람마다 한 벌(W-8 · D-25)."""
-        return self._rooms(
+        """이벤트 1건의 `(team, channel)` 을 고른 연동의 방 — 사람마다 한 벌(W-8 · D-25).
+
+        **그 회원 토큰으로 접근이 확인된 방만**이다(BE-2·3 검수 F-1). `(team, channel)` 만으로 고르면 남의 DM·비공개
+        채널 id 를 고른 사람에게 그 대화가 복제된다. 확인은 방 추가(BE-1 `add_rooms`)와 워커의 실행마다 재확인이 찍는다.
+        """
+        rooms = self._rooms(
             ExternalIntegrationRecord.kind == "slack",
             ExternalIntegrationRecord.account_key == team_id,
             ExternalRoomRecord.external_id == channel,
         )
+        return [room for room in rooms if room.verified and not room.access_lost]
 
     def _rooms(self, *conditions) -> list[RoomState]:
         with self._sessions() as session:
@@ -244,6 +251,8 @@ class SqlAlchemyExternalChannelsSyncStore:
                 return
             status_before = row.status
             for key, value in fields.items():
+                if key == "account_meta":
+                    value = {**(row.account_meta or {}), **value}  # 연결이 남긴 team·user 정보를 지우지 않는다
                 setattr(row, key, value)
             row.updated_at = self._clock()
             if row.status != status_before:
@@ -260,11 +269,67 @@ class SqlAlchemyExternalChannelsSyncStore:
                 return
             status_before = room.status
             for key, value in fields.items():
+                if key == "room_meta":
+                    value = {**(room.room_meta or {}), **value}  # 확인 표지(verified_at)를 지우지 않는다
                 setattr(room, key, value)
             room.updated_at = self._clock()
             if room.status != status_before:
                 self._changed(session, session.get(ExternalIntegrationRecord, room.integration_id), room_id=room_id)
             session.commit()
+
+    def set_room_access(self, room_id: str, *, ok: bool, reason: str | None = None) -> None:
+        """접근 확인 결과(F-1). 잃으면 `paused`+사유(팬아웃·수집에서 빠짐), 되찾으면 표지를 새로 찍고 상태를 되돌린다."""
+        with self._sessions() as session:
+            room = session.get(ExternalRoomRecord, UUID(room_id), with_for_update=True)
+            if room is None:
+                return
+            now = self._clock()
+            meta = dict(room.room_meta or {})
+            status_before = room.status
+            if ok:
+                meta.pop("access_lost", None)
+                meta["verified_at"] = now.isoformat()
+                if room.status == "paused":
+                    room.status = "live" if room.backfill_done_at else "backfilling"
+            else:
+                meta.pop("verified_at", None)
+                meta["access_lost"] = (reason or "access_denied")[:60]
+                room.status = "paused"
+            room.room_meta = meta
+            room.updated_at = now
+            if room.status != status_before:
+                self._changed(session, session.get(ExternalIntegrationRecord, room.integration_id), room_id=room_id)
+            session.commit()
+
+    def room_users(self, room_id: str) -> dict[str, dict[str, Any]]:
+        """방에 모아 둔 이름표(`room_meta.users`) — 메시지 응답의 `users` 맵이 된다(BE 수정 판 3)."""
+        with self._sessions() as session:
+            room = session.get(ExternalRoomRecord, UUID(room_id))
+            return dict(((room.room_meta or {}).get("users") or {}) if room is not None else {})
+
+    def thread_roots(self, room_id: str, *, limit: int) -> list[str]:
+        """최근 스레드의 부모 ts — 메우기 때 그 답글을 다시 훑는다(W-6). 부모는 `thread_key == external_key` 인 행이다."""
+        with self._sessions() as session:
+            return list(session.scalars(
+                select(ExternalMessageRecord.external_key)
+                .where(
+                    ExternalMessageRecord.room_id == UUID(room_id),
+                    ExternalMessageRecord.thread_key == ExternalMessageRecord.external_key,
+                )
+                .order_by(ExternalMessageRecord.sent_at.desc())
+                .limit(limit)
+            ))
+
+    def purge_spent_oauth_states(self, *, older_than: timedelta) -> int:
+        """만료·소비된 지 오래된 OAuth `state` 를 지운다(BE-1 검수 W-8). 해시뿐인 일회용 표라 회사 데이터의 「계속 보관」
+        원칙(D-49 대체)에 들지 않는다 — 지워도 되살릴 것이 없다."""
+        from ax_workspace.platform.persistence import ExternalOAuthStateRecord
+
+        cutoff = self._clock() - older_than
+        with self._sessions() as session:
+            result = session.execute(delete(ExternalOAuthStateRecord).where(ExternalOAuthStateRecord.expires_at < cutoff))
+            session.commit()
+            return int(result.rowcount or 0)
 
     def mark_disconnected(self, integration_id: str, reason: str) -> None:
         with self._sessions() as session:
@@ -289,7 +354,8 @@ class SqlAlchemyExternalChannelsSyncStore:
 
     # ── 개발 전용 이음새 (4차 검수 ★3) ──
     def connect_slack_for_development(
-        self, *, member_id: str, team_id: str, team_name: str, user_id: str | None, access_token_encrypted: str, scopes: str
+        self, *, member_id: str, team_id: str, team_name: str, user_id: str | None, access_token_encrypted: str, scopes: str,
+        extra_meta: dict[str, Any] | None = None,
     ) -> str:
         """`~/.slack_test_token` 을 「연결된 슬랙 연동」으로. OAuth 콜백(https·운영)을 거치지 않는 **로컬 전용** 길이다 —
         운영 프로파일 거절은 부르는 쪽(`bootstrap/external_worker.connect_dev_slack`)이 먼저 한다."""
@@ -306,7 +372,7 @@ class SqlAlchemyExternalChannelsSyncStore:
                     ExternalIntegrationRecord.account_key == team_id,
                 ).with_for_update()
             )
-            meta = {"team_id": team_id, "team_name": team_name, "user_id": user_id, "source": "development_token"}
+            meta = {"team_id": team_id, "team_name": team_name, "user_id": user_id, "source": "development_token", **(extra_meta or {})}
             if row is None:
                 row = ExternalIntegrationRecord(
                     member_id=member_id, kind="slack", status="connected", account_key=team_id, display_name=team_name,

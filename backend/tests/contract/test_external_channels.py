@@ -18,6 +18,8 @@ from ax_workspace.entrypoints.reset_demo import reset_database
 from ax_workspace.modules.external_channels.application import OAuthGrant
 from ax_workspace.modules.external_channels.domain import OAuthExchangeFailed, secret_digest
 from ax_workspace.platform.external_tokens import FernetTokenCipher, generate_key
+from slack_directory_support import FakeSlackDirectory
+from ax_workspace.modules.external_channels.application import SlackRoomInfo
 from ax_workspace.platform.persistence import (
     ExternalDeviceTokenRecord,
     ExternalIntegrationRecord,
@@ -69,6 +71,11 @@ def _stack(tmp_path, *, providers: bool = True, **overrides):
     fakes = {"mail": FakeProvider("mail"), "slack": FakeProvider("slack")}
     if providers:
         app.state.workflow_application._external_oauth = fakes
+    # 슬랙 방 접근 확인(F-1)은 회원 토큰으로 슬랙에 묻는다 — 시험에서는 대역이 「누구에게나 보이는 방」으로 답한다.
+    app.state.workflow_application._slack_directory = FakeSlackDirectory(
+        rooms={"access-plain": [SlackRoomInfo("C111", "private", "운영", member_count=4), SlackRoomInfo("D222", "dm", "D222")]},
+        default={"C1": "channel", "C999": "channel"},
+    )
     return TestClient(app, follow_redirects=False), app, fakes, FernetTokenCipher(key), make_session_factory(database_url)
 
 
@@ -193,7 +200,7 @@ def test_callback_stores_tokens_encrypted_for_the_state_owner_only(tmp_path) -> 
     [row] = client.get("/api/integrations", headers=MINA).json()
     assert row == {
         "id": integration_id, "kind": "mail", "status": "backfilling", "display_name": "mina@corp.example",
-        "synced_count": 0, "last_synced_at": None, "backfill_count": 0, "collector": None,
+        "synced_count": 0, "last_synced_at": None, "backfill_count": 0, "domain": None, "collector": None,
     }
     assert client.get("/api/integrations", headers=JIHO).json() == []
     with sessions() as session:
@@ -282,8 +289,13 @@ def test_mail_has_no_rooms_and_a_wrong_room_kind_is_refused(tmp_path) -> None:
     mail = _connected(client, fakes, "mail", "mina@corp.example")
     slack = _connected(client, fakes, "slack", "T0001")
     assert client.post(f"/api/integrations/{mail}/rooms", headers=MINA, json={"room_ids": ["x"]}).status_code == 422
-    bad = {"room_ids": ["C1"], "rooms": [{"room_id": "C1", "type": "group"}]}
-    assert client.post(f"/api/integrations/{slack}/rooms", headers=MINA, json=bad).status_code == 422
+    # 슬랙은 클라이언트가 보낸 종류를 믿지 않는다 — 그 회원 토큰으로 슬랙이 답한 종류를 쓴다(F-1).
+    lying = {"room_ids": ["C1"], "rooms": [{"room_id": "C1", "type": "group", "name": "가짜"}]}
+    assert client.post(f"/api/integrations/{slack}/rooms", headers=MINA, json=lying).status_code == 202
+    [room] = client.get(f"/api/integrations/{slack}/rooms", headers=MINA).json()
+    assert (room["type"], room["name"]) == ("channel", "C1")
+    # 그 회원이 볼 수 없는 방(남의 DM)은 고를 수 없다.
+    assert client.post(f"/api/integrations/{slack}/rooms", headers=MINA, json={"room_ids": ["D-someone-else"]}).status_code == 422
     assert client.post(f"/api/integrations/{slack}/rooms", headers=MINA, json={"room_ids": []}).status_code == 422
 
 
@@ -400,3 +412,143 @@ def test_reconnect_is_for_oauth_kinds_and_kakao_is_refused(tmp_path, kind) -> No
     token = client.post("/api/device-tokens", headers=MINA, json={"device_name": "Mac"}).json()["token"]
     kakao = client.get("/api/integrations/kakao/handshake", headers=_bearer(token)).json()["integration_id"]
     assert client.post(f"/api/integrations/{kakao}/reconnect", headers=MINA).status_code == 422
+
+
+# ── BE-1 검수 WARN (BE 수정 판 1) ─────────────────────────────────────────────────────────────
+
+
+def test_callback_refuses_a_link_opened_in_someone_elses_logged_in_browser(tmp_path) -> None:
+    """W-2 — 지호가 만든 연결 링크를 민아가 자기 로그인 브라우저에서 동의해도 지호의 연동으로 들어가지 않는다."""
+    from ax_workspace.bootstrap.seed import DEMO_PASSWORD, demo_email
+
+    client, _, fakes, _, _ = _stack(tmp_path)
+    state = _connect(client, "mail", JIHO)
+    fakes["mail"].grants["mina-code"] = _grant("mina@corp.example")
+    assert client.post("/api/auth/login", json={"email": demo_email("mina"), "password": DEMO_PASSWORD}).status_code == 200
+    refused = client.get("/api/integrations/mail/callback", params={"code": "mina-code", "state": state})
+    assert refused.status_code == 400
+    assert client.get("/api/integrations", headers=JIHO).json() == []
+    # 그 링크는 거기서 끝났다 — 쿠키 없는 브라우저(데스크톱이 연 OS 브라우저)로 다시 들이밀어도 안 된다.
+    client.cookies.clear()
+    assert client.get("/api/integrations/mail/callback", params={"code": "mina-code", "state": state}).status_code == 400
+    # 같은 회원의 브라우저라면(웹 흐름) · 쿠키가 없으면(데스크톱 흐름) 종전대로 된다.
+    own = _connect(client, "mail", JIHO)
+    fakes["mail"].grants["jiho-code"] = _grant("jiho@corp.example")
+    assert client.get("/api/integrations/mail/callback", params={"code": "jiho-code", "state": own}).status_code == 302
+
+
+def test_oauth_grants_never_print_their_tokens() -> None:
+    """W-3 — 토큰을 담은 값은 repr 에 토큰이 없다."""
+    from ax_workspace.modules.external_channels.inbox import RefreshedToken
+    from ax_workspace.modules.external_channels.sync import IntegrationState
+
+    printed = repr(_grant("a@b.example", token="ya29.secret-access", refresh="1//secret-refresh"))
+    assert "secret-access" not in printed and "secret-refresh" not in printed and "a@b.example" in printed
+    assert "secret" not in repr(RefreshedToken("ya29.secret", None))
+    state = IntegrationState("i", "m", "mail", "connected", "a", "enc-secret", "enc-secret-2", {}, None, None, None, None, None, None)
+    assert "enc-secret" not in repr(state)
+
+
+def test_a_bad_encryption_key_or_a_missing_production_key_stops_the_boot(tmp_path) -> None:
+    """W-4 — 요청마다 500 이 아니라 부팅 실패. API origin 도 웹 origin 과 같은 검사."""
+    database_url = f"sqlite:///{tmp_path / 'demo.db'}"
+    with pytest.raises(ValueError):
+        create_app(Settings(RuntimeProfile.TEST, database_url, external_token_encryption_key="not-a-fernet-key"))
+    with pytest.raises(RuntimeError, match="AX_EXTERNAL_TOKEN_ENCRYPTION_KEY"):
+        create_app(Settings(RuntimeProfile.PRODUCTION, database_url, google_oauth_client_id="c", google_oauth_client_secret="s"))
+    create_app(Settings(RuntimeProfile.PRODUCTION, database_url))  # 외부 연동을 안 쓰는 운영은 그대로 뜬다
+    with pytest.raises(ValueError, match="AX_API_ORIGIN"):
+        Settings(RuntimeProfile.TEST, database_url, api_origin="https://ax.example/api")
+
+
+def test_disconnecting_kakao_revokes_the_collector_so_handshake_cannot_revive_it(tmp_path) -> None:
+    """W-5 — 카톡 연결 해제는 기기 토큰도 철회한다. 방을 뺀 것도 handshake 가 되살리지 않는다."""
+    client, *_ = _stack(tmp_path)
+    token = client.post("/api/device-tokens", headers=MINA, json={"device_name": "Mac"}).json()["token"]
+    kakao = client.get("/api/integrations/kakao/handshake", headers=_bearer(token)).json()["integration_id"]
+    rooms = f"/api/integrations/{kakao}/rooms"
+    client.post(rooms, headers=MINA, json={"room_ids": ["1", "2"], "rooms": [{"room_id": "1", "type": "group"}, {"room_id": "2", "type": "direct"}]})
+    [first, _] = client.get(rooms, headers=MINA).json()
+    assert client.delete(f"{rooms}/{first['room_id']}", headers=MINA).status_code == 204
+    again = client.get("/api/integrations/kakao/handshake", headers=_bearer(token)).json()
+    assert [row["external_id"] for row in again["selected_rooms"]] == ["2"]  # 뺀 방은 돌아오지 않는다
+
+    assert client.post(f"/api/integrations/{kakao}/disconnect", headers=MINA).status_code == 204
+    assert client.get("/api/integrations/kakao/handshake", headers=_bearer(token)).status_code == 401
+    assert client.get("/api/integrations", headers=MINA).json() == []
+    assert client.get("/api/device-tokens", headers=MINA).json() == []
+
+
+def test_a_device_token_of_an_inactive_member_is_refused(tmp_path) -> None:
+    """W-9 ② — 회원이 비활성이 되면 그 기기 토큰도 통하지 않는다(401)."""
+    from ax_workspace.platform.persistence import MemberRecord
+
+    client, _, _, _, sessions = _stack(tmp_path)
+    token = client.post("/api/device-tokens", headers=MINA, json={"device_name": "Mac"}).json()["token"]
+    assert client.get("/api/integrations/kakao/handshake", headers=_bearer(token)).status_code == 200
+    with sessions() as session:
+        session.get(MemberRecord, "mina").employment_state = "inactive"
+        session.commit()
+    assert client.get("/api/integrations/kakao/handshake", headers=_bearer(token)).status_code == 401
+
+
+def test_racing_first_handshakes_reread_the_winner_instead_of_failing(tmp_path, monkeypatch) -> None:
+    """W-7 — 동시 첫 handshake 의 진 쪽은 유니크 위반을 잡고 이긴 쪽 연동을 다시 읽는다."""
+    from sqlalchemy.exc import IntegrityError
+
+    from ax_workspace.modules.external_channels.application import ExternalChannelApplication
+
+    client, *_ = _stack(tmp_path)
+    token = client.post("/api/device-tokens", headers=MINA, json={"device_name": "Mac"}).json()["token"]
+    original = ExternalChannelApplication.kakao_handshake
+    lost = {"once": False}
+
+    def lose_once(self, member_id):
+        if not lost["once"]:
+            lost["once"] = True
+            original(self, member_id)  # 이긴 쪽이 만든 것처럼 — 그런데 이 트랜잭션은 유니크 위반으로 진다
+            raise IntegrityError("insert", {}, Exception("uq_external_integrations_member_account"))
+        return original(self, member_id)
+
+    monkeypatch.setattr(ExternalChannelApplication, "kakao_handshake", lose_once)
+    answer = client.get("/api/integrations/kakao/handshake", headers=_bearer(token))
+    assert answer.status_code == 200 and lost["once"]
+
+
+def test_spent_oauth_states_are_purged_after_a_day(tmp_path) -> None:
+    """W-8 — 소비·만료된 state 는 연동 워커의 주기 일이 지운다."""
+    from ax_workspace.platform.external_channels_sync_store import SqlAlchemyExternalChannelsSyncStore
+
+    client, _, _, _, sessions = _stack(tmp_path)
+    old, fresh = _connect(client, "mail"), _connect(client, "mail")
+    with sessions() as session:
+        record = session.scalar(select(ExternalOAuthStateRecord).where(ExternalOAuthStateRecord.state_hash == secret_digest(old)))
+        record.expires_at = datetime.now(UTC) - timedelta(days=2)
+        session.commit()
+    from datetime import timedelta as _td
+
+    assert SqlAlchemyExternalChannelsSyncStore(sessions).purge_spent_oauth_states(older_than=_td(days=1)) == 1
+    with sessions() as session:
+        assert session.scalar(select(ExternalOAuthStateRecord).where(ExternalOAuthStateRecord.state_hash == secret_digest(fresh)))
+
+
+def test_a_slack_app_with_token_rotation_fails_the_connection(tmp_path, monkeypatch) -> None:
+    """BE-2·3 검수 W-7 — 로테이션이 켜진 슬랙 앱은 12시간 뒤 전부 끊긴다. 연결을 「실패」로 돌린다."""
+    client, *_ = _stack(tmp_path, providers=False, slack_client_id="cid", slack_client_secret="secret")
+
+    class Answer(io.BytesIO):
+        headers: dict = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    body = {"ok": True, "team": {"id": "T1", "name": "Medi"},
+            "authed_user": {"id": "U1", "access_token": "xoxe.xoxp-1", "refresh_token": "xoxe-1", "expires_in": 43200}}
+    monkeypatch.setattr("ax_workspace.platform.external_oauth.urlrequest.urlopen", lambda request, timeout: Answer(json.dumps(body).encode()))
+    state = _connect(client, "slack")
+    response = client.get("/api/integrations/slack/callback", params={"code": "c", "state": state})
+    assert response.headers["location"].endswith("connect=error")
+    assert client.get("/api/integrations", headers=MINA).json() == []

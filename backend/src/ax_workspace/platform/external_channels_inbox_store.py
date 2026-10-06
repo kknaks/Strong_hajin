@@ -53,6 +53,11 @@ class SqlAlchemyInboxStore:
         #: PostgreSQL 이 아닐 때(시험) 커밋 뒤 같은 프로세스 안에서 대신 흘려 보낼 사건.
         self.local_events: list[str] = []
 
+    @property
+    def session(self) -> Session:
+        """같은 트랜잭션에 작업 큐(`durable_jobs`)를 함께 쓰는 조립층이 쓴다."""
+        return self._session
+
     # ── 연동·방 ──
     def active_integrations(self, member_id: str) -> list[ExternalIntegrationRecord]:
         return list(

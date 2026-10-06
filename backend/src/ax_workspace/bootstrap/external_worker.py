@@ -14,10 +14,13 @@
 """
 from __future__ import annotations
 
+from datetime import timedelta
 import logging
 from pathlib import Path
 import threading
+import time
 from typing import Any
+from uuid import uuid4
 
 from ax_workspace.bootstrap.application import WorkflowApplication
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
@@ -33,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 #: 할 일이 없을 때 쉬는 상한. NOTIFY·Pub/Sub 알림이 오면 그보다 먼저 깬다.
 IDLE_SECONDS = 5.0
+#: 단일 소유 advisory lock 키(BE-2·3 검수 W-4) — 「ax external channel worker」. 레플리카가 둘이어도 일하는 것은 하나.
+LEADER_LOCK_KEY = 0x4158_4558_5457_4B31
+#: 주기 일 간격 — 오래 「보내는 중」인 답장 다시 넣기 · 만료 state 정리.
+REQUEUE_EVERY = 60.0
+PURGE_EVERY = 3600.0
 
 
 class DevelopmentSeamForbidden(RuntimeError):
@@ -63,6 +71,16 @@ class ExternalChannelWorker:
                 gmail_topic=topic if topic and topic.startswith("projects/") else None,
             )
         self._sync = sync
+        self._application: WorkflowApplication | None = None
+        self._worker_id = f"external-worker:{uuid4().hex[:12]}"
+        self._leader: Any = None
+
+    @property
+    def application(self) -> WorkflowApplication:
+        """답장 전송(내구 잡)은 API 와 **같은** 조립을 쓴다 — 메시지함 operation 이 그 안에 있다."""
+        if self._application is None:
+            self._application = WorkflowApplication(self._settings)
+        return self._application
 
     @staticmethod
     def _make_puller(settings: Settings) -> PubSubPuller | None:
@@ -78,7 +96,35 @@ class ExternalChannelWorker:
         self._stop.set()
         self._wake.set()
 
+    def _become_leader(self) -> bool:
+        """`pg_try_advisory_lock` 을 잡을 때까지 기다린다(W-4). 잡은 연결을 쥐고 있는 동안 리더다 — 프로세스가 죽으면 풀린다.
+        PostgreSQL 이 아니면(시험) 바로 리더다."""
+        url = self._settings.database_url
+        if not url.startswith("postgresql"):
+            return True
+        import psycopg
+
+        dsn = url.replace("postgresql+psycopg://", "postgresql://", 1)
+        announced = False
+        while not self._stop.is_set():
+            try:
+                connection = psycopg.connect(dsn, autocommit=True)
+                if connection.execute("SELECT pg_try_advisory_lock(%s)", (LEADER_LOCK_KEY,)).fetchone()[0]:
+                    self._leader = connection
+                    logger.info("external channel worker holds the single-owner lock")
+                    return True
+                connection.close()
+                if not announced:
+                    logger.warning("another external channel worker is running — standing by (single owner)")
+                    announced = True
+            except psycopg.Error as error:
+                logger.warning("leader lock attempt failed (%s)", type(error).__name__)
+            self._stop.wait(10.0)
+        return False
+
     def run(self) -> None:
+        if not self._become_leader():
+            return
         threads = [threading.Thread(target=self._listen, name="external-listen", daemon=True)]
         if self._settings.slack_app_token:
             socket = SlackSocketMode(
@@ -93,9 +139,18 @@ class ExternalChannelWorker:
             thread.start()
         logger.info("external channel worker started")
         failures = 0
+        last_requeue = last_purge = 0.0
         while not self._stop.is_set():
             try:
                 busy = self._sync.tick(due_mail=self._take_due())
+                busy |= self.application.run_inbox_reply_jobs(worker_id=self._worker_id) > 0
+                now = time.monotonic()
+                if now - last_requeue >= REQUEUE_EVERY:
+                    last_requeue = now
+                    self.application.requeue_stuck_inbox_replies()
+                if now - last_purge >= PURGE_EVERY:
+                    last_purge = now
+                    self._sync_store_purge()
                 failures = 0
             except Exception:  # noqa: BLE001 — 한 바퀴의 실패가 워커를 죽이지 않는다(감독이 스택 전체를 멈춘다)
                 failures += 1
@@ -104,7 +159,15 @@ class ExternalChannelWorker:
             if not busy:
                 self._wake.wait(IDLE_SECONDS if failures == 0 else min(60.0, 2.0 * 2 ** min(failures, 5)))
                 self._wake.clear()
+        if self._leader is not None:
+            self._leader.close()
         logger.info("external channel worker stopped")
+
+    def _sync_store_purge(self) -> None:
+        store = SqlAlchemyExternalChannelsSyncStore(make_session_factory(self._settings.database_url))
+        purged = store.purge_spent_oauth_states(older_than=timedelta(days=1))
+        if purged:
+            logger.info("purged %d spent oauth states", purged)
 
     def _reconnected(self) -> None:
         self._sync.request_gap_fill()
@@ -182,5 +245,7 @@ def connect_dev_slack(settings: Settings, member_id: str, token: str, *, identit
     integration_id = store.connect_slack_for_development(
         member_id=member_id, team_id=str(who["team_id"]), team_name=str(who.get("team") or who["team_id"]),
         user_id=who.get("user_id"), access_token_encrypted=cipher.encrypt(token), scopes=str(who.get("_scopes") or ""),
+        extra_meta={"url": who["url"], "domain": str(who["url"]).removeprefix("https://").strip("/")}
+        if str(who.get("url") or "").startswith("https://") else None,
     )
     return {"integration_id": integration_id, "team": str(who.get("team") or who["team_id"])}

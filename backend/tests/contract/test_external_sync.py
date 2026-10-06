@@ -12,10 +12,11 @@ from ax_workspace.bootstrap.external_worker import DevelopmentSeamForbidden, con
 from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
 from ax_workspace.entrypoints.http import create_app
 from ax_workspace.entrypoints.reset_demo import reset_database
-from ax_workspace.modules.external_channels.application import OAuthGrant
-from ax_workspace.modules.external_channels.sync import ExternalSync, HistoryExpired, UpstreamAuthRevoked
+from ax_workspace.modules.external_channels.application import OAuthGrant, SlackRoomInfo
+from ax_workspace.modules.external_channels.sync import ExternalSync, HistoryExpired, UpstreamAuthRevoked, UpstreamRoomDenied
 from ax_workspace.platform.external_channels_sync_store import SqlAlchemyExternalChannelsSyncStore
 from ax_workspace.platform.external_tokens import FernetTokenCipher, generate_key
+from slack_directory_support import FakeSlackDirectory
 from ax_workspace.platform.persistence import (
     ExternalAttachmentRecord,
     ExternalIntegrationRecord,
@@ -41,6 +42,7 @@ class FakeSlack:
         self.info: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self.revoked = False
+        self.denied: dict[str, set[str]] = {}
 
     def history(self, token, channel, *, cursor=None, oldest=None, limit=200):
         if self.revoked:
@@ -53,18 +55,28 @@ class FakeSlack:
         index = 0 if cursor is None else int(cursor)
         return pages[index]
 
-    def replies(self, token, channel, thread_ts, *, cursor=None):
-        self.calls.append(("replies", channel, thread_ts))
-        return self.threads.get(thread_ts, []), None
+    def replies(self, token, channel, thread_ts, *, cursor=None, oldest=None):
+        self.calls.append(("replies", channel, thread_ts, oldest))
+        replies = self.threads.get(thread_ts, [])
+        return ([r for r in replies if float(r["ts"]) > float(oldest)] if oldest else replies), None
 
     def conversation_info(self, token, channel):
-        return self.info.get(channel, {"id": channel, "name": channel, "is_channel": True})
+        if channel in self.denied.get(token, set()):
+            raise UpstreamRoomDenied("channel_not_found")
+        return self.info.get(channel, {"id": channel, "name": channel, "is_channel": True, "is_member": True})
 
     def conversation_members(self, token, channel):
         return ["U1", "U2"]
 
     def user_name(self, token, user_id):
         return {"U1": "김민아", "U2": "박지호"}.get(user_id)
+
+    def user_tag(self, token, user_id):
+        name = self.user_name(token, user_id)
+        return {"name": name, "is_bot": False, "avatar": f"https://avatars.example/{user_id}.png"} if name else None
+
+    def identity(self, token):
+        return {"ok": True, "url": "https://medi.slack.com/", "team_id": TEAM}
 
 
 class FakeGmail:
@@ -122,6 +134,10 @@ def _stack(tmp_path):
     settings = Settings(RuntimeProfile.TEST, database_url, materials_dir=str(tmp_path / "materials"),
                         web_origin="http://127.0.0.1:5176", api_origin="http://127.0.0.1:8001", external_token_encryption_key=key)
     app = create_app(settings)
+    # 슬랙 방 접근 확인(F-1)의 대역 — 기본은 누구에게나 보이는 방. 시험이 토큰별 목록을 덮어쓴다.
+    app.state.workflow_application._slack_directory = FakeSlackDirectory(default={
+        "C1": "channel", "C2": "channel", "G1": "group_dm", "D1": "dm",
+    })
     client = TestClient(app, follow_redirects=False)
     sessions = make_session_factory(database_url)
     store = SqlAlchemyExternalChannelsSyncStore(sessions)
@@ -347,3 +363,131 @@ def test_development_slack_token_seam_stores_an_encrypted_connected_integration(
         connect_dev_slack(settings, "mina", "not-a-user-token", identity=lambda token: who)
     with pytest.raises(LookupError):
         connect_dev_slack(settings, "nobody", "xoxp-dev-token", identity=lambda token: who)
+
+
+# ── F-1 — 남의 슬랙 방은 고를 수도, 팬아웃 받을 수도 없다 (BE-2·3 검수) ───────────────────────────
+
+
+def test_a_member_cannot_pick_someone_elses_dm_and_never_receives_its_events(tmp_path) -> None:
+    settings, client, app, store, sessions, cipher = _stack(tmp_path)
+    directory = app.state.workflow_application._slack_directory
+    directory.default = {}
+    directory.rooms = {
+        "xoxp-test-mina": [SlackRoomInfo("D-MINA", "dm", "박지호")],
+        "xoxp-test-jiho": [SlackRoomInfo("C-OPEN", "channel", "공지")],
+    }
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "D-MINA", "type": "dm"}])
+    who = {"team_id": TEAM, "team": "Medi", "user_id": "U-jiho"}
+    jiho = connect_dev_slack(settings, "jiho", "xoxp-test-jiho", identity=lambda token: who)["integration_id"]
+    # jiho 가 mina 의 DM id 를 안다(링크·스크린샷) — 자기 토큰으로는 그 방이 안 보이니 422 다.
+    refused = client.post(f"/api/integrations/{jiho}/rooms", headers=JIHO, json={"room_ids": ["D-MINA"], "rooms": [{"room_id": "D-MINA", "type": "dm"}]})
+    assert refused.status_code == 422
+    assert client.get(f"/api/integrations/{jiho}/rooms", headers=JIHO).json() == []
+
+    # 확인 없이 들어간 방(이 수정 전 판에 고른 방)이 있어도 팬아웃 대상이 아니다.
+    with sessions() as session:
+        now = datetime.now(UTC)
+        session.add(ExternalRoomRecord(integration_id=UUID(jiho), external_id="D-MINA", room_type="dm", name="x", room_meta={},
+                                       status="backfilling", created_at=now, updated_at=now))
+        session.commit()
+    slack = FakeSlack()
+    slack.denied = {"xoxp-test-jiho": {"D-MINA"}}
+    sync = ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None)
+    event = {"team_id": TEAM, "event": {"type": "message", "channel": "D-MINA", "user": "U2", "text": "비밀", "ts": ts(1)}}
+    assert sync.handle_slack_event(event) == 1  # mina 한 벌뿐
+    assert _messages(sessions, jiho) == [] and len(_messages(sessions, mina)) == 1
+
+    # 워커의 재확인이 그 방을 「멈춤」+사유로 내린다(다시 확인될 때까지 팬아웃·수집에서 빠진다).
+    sync.tick()
+    with sessions() as session:
+        stale = session.scalar(select(ExternalRoomRecord).where(ExternalRoomRecord.integration_id == UUID(jiho)))
+        assert stale.status == "paused" and stale.room_meta["access_lost"] == "channel_not_found"
+    assert sync.handle_slack_event({**event, "event": {**event["event"], "ts": ts(2)}}) == 1
+    assert _messages(sessions, jiho) == []
+
+
+def test_a_room_whose_access_is_lost_pauses_and_recovers_when_access_returns(tmp_path) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    slack = FakeSlack()
+    slack.info["C1"] = {"id": "C1", "name": "general", "is_channel": True, "is_member": False}  # 채널에서 나갔다
+    ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None).tick()
+    [room] = client.get(f"/api/integrations/{mina}/rooms", headers=MINA).json()
+    assert room["status"] == "paused"
+    sync = ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None)
+    assert sync.handle_slack_event(_event("C1", 1)) == 0
+    slack.info["C1"]["is_member"] = True  # 다시 들어왔다 — 다음 실행의 재확인이 되살린다
+    sync.tick()
+    [room] = client.get(f"/api/integrations/{mina}/rooms", headers=MINA).json()
+    assert room["status"] == "live" and room["name"] == "general"
+    assert sync.handle_slack_event(_event("C1", 2)) == 1
+
+
+# ── F-2 — 방 고르기 목록 ───────────────────────────────────────────────────────────────────
+
+
+def test_available_rooms_lists_what_my_token_can_see_with_added_marks(tmp_path) -> None:
+    settings, client, app, store, sessions, cipher = _stack(tmp_path)
+    directory = app.state.workflow_application._slack_directory
+    directory.default = {}
+    directory.rooms = {"xoxp-test-mina": [
+        SlackRoomInfo("C1", "channel", "general", member_count=12),
+        SlackRoomInfo("G1", "group_dm", "김민아, 박지호", member_count=2),
+        SlackRoomInfo("D9", "dm", "알림봇", is_bot=True, member_count=2),
+    ]}
+    assert client.get("/api/integrations/slack/available-rooms", headers=MINA).status_code == 404  # 슬랙 연동 없음
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    first = client.get("/api/integrations/slack/available-rooms", headers=MINA).json()
+    assert first == {
+        "rooms": [
+            {"room_id": "C1", "type": "channel", "name": "general", "is_bot": False, "member_count": 12, "already_added": True},
+            {"room_id": "G1", "type": "group_dm", "name": "김민아, 박지호", "is_bot": False, "member_count": 2, "already_added": False},
+        ],
+        "next_cursor": "2",
+    }
+    rest = client.get("/api/integrations/slack/available-rooms", headers=MINA, params={"cursor": "2"}).json()
+    assert [row["room_id"] for row in rest["rooms"]] == ["D9"] and rest["rooms"][0]["is_bot"] is True and rest["next_cursor"] is None
+    filtered = client.get("/api/integrations/slack/available-rooms", headers=MINA, params={"q": "박지"}).json()
+    assert [row["room_id"] for row in filtered["rooms"]] == ["G1"]
+    store.mark_disconnected(mina, "token_revoked")
+    gone = client.get("/api/integrations/slack/available-rooms", headers=MINA)
+    assert gone.status_code == 409 and gone.json()["detail"]["code"] == "disconnected"
+
+
+# ── 판 3 — 이름표 · 퍼머링크 · 워크스페이스 도메인 ───────────────────────────────────────────────
+
+
+def test_room_messages_carry_user_tags_permalinks_and_the_workspace_domain(tmp_path) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    sync = ExternalSync(store, cipher=cipher, slack=FakeSlack(), gmail=None, gmail_topic=None)
+    sync.tick()  # 워크스페이스 주소를 알아 두고 방을 확인한다
+    sync.handle_slack_event(_event("C1", 1, text="<@U2> 확인 부탁"))
+    sync.handle_slack_event(_event("C1", 2, user="U2", thread_ts=ts(1)))
+    [integration] = client.get("/api/integrations", headers=MINA).json()
+    assert integration["domain"] == "medi.slack.com"
+    [room] = client.get(f"/api/integrations/{mina}/rooms", headers=MINA).json()
+    page = client.get(f"/api/inbox/rooms/{room['room_id']}/messages", headers=MINA).json()
+    assert page["users"] == {
+        "U1": {"name": "김민아", "is_bot": False, "avatar": "https://avatars.example/U1.png"},
+        "U2": {"name": "박지호", "is_bot": False, "avatar": "https://avatars.example/U2.png"},
+    }
+    assert page["room"]["permalink"] == "https://medi.slack.com/archives/C1"
+    [first] = page["messages"]  # 대화 줄은 최상위 글만 — 답글은 스레드 패널(`thread_ts`)이 따로 읽는다
+    [_, reply] = client.get(f"/api/inbox/rooms/{room['room_id']}/messages", headers=MINA, params={"thread_ts": ts(1)}).json()["messages"]
+    assert first["permalink"] == f"https://medi.slack.com/archives/C1/p{ts(1).replace('.', '')}"
+    assert reply["permalink"].endswith(f"?thread_ts={ts(1)}&cid=C1")
+    assert first["author"] == "김민아"  # 목록 카드도 id 가 아니라 이름
+
+
+def test_restart_gap_fill_also_picks_up_new_replies_in_old_threads(tmp_path) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    slack = FakeSlack()
+    slack.pages["C1"] = [([{"ts": ts(5), "text": "새 글"}, {"ts": ts(1), "text": "옛 스레드", "thread_ts": ts(1), "reply_count": 1}], None)]
+    slack.threads[ts(1)] = [{"ts": ts(1), "text": "옛 스레드", "thread_ts": ts(1)}, {"ts": ts(2), "text": "답 1", "thread_ts": ts(1)}]
+    ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None).tick()
+    # 꺼져 있던 사이 옛 스레드에 답글이 달렸다 — 최상위 history 에는 안 보인다.
+    slack.threads[ts(1)].append({"ts": ts(7), "text": "답 2", "thread_ts": ts(1)})
+    ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None).tick()
+    assert ts(7) in {m.external_key for m in _messages(sessions, mina)}

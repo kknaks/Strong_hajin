@@ -14,12 +14,13 @@ from typing import Any
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketState
 
 from ax_workspace.entrypoints.http_auth import connection_principal, developer_principal, device_principal, session_id_from
 from ax_workspace.modules.errors import ResourceNotFound
+from ax_workspace.modules.external_channels import inbox as inbox_rules
 from ax_workspace.modules.external_channels.inbox import (
     AttachmentGone,
     Download,
@@ -36,6 +37,7 @@ from ax_workspace.modules.external_channels.inbox import (
 )
 from ax_workspace.modules.external_channels.kakao_ingest import (
     KAKAO_ATTACHMENT_LIMIT_BYTES,
+    KakaoAttachmentSlotClosed,
     KakaoHandshakeRequired,
     KakaoMessagesAccepted,
     KakaoMessagesCommand as KakaoMessagesRequest,
@@ -57,6 +59,19 @@ from ax_workspace.modules.organization_access.profile_settings import (
 )
 
 CLOSE_UNAUTHORIZED = 4401
+CLOSE_FORBIDDEN_ORIGIN = 4403
+
+
+def _same_origin(origin: str | None, web_origin: str) -> bool:
+    """`Origin` 이 웹 origin 과 같은가. 루프백끼리(`localhost`·`127.0.0.1`)는 같은 포트면 같다고 본다 — 로컬 개발."""
+    if not origin:
+        return True
+    from urllib.parse import urlsplit
+
+    left, right = urlsplit(origin.rstrip("/")), urlsplit(web_origin)
+    loopback = {"localhost", "127.0.0.1", "::1"}
+    same_host = left.hostname == right.hostname or (left.hostname in loopback and right.hostname in loopback)
+    return left.scheme == right.scheme and same_host and left.port == right.port
 #: 중계 응답 중 브라우저가 «그 자리에서» 그려도 되는 것 — 래스터 이미지와 `inline_media_type` 허용 목록(PDF·markdown).
 INLINE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 #: 중계 바이트는 우리 origin 에서 나간다 — 스크립트가 되지 못하게 묶는다(F-3).
@@ -79,6 +94,8 @@ def _inbox_error(error: Exception) -> HTTPException:
         return HTTPException(status.HTTP_404_NOT_FOUND, detail="찾을 수 없습니다")
     if isinstance(error, IntegrationUnavailable):
         return HTTPException(status.HTTP_409_CONFLICT, detail={"code": error.code, "message": str(error)})
+    if isinstance(error, KakaoAttachmentSlotClosed):
+        return HTTPException(status.HTTP_409_CONFLICT, detail={"code": "attachment_not_accepted", "message": str(error)})
     if isinstance(error, KakaoHandshakeRequired):
         return HTTPException(status.HTTP_409_CONFLICT, detail={"code": "handshake_required", "message": str(error)})
     if isinstance(error, AttachmentGone):
@@ -115,14 +132,21 @@ def _download(download: Download, *, cache: str = "private, no-store") -> Respon
 
 
 async def _outgoing(files: list[UploadFile]) -> list[OutgoingFile]:
-    return [
-        OutgoingFile(
-            name=(item.filename or "file")[:300],
-            content_type=item.content_type or "application/octet-stream",
-            data=await item.read(),
-        )
-        for item in files
-    ]
+    """보낼 첨부를 읽는다 — 한도를 **읽으면서** 잰다(검수 W-8). 개수가 넘으면 읽기 전에, 하나가 50MB 를 넘으면 그 한
+    바이트에서 멈춘다(메일 합계 25MB 는 접수가 다시 잰다)."""
+    if len(files) > inbox_rules.MAX_REPLY_FILES:
+        message = f"파일은 한 번에 {inbox_rules.MAX_REPLY_FILES}개까지입니다"
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"code": "invalid_request", "message": message})
+    outgoing: list[OutgoingFile] = []
+    for item in files:
+        limit = inbox_rules.SLACK_FILE_LIMIT_BYTES
+        data = await item.read(limit + 1)
+        if len(data) > limit:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="첨부는 하나당 50MB 까지입니다")
+        outgoing.append(OutgoingFile(
+            name=(item.filename or "file")[:300], content_type=item.content_type or "application/octet-stream", data=data,
+        ))
+    return outgoing
 
 
 def register_inbox_routes(app: FastAPI) -> None:
@@ -222,7 +246,6 @@ def register_inbox_routes(app: FastAPI) -> None:
     @app.post("/api/inbox/rooms/{room_id}/reply", status_code=status.HTTP_202_ACCEPTED)
     async def reply_inbox_room(
         room_id: UUID,
-        background: BackgroundTasks,
         text: str = Form(default=""),
         thread_ts: str | None = Form(default=None),
         files: list[UploadFile] = File(default=[]),
@@ -243,14 +266,11 @@ def register_inbox_routes(app: FastAPI) -> None:
             )
         except Exception as error:
             raise _inbox_error(error) from error
-        if accepted.deliver:
-            background.add_task(app.state.workflow_application.deliver_inbox_reply, accepted.local_id, outgoing)
         return {"local_id": accepted.local_id}
 
     @app.post("/api/inbox/mail/{message_id}/reply", status_code=status.HTTP_202_ACCEPTED)
     async def reply_inbox_mail(
         message_id: UUID,
-        background: BackgroundTasks,
         body: str = Form(default=""),
         reply_all: bool = Form(default=False),
         to: list[str] = Form(default=[]),
@@ -275,8 +295,6 @@ def register_inbox_routes(app: FastAPI) -> None:
             )
         except Exception as error:
             raise _inbox_error(error) from error
-        if accepted.deliver:
-            background.add_task(app.state.workflow_application.deliver_inbox_reply, accepted.local_id, outgoing)
         return {"local_id": accepted.local_id}
 
     @app.websocket("/api/inbox/stream")
@@ -287,6 +305,10 @@ def register_inbox_routes(app: FastAPI) -> None:
         `source_kind`·`data`). 본문은 싣지 않는다 — 화면이 API 로 다시 읽는다. 올라오는 프레임은 읽고 버린다.
         """
         await websocket.accept()
+        if not _same_origin(websocket.headers.get("origin"), app.state.workflow_application._settings.web_origin):
+            # 쿠키 인증 WS 를 다른 사이트가 열지 못하게(검수 W-9). Origin 이 없는 것(브라우저 밖)은 쿠키로만 판단한다.
+            await websocket.close(code=CLOSE_FORBIDDEN_ORIGIN, reason="origin")
+            return
         principal = connection_principal(websocket)
         if principal is None:
             await websocket.close(code=CLOSE_UNAUTHORIZED, reason="unauthorized")

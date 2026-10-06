@@ -9,8 +9,12 @@ import os
 from pathlib import Path
 import re
 
-# kakao/<integration uuid>/<aid sha256 hex> · profiles/<member id>/<uuid>
-_SAFE_KEY = re.compile(r"^(?:kakao/[0-9a-f-]{36}/[0-9a-f]{64}|profiles/[A-Za-z0-9_.-]{1,100}/[0-9a-f-]{36})$")
+# kakao/<integration uuid>/<aid sha256 hex> · profiles/<회원 id SHA-256 앞 32자>/<uuid>(옛 판 `profiles/<member id>/…` 도 읽는다)
+# · replies/<reply uuid>/<첨부 순번>
+# replies 는 **보낼 첨부의 대기 저장본**이다 — 접수(202)와 연동 워커의 전송 사이를 이어 준다(BE 수정 판 1).
+_SAFE_KEY = re.compile(
+    r"^(?:kakao/[0-9a-f-]{36}/[0-9a-f]{64}|profiles/(?:[0-9a-f]{32}|[A-Za-z0-9_.-]{1,100})/[0-9a-f-]{36}|replies/[0-9a-f-]{36}/[0-9]{1,2})$"
+)
 
 
 class LocalDirectoryExternalStorage:

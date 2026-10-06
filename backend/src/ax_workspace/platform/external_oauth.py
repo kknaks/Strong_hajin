@@ -166,6 +166,11 @@ class SlackUserOAuth:
         team_id = team.get("id")
         if not isinstance(access_token, str) or not access_token or not isinstance(team_id, str) or not team_id:
             raise OAuthExchangeFailed("slack returned no user token")
+        if user.get("refresh_token") or user.get("expires_in"):
+            # 토큰 로테이션이 켜진 앱이다 — 12시간 뒤 토큰이 죽고 연동이 전부 끊긴다. 이 판은 로테이션을 지원하지 않으므로
+            # 연결을 「실패」로 돌리고 사유를 남긴다(BE-2·3 검수 W-7 · 앱 설정에서 로테이션을 꺼야 한다).
+            logger.warning("external oauth call to slack.com failed: token rotation is enabled on the slack app")
+            raise OAuthExchangeFailed("slack token rotation is enabled — turn it off in the app settings")
         expires_in = user.get("expires_in")
         return OAuthGrant(
             account_key=team_id,

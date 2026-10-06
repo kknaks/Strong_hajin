@@ -425,6 +425,11 @@ def test_remote_image_proxy_only_takes_urls_in_that_mail(tmp_path) -> None:
 # ── 답장 ────────────────────────────────────────────────────────────────────────────────
 
 
+def _deliver(client) -> int:
+    """연동 워커의 한 걸음 — 접수된 답장 잡을 집어 보낸다(BE 수정 판 1 · 답장은 내구 잡으로 나간다)."""
+    return client.app.state.workflow_application.run_inbox_reply_jobs(worker_id="test")
+
+
 def test_slack_reply_is_accepted_sent_in_my_name_and_idempotent(tmp_path) -> None:
     client, _, fakes, cipher, sessions = _stack(tmp_path)
     ids = _seed(sessions, cipher)
@@ -432,7 +437,10 @@ def test_slack_reply_is_accepted_sent_in_my_name_and_idempotent(tmp_path) -> Non
     first = client.post(url, headers={**MINA, "Idempotency-Key": "k-1"}, data={"text": "확인했습니다", "thread_ts": "1700000003.000100"})
     assert first.status_code == 202, first.text
     local_id = first.json()["local_id"]
+    assert fakes["slack"].posts == []  # 접수(202)는 보내지 않는다 — 잡이 보낸다
+    assert _deliver(client) == 1
     again = client.post(url, headers={**MINA, "Idempotency-Key": "k-1"}, data={"text": "확인했습니다", "thread_ts": "1700000003.000100"})
+    assert _deliver(client) == 0
     assert again.status_code == 202 and again.json()["local_id"] == local_id
     assert fakes["slack"].posts == [("xoxp-plain", "C1", "확인했습니다", "1700000003.000100")]  # 한 번만 — 사용자 토큰
     with sessions() as session:
@@ -441,6 +449,7 @@ def test_slack_reply_is_accepted_sent_in_my_name_and_idempotent(tmp_path) -> Non
 
     files = client.post(url, headers=MINA, data={"text": "파일"}, files=[("files", ("보고.pdf", b"%PDF", "application/pdf"))])
     assert files.status_code == 202
+    _deliver(client)
     assert fakes["slack"].uploads == [("C1", None, "파일", [("보고.pdf", 4)])]
     assert client.post(url, headers=MINA, data={"text": " "}).status_code == 422
     assert client.post(url, headers=JIHO, data={"text": "x"}).status_code == 404
@@ -459,12 +468,14 @@ def test_slack_file_over_50mb_is_413_and_upstream_failure_is_reported_then_retri
     fakes["slack"].fail = UpstreamFailed("ratelimited")
     failed = client.post(url, headers={**MINA, "Idempotency-Key": "k-2"}, data={"text": "다시"})
     assert failed.status_code == 202
+    _deliver(client)
     with sessions() as session:
         reply = session.get(ExternalSentReplyRecord, UUID(failed.json()["local_id"]))
         assert reply.status == "failed" and reply.error == "ratelimited"
     fakes["slack"].fail = None
     retried = client.post(url, headers={**MINA, "Idempotency-Key": "k-2"}, data={"text": "다시"})  # 「다시 보내기」
     assert retried.json()["local_id"] == failed.json()["local_id"]
+    _deliver(client)
     with sessions() as session:
         assert session.get(ExternalSentReplyRecord, UUID(failed.json()["local_id"])).status == "sent"
 
@@ -480,6 +491,7 @@ def test_mail_reply_all_threads_with_re_subject_and_records_what_we_sent(tmp_pat
         files=[("files", ("a.txt", b"hello", "text/plain"))],
     )
     assert response.status_code == 202, response.text
+    _deliver(client)
     [(raw, thread)] = fakes["mail"].sent
     assert thread == "thread-g-new"
     sent = message_from_bytes(raw, policy=default_policy)
@@ -519,6 +531,7 @@ def test_inbox_stream_pushes_only_my_events(tmp_path) -> None:
         with client.websocket_connect("/api/inbox/stream", headers=JIHO) as theirs:
             assert theirs.receive_json() == {"type": "ready"}
             accepted = client.post(f"/api/inbox/rooms/{ids['channel']}/reply", headers=MINA, data={"text": "hi"}).json()
+            _deliver(client)
             event = mine.receive_json()
             assert event["type"] == "inbox.reply_result" and event["data"] == {"local_id": accepted["local_id"], "status": "sent"}
             assert event["room_id"] == ids["channel"] and event["source_kind"] == "slack"
@@ -534,3 +547,104 @@ def test_inbox_stream_needs_a_session(tmp_path) -> None:
     with client.websocket_connect("/api/inbox/stream") as anonymous:
         message = anonymous.receive()
         assert message["type"] == "websocket.close" and message["code"] == 4401
+
+
+# ── 답장 전송 내구성 (BE 수정 판 1 · BE-2·3 검수 W-1) ───────────────────────────────────────────
+
+
+def _reply_row(sessions, local_id: str) -> ExternalSentReplyRecord:
+    with sessions() as session:
+        return session.get(ExternalSentReplyRecord, UUID(local_id))
+
+
+def test_an_accepted_reply_survives_a_crash_and_is_sent_by_the_next_worker_turn(tmp_path) -> None:
+    """접수는 「보내는 중」 행 + 첨부 대기 저장본 + 잡 하나 — 프로세스가 죽어도(잡을 집고 끝내지 못해도) 잡이 남는다."""
+    client, app, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    workflow = app.state.workflow_application
+    local_id = client.post(
+        f"/api/inbox/rooms/{ids['channel']}/reply", headers=MINA, data={"text": "파일 첨부"},
+        files=[("files", ("메모.txt", b"hello", "text/plain"))],
+    ).json()["local_id"]
+    assert _reply_row(sessions, local_id).status == "sending" and fakes["slack"].uploads == []
+    [job] = workflow.memory_job_queue.snapshot()
+    assert job["kind"] == "external.reply_deliver" and job["payload"] == {"local_id": local_id}
+    stored = list((tmp_path / "external" / "replies" / local_id).iterdir())
+    assert [path.read_bytes() for path in stored] == [b"hello"]  # 접수와 전송 사이를 잇는 대기 저장본
+
+    # 워커가 잡을 집은 채 죽었다 — lease 가 끝나면 다음 차례가 다시 집는다.
+    [claimed] = workflow.memory_job_queue.claim("external.reply_deliver", limit=1, lease_seconds=0, worker_id="crashed")
+    assert claimed.payload["local_id"] == local_id
+    assert _deliver(client) == 1
+    assert fakes["slack"].uploads == [("C1", None, "파일 첨부", [("메모.txt", 5)])]
+    row = _reply_row(sessions, local_id)
+    assert row.status == "sent" and "storage_key" in row.payload["files"][0]
+    view = client.get(f"/api/inbox/rooms/{ids['channel']}/messages", headers=MINA)
+    assert view.status_code == 200
+
+
+def test_an_unexpected_delivery_error_closes_the_reply_as_failed_with_an_event(tmp_path) -> None:
+    client, app, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    fakes["slack"].fail = RuntimeError("boom")  # 상류 계약 밖의 예외
+    with client.websocket_connect("/api/inbox/stream", headers=MINA) as stream:
+        assert stream.receive_json() == {"type": "ready"}
+        local_id = client.post(f"/api/inbox/rooms/{ids['channel']}/reply", headers=MINA, data={"text": "x"}).json()["local_id"]
+        _deliver(client)
+        event = stream.receive_json()
+    assert event["type"] == "inbox.reply_result"
+    assert event["data"] == {"local_id": local_id, "status": "failed", "error": "internal_error", "retryable": False}
+    assert _reply_row(sessions, local_id).status == "failed"  # 「보내는 중」에 멈추지 않는다
+
+
+def test_lost_attachments_fail_the_reply_and_stuck_replies_are_requeued(tmp_path) -> None:
+    client, app, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    workflow = app.state.workflow_application
+    local_id = client.post(
+        f"/api/inbox/rooms/{ids['channel']}/reply", headers=MINA, data={"text": "x"},
+        files=[("files", ("a.bin", b"1", "application/octet-stream"))],
+    ).json()["local_id"]
+    for path in (tmp_path / "external" / "replies" / local_id).iterdir():
+        path.unlink()  # 저장본이 사라졌다(호스트 디스크 교체 등)
+    _deliver(client)
+    row = _reply_row(sessions, local_id)
+    assert row.status == "failed" and row.error == "attachments_lost" and fakes["slack"].uploads == []
+
+    # 잡이 없어진 「보내는 중」 답장 — 주기 일이 다시 넣는다.
+    second = client.post(f"/api/inbox/rooms/{ids['channel']}/reply", headers=MINA, data={"text": "y"}).json()["local_id"]
+    workflow.memory_job_queue._jobs.clear()  # 잡이 사라진 것처럼
+    with sessions() as session:
+        session.get(ExternalSentReplyRecord, UUID(second)).updated_at = datetime.now(UTC) - timedelta(minutes=10)
+        session.commit()
+    assert workflow.requeue_stuck_inbox_replies() == 1
+    _deliver(client)
+    assert _reply_row(sessions, second).status == "sent"
+
+
+def test_header_injection_in_reply_addresses_is_refused_at_accept(tmp_path) -> None:
+    client, _, _, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    response = client.post(
+        f"/api/inbox/mail/{ids['mails'][1]}/reply", headers=MINA, data={"body": "x", "to": ["a@b.example\r\nBcc: evil@x.example"]}
+    )
+    assert response.status_code == 422
+
+
+def test_slack_file_hosts_need_a_real_subdomain_boundary() -> None:
+    from ax_workspace.platform.external_inbox_upstream import slack_file_host
+
+    assert slack_file_host("files.slack.com") and slack_file_host("slack.com") and slack_file_host("a.slack-edge.com")
+    assert not slack_file_host("evilslack.com") and not slack_file_host("slack.com.evil.example") and not slack_file_host(None)
+
+
+def test_inbox_stream_refuses_a_cross_site_origin(tmp_path) -> None:
+    client, _, _, _, _ = _stack(tmp_path)
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect("/api/inbox/stream", headers={**MINA, "Origin": "https://evil.example"}) as stream:
+            stream.receive_json()
+    assert closed.value.code == 4403
+    with client.websocket_connect("/api/inbox/stream", headers={**MINA, "Origin": "http://localhost:5173"}) as stream:
+        assert stream.receive_json() == {"type": "ready"}

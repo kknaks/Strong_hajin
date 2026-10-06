@@ -211,11 +211,14 @@ from ax_workspace.modules.external_channels.application import (
     DeviceTokenIssueCommand as IssueDeviceTokenRequest,
     DeviceTokenIssued,
     DeviceTokenView,
+    AvailableRoomsPage,
     IntegrationView,
     KakaoHandshakeView,
     RoomView,
 )
 from ax_workspace.modules.external_channels.domain import (
+    IntegrationDisconnected,
+    UpstreamUnavailableError,
     IntegrationAlreadyConnected,
     IntegrationNotConfigured,
     InvalidRoomSelection,
@@ -497,6 +500,10 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
     if isinstance(error, IntegrationAlreadyConnected):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, IntegrationDisconnected):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "disconnected", "message": str(error)})
+    if isinstance(error, UpstreamUnavailableError):
+        return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"code": "upstream_unavailable"})
     if isinstance(error, IntegrationNotConfigured):
         # 비밀값 파일이 없으면 그 연동이 스스로 없다고 말한다(SPEC-008 §5 비밀값 위치) — 서버 고장이 아니다.
         return HTTPException(
@@ -741,13 +748,23 @@ def create_app(
     @app.get("/api/integrations/{kind}/callback")
     def integration_callback(
         kind: Literal["mail", "slack"],
+        request: Request,
         code: str | None = None,
         state: str | None = None,
         error: str | None = None,
     ) -> Response:
-        """동의를 마친 OS 브라우저가 돌아오는 곳. **쿠키가 아니라 `state` 로 회원을 찾는다**(F-2) — 세션이 없어도 된다."""
+        """동의를 마친 OS 브라우저가 돌아오는 곳. **쿠키가 아니라 `state` 로 회원을 찾는다**(F-2) — 세션이 없어도 된다.
+
+        다만 세션 쿠키가 있고 그 회원이 `state` 의 회원과 다르면 400 이다(검수 W-2 — 링크 넘기기 차단).
+        """
         try:
-            outcome = app.state.workflow_application.complete_integration_callback(kind, state=state, code=code, error=error)
+            browser = session_principal(request)
+        except HTTPException:
+            browser = None  # 세션은 있는데 회원이 비활성 — 그 쿠키는 아무도 증명하지 않는다
+        try:
+            outcome = app.state.workflow_application.complete_integration_callback(
+                kind, state=state, code=code, error=error, browser_member_id=str(browser.id) if browser else None
+            )
         except Exception as failure:
             raise _runtime_error(failure) from failure
         return Response(
@@ -793,6 +810,18 @@ def create_app(
         except Exception as error:
             raise _runtime_error(error) from error
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/integrations/slack/available-rooms")
+    def available_slack_rooms(
+        q: str | None = None,
+        cursor: str | None = None,
+        principal: Principal = Depends(developer_principal),
+    ) -> AvailableRoomsPage:
+        """슬랙 방 고르기 창(SPEC-008 §4.3 · F-2) — **내가 참여한** 방만, 내 사용자 토큰으로 실시간 조회. 끊김 409."""
+        try:
+            return app.state.workflow_application.available_slack_rooms(principal, q=q, cursor=cursor)
+        except Exception as error:
+            raise _runtime_error(error) from error
 
     @app.get("/api/integrations/{integration_id}/rooms")
     def list_integration_rooms(integration_id: UUID, principal: Principal = Depends(developer_principal)) -> list[RoomView]:

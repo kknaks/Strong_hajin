@@ -18,7 +18,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+import re
 from datetime import UTC, datetime, timedelta
 import logging
 from typing import Any, Literal, Protocol
@@ -40,6 +41,8 @@ GMAIL_POLL_INTERVAL = timedelta(seconds=60)
 #: 한 번에 가져오는 쪽수. 한 연동이 워커를 오래 붙잡지 않게 한 걸음씩 돌아가며 판다.
 SLACK_PAGE_LIMIT = 200
 GMAIL_PAGE_LIMIT = 100
+#: 재시작 메우기 때 답글을 다시 훑을 최근 스레드 수(방마다).
+THREAD_GAP_FILL_ROOTS = 20
 #: 액세스 토큰은 만료 이만큼 전에 미리 갱신한다.
 TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
 
@@ -65,6 +68,14 @@ class UpstreamUnavailable(Exception):
     """상류가 잠깐 안 된다(5xx·네트워크) 또는 그 방만 못 읽는다. 다음 차례에 다시."""
 
 
+class UpstreamRoomDenied(UpstreamUnavailable):
+    """이 토큰으로 그 방을 볼 수 없다(`channel_not_found`·`not_in_channel`·`access_denied`) — 그 방만 멈춘다(F-1)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class HistoryExpired(Exception):
     """Gmail `startHistoryId` 가 너무 오래됐다(404) — 날짜로 다시 훑는다."""
 
@@ -79,8 +90,9 @@ class IntegrationState:
     kind: str
     status: str
     account_key: str
-    access_token_encrypted: str | None
-    refresh_token_encrypted: str | None
+    access_token_encrypted: str | None = field(repr=False)
+    refresh_token_encrypted: str | None = field(repr=False)
+    account_meta: dict[str, Any]
     token_expires_at: datetime | None
     sync_cursor: str | None
     backfill_cursor: str | None
@@ -101,7 +113,11 @@ class RoomState:
     backfill_cursor: str | None
     backfill_count: int
     backfill_done_at: datetime | None
-    access_token_encrypted: str | None
+    access_token_encrypted: str | None = field(repr=False)
+    #: 그 회원 토큰으로 접근이 확인된 방인가(F-1). 확인 안 된 방은 팬아웃 대상이 아니다.
+    verified: bool = False
+    #: 접근을 잃은 사유(`channel_not_found`·`not_in_channel` …). 있으면 `paused` 이고 팬아웃·수집에서 빠진다.
+    access_lost: str | None = None
 
 
 SaveMode = Literal["backfill", "live"]
@@ -119,6 +135,9 @@ class SyncStore(Protocol):
     def replace_raw(self, integration_id: str, container_key: str, external_key: str, raw: dict[str, Any]) -> bool: ...
     def update_integration(self, integration_id: str, **fields: Any) -> None: ...
     def update_room(self, room_id: str, **fields: Any) -> None: ...
+    def set_room_access(self, room_id: str, *, ok: bool, reason: str | None = None) -> None: ...
+    def thread_roots(self, room_id: str, *, limit: int) -> list[str]: ...
+    def room_users(self, room_id: str) -> dict[str, dict[str, Any]]: ...
     def mark_disconnected(self, integration_id: str, reason: str) -> None: ...
 
 
@@ -126,10 +145,14 @@ class SlackApi(Protocol):
     def history(
         self, token: str, channel: str, *, cursor: str | None = None, oldest: str | None = None, limit: int = SLACK_PAGE_LIMIT
     ) -> tuple[list[dict[str, Any]], str | None]: ...
-    def replies(self, token: str, channel: str, ts: str, *, cursor: str | None = None) -> tuple[list[dict[str, Any]], str | None]: ...
+    def replies(
+        self, token: str, channel: str, ts: str, *, cursor: str | None = None, oldest: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None]: ...
     def conversation_info(self, token: str, channel: str) -> dict[str, Any]: ...
     def conversation_members(self, token: str, channel: str) -> list[str]: ...
     def user_name(self, token: str, user_id: str) -> str | None: ...
+    def user_tag(self, token: str, user_id: str) -> dict[str, Any] | None: ...
+    def identity(self, token: str) -> dict[str, Any]: ...
 
 
 class GmailApi(Protocol):
@@ -144,6 +167,17 @@ class GmailApi(Protocol):
 class TokenCipher(Protocol):
     def encrypt(self, plaintext: str) -> str: ...
     def decrypt(self, ciphertext: str) -> str: ...
+
+
+_MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+
+
+def _slack_user_ids(message: dict[str, Any]) -> set[str]:
+    """이름표가 필요한 id — 보낸 사람 · 답글 단 사람들 · 본문 멘션(`<@U…>`)."""
+    ids = {str(message["user"])} if message.get("user") else set()
+    ids.update(str(user) for user in message.get("reply_users") or [])
+    ids.update(_MENTION.findall(str(message.get("text") or "")))
+    return ids
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -174,6 +208,8 @@ class ExternalSync:
         self._last_mail_poll: dict[str, datetime] = {}
         #: 재시작 메우기를 아직 안 한 슬랙 방(시작할 때 · Socket Mode 재연결 뒤 다시 채운다).
         self._gap_fill_pending: set[str] | None = None
+        #: 이번 실행에서 그 회원 토큰으로 접근을 다시 확인한 방(F-1 — 이미 들어간 방도 실행마다 재확인).
+        self._verified_this_run: set[str] = set()
 
     # ── 슬랙 실시간 — 팬아웃 ──────────────────────────────────────────────────────────
 
@@ -190,13 +226,11 @@ class ExternalSync:
         subtype = event.get("subtype")
         saved = 0
         for room in targets:
+            token = self._room_token(room)
             if subtype == "message_changed" and isinstance(event.get("message"), dict):
                 message = {**event["message"]}
                 if not self._store.replace_raw(room.integration_id, channel, str(message.get("ts")), message):
-                    saved += self._store.save_messages(
-                        room.integration_id, IntegrationKind.SLACK, room.id,
-                        [normalize_slack_message(room.integration_id, channel, message)], mode="live",
-                    )
+                    saved += self._save_slack(token, room, [message], mode="live")
             elif subtype == "message_deleted" and event.get("deleted_ts"):
                 previous = event.get("previous_message") if isinstance(event.get("previous_message"), dict) else {}
                 self._store.replace_raw(
@@ -207,10 +241,7 @@ class ExternalSync:
                 continue
             else:
                 message = {key: value for key, value in event.items() if key not in {"channel_type", "event_ts"}}
-                saved += self._store.save_messages(
-                    room.integration_id, IntegrationKind.SLACK, room.id,
-                    [normalize_slack_message(room.integration_id, channel, message)], mode="live",
-                )
+                saved += self._save_slack(token, room, [message], mode="live")
         return saved
 
     # ── 주기 한 바퀴 ─────────────────────────────────────────────────────────────────
@@ -233,6 +264,11 @@ class ExternalSync:
     def _slack_round(self) -> bool:
         busy = False
         for integration in self._store.active_integrations(IntegrationKind.SLACK):
+            try:
+                self._remember_workspace(integration)
+            except UpstreamAuthRevoked as error:
+                self._store.mark_disconnected(integration.id, error.reason)
+                continue
             if integration.status == "backfilling":
                 # 슬랙의 백필은 방 단위다 — 연동은 붙자마자 실시간이다.
                 self._store.update_integration(integration.id, status="connected", backfill_done_at=self._clock())
@@ -244,6 +280,12 @@ class ExternalSync:
                 continue
             try:
                 token = self._cipher.decrypt(room.access_token_encrypted)
+                if room.id not in self._verified_this_run:
+                    self._verified_this_run.add(room.id)
+                    if not self._verify_slack_room(token, room):
+                        continue
+                elif room.access_lost:
+                    continue
                 if room.backfill_done_at is None:
                     busy |= self._slack_backfill_page(token, room)
                 elif room.id in self._gap_fill_pending:
@@ -254,6 +296,9 @@ class ExternalSync:
                 self._store.mark_disconnected(room.integration_id, error.reason)
             except UpstreamRateLimited as error:
                 self._back_off(room.integration_id, error.retry_after)
+            except UpstreamRoomDenied as error:
+                logger.warning("slack room %s is no longer readable by its member: %s", room.id, error.code)
+                self._store.set_room_access(room.id, ok=False, reason=error.code)
             except UpstreamUnavailable as error:
                 logger.warning("slack room %s sync deferred: %s", room.id, error)
                 self._back_off(room.id, 30)
@@ -261,11 +306,8 @@ class ExternalSync:
 
     def _slack_backfill_page(self, token: str, room: RoomState) -> bool:
         assert self._slack is not None
-        if room.backfill_cursor is None and room.backfill_count == 0:
-            self._refresh_slack_room(token, room)
         messages, next_cursor = self._slack.history(token, room.external_id, cursor=room.backfill_cursor)
-        batch = self._with_threads(token, room, messages)
-        self._store.save_messages(room.integration_id, IntegrationKind.SLACK, room.id, batch, mode="backfill")
+        self._save_slack(token, room, self._with_threads(token, room, messages), mode="backfill")
         if next_cursor:
             self._store.update_room(room.id, backfill_cursor=next_cursor)
             return True
@@ -278,39 +320,116 @@ class ExternalSync:
         while True:
             messages, cursor = self._slack.history(token, room.external_id, cursor=cursor, oldest=room.last_message_key)
             if messages:
-                self._store.save_messages(
-                    room.integration_id, IntegrationKind.SLACK, room.id, self._with_threads(token, room, messages), mode="live"
-                )
+                self._save_slack(token, room, self._with_threads(token, room, messages), mode="live")
             if not cursor:
-                return
+                break
+        if room.last_message_key is None:
+            return
+        # 꺼져 있던 사이 **옛 스레드에 달린 답글**은 위 history 에 안 보인다(부모가 지점보다 앞이다). 최근 스레드의 답글을
+        # 지점 이후만 다시 훑는다(BE-2·3 검수 W-6). 중복 키가 이미 받은 것을 버린다.
+        for root in self._store.thread_roots(room.id, limit=THREAD_GAP_FILL_ROOTS):
+            reply_cursor: str | None = None
+            while True:
+                replies, reply_cursor = self._slack.replies(
+                    token, room.external_id, root, cursor=reply_cursor, oldest=room.last_message_key
+                )
+                fresh = [
+                    reply for reply in replies
+                    if reply.get("ts") and reply.get("ts") != root and float(reply["ts"]) > float(room.last_message_key)
+                ]
+                if fresh:
+                    self._save_slack(token, room, fresh, mode="live")
+                if not reply_cursor:
+                    break
 
-    def _with_threads(self, token: str, room: RoomState, messages: list[dict[str, Any]]) -> list[NormalizedMessage]:
+    def _with_threads(self, token: str, room: RoomState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         assert self._slack is not None
-        batch: list[NormalizedMessage] = []
+        batch: list[dict[str, Any]] = []
         for message in messages:
             if not message.get("ts") or message.get("subtype") in SLACK_EDIT_SUBTYPES:
                 continue
-            batch.append(normalize_slack_message(room.integration_id, room.external_id, message))
+            batch.append(message)
             if message.get("reply_count") and message.get("thread_ts") == message.get("ts"):
                 cursor: str | None = None
                 while True:
                     replies, cursor = self._slack.replies(token, room.external_id, str(message["ts"]), cursor=cursor)
-                    batch.extend(
-                        normalize_slack_message(room.integration_id, room.external_id, reply)
-                        for reply in replies
-                        if reply.get("ts") and reply.get("ts") != message.get("ts")
-                    )
+                    batch.extend(reply for reply in replies if reply.get("ts") and reply.get("ts") != message.get("ts"))
                     if not cursor:
                         break
         return batch
 
-    def _refresh_slack_room(self, token: str, room: RoomState) -> None:
-        """고른 방의 진짜 종류·이름. 그룹 DM 은 `mpdm-…` 대신 **참여자 실명**(D-12), DM 은 상대 이름."""
+    def _room_token(self, room: RoomState) -> str | None:
+        try:
+            return self._cipher.decrypt(room.access_token_encrypted) if room.access_token_encrypted else None
+        except Exception:  # noqa: BLE001 — 이름표는 덤이다. 토큰을 못 열어도 저장은 한다
+            return None
+
+    def _save_slack(self, token: str | None, room: RoomState, messages: list[dict[str, Any]], *, mode: SaveMode) -> int:
+        """슬랙 원문을 저장한다 — 그 전에 보낸 사람·멘션 id 를 **그 회원 토큰으로** 이름표로 풀어 방에 모은다(BE 수정 판 3).
+        목록 카드의 `author` 도 이름으로 채운다. 이름을 못 풀어도(속도 제한 등) 저장은 그대로 한다 — id 가 남는다."""
+        if not messages:
+            return 0
+        users = self._store.room_users(room.id)
+        wanted: set[str] = set()
+        for message in messages:
+            wanted.update(_slack_user_ids(message))
+        fresh: dict[str, dict[str, Any]] = {}
+        if token is not None and self._slack is not None:
+            for user_id in sorted(wanted - set(users)):
+                try:
+                    tag = self._slack.user_tag(token, user_id)
+                except (UpstreamUnavailable, UpstreamRateLimited, UpstreamAuthRevoked):
+                    break
+                if tag is not None:
+                    fresh[user_id] = tag
+        if fresh:
+            users = {**users, **fresh}
+            self._store.update_room(room.id, room_meta={"users": users})
+        batch = []
+        for message in messages:
+            normalized = normalize_slack_message(room.integration_id, room.external_id, message)
+            name = (users.get(normalized.author or "") or {}).get("name")
+            batch.append(replace(normalized, author=name) if name else normalized)
+        return self._store.save_messages(room.integration_id, IntegrationKind.SLACK, room.id, batch, mode=mode)
+
+    def _remember_workspace(self, integration: IntegrationState) -> None:
+        """슬랙 워크스페이스 주소(`https://<domain>.slack.com/`) — 퍼머링크·워크스페이스 줄(BE 수정 판 3). 한 번만 묻는다."""
+        if (integration.account_meta or {}).get("url") or not integration.access_token_encrypted or self._slack is None:
+            return
+        try:
+            who = self._slack.identity(self._cipher.decrypt(integration.access_token_encrypted))
+        except (UpstreamUnavailable, UpstreamRateLimited):
+            return
+        url = str(who.get("url") or "")
+        if url.startswith("https://"):
+            domain = url.removeprefix("https://").strip("/")
+            self._store.update_integration(integration.id, account_meta={"url": url, "domain": domain})
+
+    def _verify_slack_room(self, token: str, room: RoomState) -> bool:
+        """그 회원 토큰으로 이 방을 지금도 볼 수 있나(F-1) — 실행마다 한 번. 못 보면 그 방만 `paused`+사유로 내리고 팬아웃에서
+        뺀다. 보이면 확인 표지를 찍고(되찾은 방은 되살린다) 종류·이름을 슬랙이 그 회원에게 답한 대로 고친다.
+        `UpstreamUnavailable`(일시 장애)은 밖으로 — 다음 차례에 다시 확인한다."""
         assert self._slack is not None
         try:
             info = self._slack.conversation_info(token, room.external_id)
+        except UpstreamRoomDenied as error:
+            self._store.set_room_access(room.id, ok=False, reason=error.code)
+            return False
         except UpstreamUnavailable:
-            return
+            self._verified_this_run.discard(room.id)
+            raise
+        is_channel = not (info.get("is_im") or info.get("is_mpim") or info.get("is_private") or info.get("is_group"))
+        if is_channel and not info.get("is_member"):
+            # 공개 채널에서 나갔다 — 사용자 토큰 이벤트가 더는 오지 않고, 그 방의 대화를 이 사람 앞으로 쌓을 근거도 없다.
+            self._store.set_room_access(room.id, ok=False, reason="not_in_channel")
+            return False
+        self._store.set_room_access(room.id, ok=True)
+        self._refresh_slack_room(token, room, info)
+        return True
+
+    def _refresh_slack_room(self, token: str, room: RoomState, info: dict[str, Any]) -> None:
+        """고른 방의 진짜 종류·이름. 그룹 DM 은 `mpdm-…` 대신 **참여자 실명**(D-12), DM 은 상대 이름."""
+        assert self._slack is not None
         room_type = (
             "dm" if info.get("is_im")
             else "group_dm" if info.get("is_mpim")

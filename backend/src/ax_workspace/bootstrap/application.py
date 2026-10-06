@@ -69,6 +69,7 @@ from ax_workspace.modules.ax_execution.actions import ActionApplication, ActionC
 from ax_workspace.modules.notifications import NotificationApplication, NotificationView, notification_view
 from ax_workspace.modules.external_channels.application import (
     AddRoomsCommand,
+    AvailableRoomsPage,
     CallbackOutcome,
     ConnectStart,
     DeviceTokenIssueCommand,
@@ -79,6 +80,7 @@ from ax_workspace.modules.external_channels.application import (
     KakaoHandshakeView,
     OAuthProvider,
     RoomView,
+    SlackRoomDirectory,
 )
 from ax_workspace.modules.external_channels.domain import DeviceTokenOwner, IntegrationKind
 from ax_workspace.modules.errors import ResourceNotFound
@@ -224,6 +226,7 @@ from ax_workspace.platform.external_channels import SqlAlchemyExternalChannelRep
 from ax_workspace.bootstrap.external_inbox import ExternalInboxOperations
 from ax_workspace.platform.external_oauth import GoogleGmailOAuth, SlackUserOAuth
 from ax_workspace.platform.external_tokens import FernetTokenCipher, development_key
+from ax_workspace.platform.external_slack import SlackRoomDirectory as SlackWebRoomDirectory
 from ax_workspace.platform.action_materials import SqlAlchemyActionMaterialDraftRepository
 from ax_workspace.platform.native_materials import MEETING_TRANSCRIPT, NativeMaterialRepository, NativeRevisionStorage
 from ax_workspace.platform.recordings import LocalDirectoryRecordingStorage
@@ -1006,9 +1009,20 @@ class WorkflowApplication(ExternalInboxOperations):
         self._room_creation_locks_guard = threading.Lock()
         # 외부 채널 OAuth 어댑터. **시험이 대역을 끼우는 자리**이고, 비어 있으면 client 값이 갖춰진 종류만 실물을 만든다.
         self._external_oauth: dict[str, OAuthProvider] | None = None
-        # 저장 토큰 암호기. 처음 쓸 때 만든다 — 부팅(모듈 import)이 키 파일을 건드리지 않게.
+        # 슬랙 방 목록·접근 확인(F-1·F-2). **시험이 대역을 끼우는 자리**.
+        self._slack_directory: SlackRoomDirectory = SlackWebRoomDirectory()
+        # 저장 토큰 암호기. **키가 주어졌으면 부팅 때 한 번 만들어** 잘못된 키가 요청마다 500 이 아니라 부팅 실패가
+        # 되게 한다(검수 W-4). 운영에서 OAuth 가 설정됐는데 키가 없어도 부팅을 거절한다 — 연결은 되는데 저장을 못
+        # 하는 상태로 뜨지 않는다. 키가 없는 개발 기기는 처음 쓸 때 로컬 키 파일을 만든다(부팅이 파일을 안 건드리게).
         self._external_cipher_made = False
         self._external_cipher_value: FernetTokenCipher | None = None
+        if settings.external_token_encryption_key:
+            self._external_cipher_value = FernetTokenCipher(settings.external_token_encryption_key)
+            self._external_cipher_made = True
+        elif settings.profile is RuntimeProfile.PRODUCTION and (
+            settings.gmail_oauth_configured or settings.slack_oauth_configured
+        ):
+            raise RuntimeError("AX_EXTERNAL_TOKEN_ENCRYPTION_KEY is required in production when an OAuth integration is configured")
 
     # ------------------------------------------------------------------ 회의실 예약 (SCAX-WP-007)
 
@@ -2136,9 +2150,20 @@ class WorkflowApplication(ExternalInboxOperations):
 
     def my_organization_profile(self, principal: Principal) -> MyOrganizationProfileView:
         with self._session_factory() as session:
-            profile = OrganizationApplication(SqlAlchemyOrganizationRepository(session)).my_profile(principal)
-        # 프로필 머리 값은 이 응답을 재사용하고 이미지 주소 한 칸만 더한다(SPEC-008 §4.7 · W-15).
-        return {**profile, "profile_image_url": self.profile_image_url(str(principal.id))}
+            repository = SqlAlchemyOrganizationRepository(session)
+            profile = OrganizationApplication(repository).my_profile(principal)
+            detail = repository.member_detail(str(principal.id)) or {}
+        appointments = detail.get("appointments") or []
+        jobs = detail.get("jobs") or []
+        appointment = next((row for row in appointments if row.get("kind") == "primary"), appointments[0] if appointments else None)
+        job = next((row for row in jobs if row.get("kind") == "primary"), jobs[0] if jobs else None)
+        # 프로필 머리 값은 이 응답을 재사용하고 이미지 주소 · 직책 · 직무만 더한다(SPEC-008 §4.7 · W-15 · BE 수정 판 3).
+        return {
+            **profile,
+            "profile_image_url": self.profile_image_url(str(principal.id)),
+            "position": appointment["position"] if appointment else None,
+            "job": job["name"] if job else None,
+        }
 
     def set_assistant_character(
         self, principal: Principal, character_key: str, expected_version: int
@@ -4554,7 +4579,12 @@ class WorkflowApplication(ExternalInboxOperations):
             providers=self.external_oauth,
             api_origin=self._settings.api_origin,
             web_origin=self._settings.web_origin,
+            slack_directory=self._slack_directory,
         )
+
+    def available_slack_rooms(self, principal: Principal, *, q: str | None, cursor: str | None) -> AvailableRoomsPage:
+        with self._session_factory() as session:
+            return self._external_channels(session).available_slack_rooms(principal, q=q, cursor=cursor)
 
     def start_integration_connect(self, principal: Principal, kind: str) -> ConnectStart:
         with self._session_factory() as session:
@@ -4563,11 +4593,13 @@ class WorkflowApplication(ExternalInboxOperations):
             return result
 
     def complete_integration_callback(
-        self, kind: str, *, state: str | None, code: str | None, error: str | None
+        self, kind: str, *, state: str | None, code: str | None, error: str | None, browser_member_id: str | None = None
     ) -> CallbackOutcome:
         with self._session_factory() as session:
             try:
-                result = self._external_channels(session).complete_callback(kind, state=state, code=code, error=error)
+                result = self._external_channels(session).complete_callback(
+                    kind, state=state, code=code, error=error, browser_member_id=browser_member_id
+                )
             except Exception:
                 # state 를 쓴 것까지는 남긴다 — 실패한 콜백의 state 를 다시 들이밀 수 없게.
                 session.commit()
@@ -4606,6 +4638,9 @@ class WorkflowApplication(ExternalInboxOperations):
 
     def issue_device_token(self, principal: Principal, command: DeviceTokenIssueCommand) -> DeviceTokenIssued:
         with self._session_factory() as session:
+            # 회원 행을 잠근 뒤 「옛 것 철회 → 새로 발급」— 동시 발급 둘이 각자 철회하고 각자 더해 활성 토큰이 둘 남는
+            # 일을 막는다(검수 W-7 · D-45 사람당 Mac 한 대). 뒤 요청은 앞 요청이 커밋한 토큰까지 철회한다.
+            session.execute(select(MemberRecord.id).where(MemberRecord.id == str(principal.id)).with_for_update())
             result = self._external_channels(session).issue_device_token(principal, command)
             session.commit()
             return result
@@ -4639,10 +4674,19 @@ class WorkflowApplication(ExternalInboxOperations):
             return None
 
     def kakao_handshake(self, principal: Principal) -> KakaoHandshakeView:
-        with self._session_factory() as session:
-            result = self._external_channels(session).kakao_handshake(str(principal.id))
-            session.commit()
-            return result
+        # 첫 handshake 둘이 동시에 오면 둘 다 「연동 없음」을 보고 만든다 — 진 쪽은 유니크 위반
+        # (`uq_external_integrations_member_account`)으로 트랜잭션을 잃고, 이긴 쪽이 만든 연동을 다시 읽는다(검수 W-7).
+        for attempt in range(2):
+            with self._session_factory() as session:
+                try:
+                    result = self._external_channels(session).kakao_handshake(str(principal.id))
+                    session.commit()
+                    return result
+                except IntegrityError:
+                    session.rollback()
+                    if attempt:
+                        raise
+        raise AssertionError("unreachable")
 
     def kakao_reset_account(self, principal: Principal) -> None:
         with self._session_factory() as session:

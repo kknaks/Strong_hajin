@@ -15,7 +15,18 @@ import threading
 from typing import Any
 from urllib import error as urlerror, parse as urlparse, request as urlrequest
 
-from ax_workspace.modules.external_channels.sync import UpstreamAuthRevoked, UpstreamRateLimited, UpstreamUnavailable
+from ax_workspace.modules.external_channels.application import SlackRoomInfo
+from ax_workspace.modules.external_channels.domain import (
+    IntegrationDisconnected,
+    RoomAccessDenied,
+    UpstreamUnavailableError,
+)
+from ax_workspace.modules.external_channels.sync import (
+    UpstreamAuthRevoked,
+    UpstreamRateLimited,
+    UpstreamRoomDenied,
+    UpstreamUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +36,8 @@ AUTH_ERRORS = frozenset({
     "invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive",
     "team_access_not_granted", "org_login_required", "ekm_access_denied",
 })
+#: 이 토큰으로 그 방을 볼 수 없다는 뜻 — 연동 전체가 아니라 그 방만 멈춘다(F-1).
+ROOM_DENIED_ERRORS = frozenset({"channel_not_found", "not_in_channel", "access_denied", "is_archived", "user_not_found"})
 DEFAULT_TIMEOUT = 30.0
 
 
@@ -51,6 +64,8 @@ def call(method: str, token: str, params: dict[str, Any] | None = None, *, post:
         code = str(body.get("error") or "unknown")
         if code in AUTH_ERRORS:
             raise UpstreamAuthRevoked(code)
+        if code in ROOM_DENIED_ERRORS:
+            raise UpstreamRoomDenied(code)
         if code == "ratelimited":
             raise UpstreamRateLimited(30)
         raise UpstreamUnavailable(f"slack {method} refused ({code})")
@@ -63,14 +78,14 @@ class SlackWebApi:
     """`modules/external_channels/sync.SlackApi` 의 실물."""
 
     def __init__(self) -> None:
-        self._names: dict[tuple[str, str], str | None] = {}
+        self._names: dict[tuple, Any] = {}
 
     def history(self, token, channel, *, cursor=None, oldest=None, limit=200):
         body = call("conversations.history", token, {"channel": channel, "cursor": cursor, "oldest": oldest, "limit": limit})
         return list(body.get("messages") or []), ((body.get("response_metadata") or {}).get("next_cursor") or None)
 
-    def replies(self, token, channel, ts, *, cursor=None):
-        body = call("conversations.replies", token, {"channel": channel, "ts": ts, "cursor": cursor, "limit": 200})
+    def replies(self, token, channel, ts, *, cursor=None, oldest=None):
+        body = call("conversations.replies", token, {"channel": channel, "ts": ts, "cursor": cursor, "oldest": oldest, "limit": 200})
         return list(body.get("messages") or []), ((body.get("response_metadata") or {}).get("next_cursor") or None)
 
     def conversation_info(self, token, channel):
@@ -97,10 +112,106 @@ class SlackWebApi:
             self._names[key] = profile.get("display_name") or profile.get("real_name") or user.get("real_name") or user.get("name")
         return self._names[key]
 
+    def user_tag(self, token, user_id):
+        """이름표 하나 — 이름·봇 여부·작은 아바타(BE 수정 판 3). 못 찾는 id 는 None."""
+        key = ("tag", token[-8:], user_id)
+        if key not in self._names:
+            try:
+                user = call("users.info", token, {"user": user_id}).get("user") or {}
+            except UpstreamRoomDenied:
+                self._names[key] = None
+                return None
+            profile = user.get("profile") or {}
+            self._names[key] = {
+                "name": profile.get("display_name") or profile.get("real_name") or user.get("real_name") or user.get("name"),
+                "is_bot": bool(user.get("is_bot") or user.get("is_app_user")),
+                "avatar": profile.get("image_72") or profile.get("image_48"),
+            }
+        return self._names[key]
+
     @staticmethod
     def identity(token: str) -> dict[str, Any]:
         """`auth.test` — 개발 토큰 주입이 team·user 를 알아낸다. `_scopes` 에 허용 권한이 실린다."""
         return call("auth.test", token, post=True)
+
+
+def room_type(info: dict[str, Any]) -> str:
+    if info.get("is_im"):
+        return "dm"
+    if info.get("is_mpim"):
+        return "group_dm"
+    if info.get("is_private") or info.get("is_group"):
+        return "private"
+    return "channel"
+
+
+class SlackRoomDirectory:
+    """방 고르기 목록·접근 확인(F-1·F-2 · `application.SlackRoomDirectory` 의 실물). 이름은 프로세스 안에 잠깐 기억한다."""
+
+    def __init__(self) -> None:
+        self._users: dict[tuple[str, str], tuple[str | None, bool]] = {}
+
+    def _user(self, token: str, user_id: str) -> tuple[str | None, bool]:
+        key = (token[-8:], user_id)
+        if key not in self._users:
+            if user_id == "USLACKBOT":
+                self._users[key] = ("Slackbot", True)
+            else:
+                user = call("users.info", token, {"user": user_id}).get("user") or {}
+                profile = user.get("profile") or {}
+                name = profile.get("display_name") or profile.get("real_name") or user.get("real_name") or user.get("name")
+                self._users[key] = (name, bool(user.get("is_bot") or user.get("is_app_user")))
+        return self._users[key]
+
+    def _info(self, token: str, channel: dict[str, Any]) -> SlackRoomInfo:
+        kind = room_type(channel)
+        name = str(channel.get("name") or channel["id"])
+        is_bot = False
+        member_count = channel.get("num_members") if isinstance(channel.get("num_members"), int) else None
+        if kind == "dm" and channel.get("user"):
+            resolved, is_bot = self._user(token, str(channel["user"]))
+            name = resolved or name
+            member_count = 2
+        elif kind == "group_dm":
+            members = call("conversations.members", token, {"channel": channel["id"], "limit": 100}).get("members") or []
+            names = [self._user(token, member)[0] for member in members]
+            name = ", ".join(sorted(filter(None, names))) or name  # `mpdm-…` 대신 참여자 실명(D-12)
+            member_count = len(members)
+        return SlackRoomInfo(room_id=str(channel["id"]), type=kind, name=name[:300], is_bot=is_bot, member_count=member_count)
+
+    def _translate(self, work):
+        try:
+            return work()
+        except UpstreamAuthRevoked as error:
+            raise IntegrationDisconnected(f"슬랙이 토큰을 거절했습니다({error.reason})") from None
+        except UpstreamRoomDenied as error:
+            raise RoomAccessDenied(error.code) from None
+        except (UpstreamUnavailable, UpstreamRateLimited) as error:
+            raise UpstreamUnavailableError(str(error)) from None
+
+    def describe(self, token: str, channel: str) -> SlackRoomInfo:
+        def work() -> SlackRoomInfo:
+            info = call("conversations.info", token, {"channel": channel, "include_num_members": "true"}).get("channel") or {}
+            # DM·그룹 DM·비공개는 참여자가 아니면 슬랙이 channel_not_found 로 답한다. 공개 채널은 누구나 info 를 받으므로
+            # **참여(is_member)까지** 본다 — 사용자 토큰 이벤트는 참여한 방에서만 온다.
+            if room_type(info) == "channel" and not info.get("is_member"):
+                raise UpstreamRoomDenied("not_in_channel")
+            if info.get("is_archived"):
+                raise UpstreamRoomDenied("is_archived")
+            return self._info(token, info)
+
+        return self._translate(work)
+
+    def list_page(self, token: str, cursor: str | None) -> tuple[list[SlackRoomInfo], str | None]:
+        def work() -> tuple[list[SlackRoomInfo], str | None]:
+            # `users.conversations` = 그 회원이 **참여한** 방만(공개·비공개·DM·그룹 DM). 고를 수 있는 것은 이것뿐이다.
+            body = call("users.conversations", token, {
+                "types": "public_channel,private_channel,im,mpim", "exclude_archived": "true", "limit": 100, "cursor": cursor,
+            })
+            rooms = [self._info(token, channel) for channel in body.get("channels") or [] if channel.get("id")]
+            return rooms, ((body.get("response_metadata") or {}).get("next_cursor") or None)
+
+        return self._translate(work)
 
 
 class SlackSocketMode:
@@ -145,7 +256,9 @@ class SlackSocketMode:
                             try:
                                 self._on_event(envelope.get("payload") or {})
                             except Exception:  # noqa: BLE001 — 이벤트 하나가 연결을 끊지 않는다
-                                logger.exception("slack event handling failed")
+                                # 이미 ack 했으니 슬랙은 다시 안 보낸다 — 다음 바퀴에 메우기로 받게 한다(검수 W-3).
+                                logger.exception("slack event handling failed; gap fill requested")
+                                self._on_reconnect()
             except UpstreamAuthRevoked as error:
                 logger.error("slack app token refused (%s) — socket mode stopped", error.reason)
                 return

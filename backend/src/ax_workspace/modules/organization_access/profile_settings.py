@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+import hashlib
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
@@ -113,7 +114,8 @@ class ProfileSettingsApplication:
         member_id = str(principal.id)
         previous = self._repository.profile_image(member_id)
         old_key = previous.storage_key if previous is not None else None
-        key = f"profiles/{member_id}/{uuid4()}"
+        # 회원 id 에는 저장소 키가 받지 않는 글자(`@`·한글 …)가 있을 수 있다 — id 의 SHA-256 앞 32자로 자리를 잡는다(검수 W-10).
+        key = f"profiles/{hashlib.sha256(member_id.encode('utf-8')).hexdigest()[:32]}/{uuid4()}"
         self._storage.put(key, data, content_type)
         record = self._repository.save_profile_image(
             member_id, storage_key=key, content_type=content_type, size=len(data), at=self._clock()

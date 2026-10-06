@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import secrets
 from typing import Any, Literal, Protocol
@@ -26,7 +26,9 @@ from ax_workspace.modules.external_channels.domain import (
     IntegrationKind,
     IntegrationNotConfigured,
     IntegrationStatus,
+    IntegrationDisconnected,
     InvalidRoomSelection,
+    RoomAccessDenied,
     OAuthExchangeFailed,
     OAuthStateRejected,
     RoomStatus,
@@ -65,8 +67,9 @@ class OAuthGrant:
     account_key: str
     display_name: str
     account_meta: dict[str, Any]
-    access_token: str
-    refresh_token: str | None
+    #: 토큰 두 칸은 repr 에서 뺀다 — 예외 추적·디버그 로그가 grant 를 찍어도 평문이 남지 않는다(검수 W-3).
+    access_token: str = field(repr=False)
+    refresh_token: str | None = field(repr=False)
     expires_at: datetime | None
     scopes: str
 
@@ -74,6 +77,29 @@ class OAuthGrant:
 class OAuthProvider(Protocol):
     def authorize_url(self, *, state: str, redirect_uri: str) -> str: ...
     def exchange(self, *, code: str, redirect_uri: str) -> OAuthGrant: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SlackRoomInfo:
+    """슬랙 방 하나를 **그 회원 토큰으로** 본 모습. 그룹 DM 은 참여자 실명(D-12) · DM 은 상대 이름 · 봇 표시(D-13)."""
+
+    room_id: str
+    type: str
+    name: str
+    is_bot: bool = False
+    member_count: int | None = None
+
+
+class SlackRoomDirectory(Protocol):
+    """슬랙 방 목록·접근 확인 — 회원의 사용자 토큰으로 묻는다(F-1 · F-2).
+
+    `describe` 는 그 회원이 그 방을 **볼 수 있을 때만** 답한다 — 아니면 `RoomAccessDenied`. 공개 채널은 참여(is_member)까지
+    본다: 사용자 토큰 이벤트는 참여한 방만 오고, 참여하지 않은 채로 고르면 실시간이 비어 있다. 토큰이 거절되면
+    `IntegrationDisconnected`, 상류가 안 되면 `UpstreamUnavailableError`.
+    """
+
+    def describe(self, token: str, channel: str) -> SlackRoomInfo: ...
+    def list_page(self, token: str, cursor: str | None) -> tuple[list[SlackRoomInfo], str | None]: ...
 
 
 class TokenCipher(Protocol):
@@ -126,6 +152,20 @@ class DeviceTokenIssueCommand(BaseModel):
     device_name: str = Field(min_length=1, max_length=200, title="기기 이름")
 
 
+class AvailableRoomView(TypedDict):
+    room_id: str
+    type: str
+    name: str
+    is_bot: bool
+    member_count: int | None
+    already_added: bool
+
+
+class AvailableRoomsPage(TypedDict):
+    rooms: list[AvailableRoomView]
+    next_cursor: str | None
+
+
 class ConnectStart(TypedDict):
     authorize_url: str
     state: str
@@ -150,6 +190,8 @@ class IntegrationView(TypedDict):
     synced_count: int
     last_synced_at: str | None
     backfill_count: int
+    #: 슬랙 워크스페이스 도메인(`<team>.slack.com`) — 워크스페이스 줄·퍼머링크(BE 수정 판 3). 모르면 null.
+    domain: str | None
     collector: CollectorView | None
 
 
@@ -218,9 +260,11 @@ class ExternalChannelApplication:
         providers: dict[str, OAuthProvider],
         api_origin: str,
         web_origin: str,
+        slack_directory: SlackRoomDirectory | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._repository = repository
+        self._slack_directory = slack_directory
         self._cipher = cipher
         self._providers = providers
         self._api_origin = api_origin
@@ -247,8 +291,16 @@ class ExternalChannelApplication:
         provider = self._configured(row.kind)
         return self._issue_state(principal, row.kind, provider, integration_id=row.id)
 
-    def complete_callback(self, kind: str, *, state: str | None, code: str | None, error: str | None) -> CallbackOutcome:
-        """`state` 로 회원을 찾는다 — OS 브라우저에는 세션 쿠키가 없다(F-2). `state` 는 한 번만 통한다."""
+    def complete_callback(
+        self, kind: str, *, state: str | None, code: str | None, error: str | None, browser_member_id: str | None = None
+    ) -> CallbackOutcome:
+        """`state` 로 회원을 찾는다 — OS 브라우저에는 세션 쿠키가 없다(F-2). `state` 는 한 번만 통한다.
+
+        `browser_member_id` 는 콜백을 연 브라우저의 로그인 세션 회원이다(없으면 None — 데스크톱이 연 OS 브라우저).
+        **세션이 있는데 `state` 의 회원과 다르면 거절한다**(검수 W-2): 남이 만든 연결 링크를 받아 내 브라우저에서
+        동의하면 내 메일이 그 사람 연동으로 들어가는 「링크 넘기기」를 막는다. 세션이 없으면 막을 근거가 없어
+        종전대로 `state` 만 본다 — 그 경로는 데스크톱 앱이 연 링크다.
+        """
         now = self._clock()
         record = self._repository.oauth_state(secret_digest(state), lock=True) if state else None
         if (
@@ -260,6 +312,8 @@ class ExternalChannelApplication:
             raise OAuthStateRejected("연결 요청이 만료됐거나 올바르지 않습니다")
         # 결과가 무엇이든 그 state 는 여기서 끝난다 — 같은 링크로 두 번 연결되지 않는다.
         record.consumed_at = now
+        if browser_member_id is not None and browser_member_id != record.member_id:
+            raise OAuthStateRejected("이 연결 링크는 지금 로그인한 계정이 만든 것이 아닙니다")
         if error or not code:
             return CallbackOutcome(kind, "denied", settings_return_url(self._web_origin, kind, "denied"))
         provider = self._configured(kind)
@@ -284,7 +338,7 @@ class ExternalChannelApplication:
         return CallbackOutcome(kind, "ok", settings_return_url(self._web_origin, kind, "ok"), str(row.id))
 
     def disconnect(self, principal: Principal, integration_id: UUID) -> None:
-        """소프트 딜리트(D-27). 방·메시지는 남아 같은 계정을 다시 연결하면 되살아난다(D-46).
+        """소프트 딜리트(D-27). 방·메시지는 남아 같은 계정을 다시 연결하면 되살아난다(D-46). 카톡은 기기 토큰도 철회한다.
 
         저장 토큰은 지운다 — 「더 이상 받지 않는다」를 그대로 지키고, 되살림은 새 동의가 새 토큰을 가져온다.
         """
@@ -297,6 +351,10 @@ class ExternalChannelApplication:
         row.refresh_token_encrypted = None
         row.token_expires_at = None
         row.watch_expires_at = None
+        if row.kind == IntegrationKind.KAKAO:
+            # 카톡에는 OAuth 토큰이 없다 — 앱의 **기기 토큰**이 수집을 붙든다. 그것까지 철회하지 않으면 다음 handshake 가
+            # 연동을 되살려 해제가 30초 만에 무효가 된다(검수 W-5 · D-27). 다시 붙이려면 「이 Mac 연결」로 새로 발급한다.
+            self._repository.revoke_device_tokens(row.member_id, now)
         self._changed(row)
 
     # ── 연동 목록·고른 방 (§4.3) ─────────────────────────────────────────────────────────────
@@ -319,16 +377,28 @@ class ExternalChannelApplication:
         details = {detail.room_id: detail for detail in command.rooms}
         now = self._clock()
         changed = False
+        token = self._slack_token(row) if row.kind == IntegrationKind.SLACK else None
         for external_id in dict.fromkeys(item.strip() for item in command.room_ids):
             if not external_id or len(external_id) > 100:
                 raise InvalidRoomSelection("방 id 가 비었거나 너무 깁니다")
-            detail = details.get(external_id)
-            room_type = (detail.type if detail else None) or _default_room_type(row.kind, external_id)
-            if room_type not in allowed:
-                raise InvalidRoomSelection(f"{row.kind} 방 종류가 아닙니다: {room_type}")
             room = self._repository.room_by_external(row.id, external_id, lock=True)
             if room is not None and room.removed_at is None:
                 continue
+            detail = details.get(external_id)
+            verified: dict[str, Any] = {}
+            if token is not None:
+                # 슬랙은 **그 회원 토큰으로 볼 수 있는 방만** 받는다(F-1). 클라이언트가 보낸 종류·이름은 믿지 않고
+                # 슬랙이 그 회원에게 답한 것을 쓴다 — 남의 DM·비공개 채널 id 를 넣어도 여기서 422 로 끝난다.
+                assert self._slack_directory is not None
+                try:
+                    info = self._slack_directory.describe(token, external_id)
+                except RoomAccessDenied as denied:
+                    raise InvalidRoomSelection(f"이 슬랙 방을 볼 수 없습니다: {external_id}") from denied
+                detail = RoomDetail(room_id=external_id, type=info.type, name=info.name, member_count=info.member_count, is_bot=info.is_bot)
+                verified = {"verified_at": now.isoformat()}
+            room_type = (detail.type if detail else None) or _default_room_type(row.kind, external_id)
+            if room_type not in allowed:
+                raise InvalidRoomSelection(f"{row.kind} 방 종류가 아닙니다: {room_type}")
             if room is None:
                 self._repository.add_room(
                     integration_id=row.id,
@@ -336,7 +406,7 @@ class ExternalChannelApplication:
                     room_type=room_type,
                     name=(detail.name if detail and detail.name else external_id),
                     member_count=detail.member_count if detail else None,
-                    room_meta={"is_bot": True} if detail and detail.is_bot else {},
+                    room_meta={**({"is_bot": True} if detail and detail.is_bot else {}), **verified},
                     status=RoomStatus.BACKFILLING,
                     created_at=now,
                     updated_at=now,
@@ -350,6 +420,8 @@ class ExternalChannelApplication:
                 if detail and detail.member_count is not None:
                     room.member_count = detail.member_count
                 room.status = RoomStatus.LIVE if room.backfill_done_at else RoomStatus.BACKFILLING
+                if verified:
+                    room.room_meta = {key: value for key, value in {**(room.room_meta or {}), **verified}.items() if key != "access_lost"}
                 room.updated_at = now
             changed = True
         if changed:
@@ -357,6 +429,40 @@ class ExternalChannelApplication:
             row.updated_at = now
             self._repository.notify(SYNC_WAKE_CHANNEL, sync_wake_payload(str(row.id), "rooms"))
             self._changed(row)
+
+    def available_slack_rooms(self, principal: Principal, *, q: str | None, cursor: str | None) -> AvailableRoomsPage:
+        """방 고르기 창의 목록(SPEC-008 §4.3 · F-2) — 그 회원 토큰으로 실시간 조회. 「추가됨」은 지금 고른 방."""
+        rows = self._repository.active_integrations_of_kind(str(principal.id), IntegrationKind.SLACK)
+        if not rows:
+            raise IntegrationMissing("slack integration was not found")
+        row = rows[0]
+        token = self._slack_token(row)
+        assert self._slack_directory is not None
+        rooms, next_cursor = self._slack_directory.list_page(token, cursor)
+        added = {room.external_id for room in self._repository.rooms_of(row.id)}
+        needle = (q or "").strip().lower()
+        return {
+            "rooms": [
+                {
+                    "room_id": room.room_id,
+                    "type": room.type,
+                    "name": room.name,
+                    "is_bot": room.is_bot,
+                    "member_count": room.member_count,
+                    "already_added": room.room_id in added,
+                }
+                for room in rooms
+                if not needle or needle in room.name.lower()
+            ],
+            "next_cursor": next_cursor,
+        }
+
+    def _slack_token(self, row: Any) -> str:
+        if row.status == IntegrationStatus.DISCONNECTED or not row.access_token_encrypted:
+            raise IntegrationDisconnected("슬랙 연결이 끊겼습니다 — 다시 연결해 주세요")
+        if self._cipher is None or self._slack_directory is None:
+            raise IntegrationNotConfigured(IntegrationKind.SLACK)
+        return self._cipher.decrypt(row.access_token_encrypted)
 
     def remove_room(self, principal: Principal, integration_id: UUID, room_id: UUID) -> None:
         """방 빼기 = 소프트 딜리트(§2.3). 웹에서도 된다 — 고른 방은 서버 정본이다(R-F1 정정)."""
@@ -555,6 +661,7 @@ class ExternalChannelApplication:
             "synced_count": row.synced_count or 0,
             "last_synced_at": _iso(row.last_synced_at),
             "backfill_count": row.backfill_count or 0,
+            "domain": (row.account_meta or {}).get("domain"),
             "collector": self._collector_view(row, now) if row.kind == IntegrationKind.KAKAO else None,
         }
 
