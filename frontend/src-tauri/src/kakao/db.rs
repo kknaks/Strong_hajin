@@ -4,6 +4,8 @@
 //! 카톡 DB 를 **쓰거나 바꾸지 않는다**(SPEC-009 §3.1·§5 · AC-08). 스키마(테이블·컬럼)는 카톡이
 //! 만든 것이고 우리가 만들지 않는다 — 필요한 컬럼만 읽는다.
 
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OpenFlags};
 
 use super::crypto::{OpenFailure, Resolved};
@@ -122,15 +124,77 @@ fn non_empty(s: Option<String>) -> Option<String> {
     s.filter(|v| !v.trim().is_empty())
 }
 
+/// 로그인한 내 userId — `NTChatContext` 에 있다(단체방 표시 멤버에서 나를 빼는 데 쓴다).
+fn self_user_id(conn: &Connection) -> i64 {
+    conn.query_row("SELECT userId FROM NTChatContext LIMIT 1", [], |row| row.get(0))
+        .unwrap_or(0)
+}
+
+/// `userId → 표시 이름`. 한 번에 다 읽어 방·그룹멤버 이름 풀이에 쓴다(N+1 회피). 이름 우선순위는
+/// **내가 준 이름(friendNickName) → 프로필 이름(displayName) → 닉네임** — 카톡에 보이는 이름과 맞춘다.
+fn user_names(conn: &Connection) -> Result<HashMap<i64, String>, OpenFailure> {
+    let mut stmt = conn
+        .prepare("SELECT userId, friendNickName, displayName, nickName FROM NTUser WHERE linkId = 0")
+        .map_err(|_| OpenFailure::Version)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let uid: i64 = row.get(0)?;
+            let friend: Option<String> = row.get(1).ok().flatten();
+            let display: Option<String> = row.get(2).ok().flatten();
+            let nick: Option<String> = row.get(3).ok().flatten();
+            Ok((uid, friend, display, nick))
+        })
+        .map_err(|_| OpenFailure::Version)?;
+    let mut map = HashMap::new();
+    for row in rows.flatten() {
+        let (uid, friend, display, nick) = row;
+        if let Some(name) = non_empty(friend).or(non_empty(display)).or(non_empty(nick)) {
+            map.insert(uid, name);
+        }
+    }
+    Ok(map)
+}
+
+/// `displayMemberIds` BLOB(= 이름 없는 단체방의 **표시 멤버** userId 들)를 푼다. 카톡 Mac 은 이를
+/// **바이너리 plist 배열**(bplist00 · 정수들 · 보통 나 자신은 빠져 있다)로 둔다(DB 조사).
+pub fn parse_member_ids(blob: &[u8]) -> Vec<i64> {
+    let Ok(value) = plist::Value::from_reader(std::io::Cursor::new(blob)) else {
+        return Vec::new();
+    };
+    let Some(arr) = value.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|v| {
+            v.as_signed_integer()
+                .or_else(|| v.as_unsigned_integer().map(|u| u as i64))
+        })
+        .collect()
+}
+
+/// 이름 없는 단체방의 이름 = **표시 멤버 이름을 「, 」로 이은 것**(카톡 방 제목 방식). 멤버가 하나도
+/// 안 풀리면 None. `exclude` 는 나 자신(혹시 섞여 있으면 뺀다).
+fn group_name(blob: &[u8], names: &HashMap<i64, String>, exclude: i64) -> Option<String> {
+    let joined: Vec<String> = parse_member_ids(blob)
+        .into_iter()
+        .filter(|&id| id != exclude)
+        .filter_map(|id| names.get(&id).cloned())
+        .collect();
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined.join(", "))
+    }
+}
+
 /// 방 목록 — **1:1·단체만**(오픈채팅 제외). 오픈채팅은 `linkId > 0`(DB 조사). 1:1 은
-/// `directChatMemberUserId > 0`. 이름은 chatName → 1:1 상대 이름 → "(이름 없음)".
+/// `directChatMemberUserId > 0`. 이름: **사용자가 정한 방 이름(chatName)** → 1:1 상대 이름 /
+/// 단체방은 표시 멤버 이름을 「, 」로 이은 것(카톡과 같게) → "(이름 없음)".
 pub fn list_rooms(conn: &Connection) -> Result<Vec<Room>, OpenFailure> {
-    let sql = "SELECT r.chatId, r.chatName, r.activeMembersCount, r.directChatMemberUserId, \
-               r.linkId, u.displayName, u.friendNickName, u.nickName \
-               FROM NTChatRoom r \
-               LEFT JOIN NTUser u ON u.userId = r.directChatMemberUserId AND u.linkId = 0 \
-               WHERE r.lastUpdatedAt > 0 \
-               ORDER BY r.lastUpdatedAt DESC";
+    let names = user_names(conn)?;
+    let me = self_user_id(conn);
+    let sql = "SELECT chatId, chatName, activeMembersCount, directChatMemberUserId, linkId, displayMemberIds \
+               FROM NTChatRoom WHERE lastUpdatedAt > 0 ORDER BY lastUpdatedAt DESC";
     let mut stmt = conn.prepare(sql).map_err(|_| OpenFailure::Version)?;
     let rows = stmt
         .query_map([], |row| {
@@ -139,26 +203,29 @@ pub fn list_rooms(conn: &Connection) -> Result<Vec<Room>, OpenFailure> {
             let members: Option<i64> = row.get(2).ok().flatten();
             let direct_uid: Option<i64> = row.get(3).ok().flatten();
             let link_id: Option<i64> = row.get(4).ok().flatten();
-            let display: Option<String> = row.get(5).ok().flatten();
-            let friend: Option<String> = row.get(6).ok().flatten();
-            let nick: Option<String> = row.get(7).ok().flatten();
-            Ok((chat_id, chat_name, members, direct_uid, link_id, display, friend, nick))
+            let member_blob: Option<Vec<u8>> = row.get(5).ok().flatten();
+            Ok((chat_id, chat_name, members, direct_uid, link_id, member_blob))
         })
         .map_err(|_| OpenFailure::Version)?;
 
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (chat_id, chat_name, members, direct_uid, link_id, display, friend, nick) = row;
+        let (chat_id, chat_name, members, direct_uid, link_id, member_blob) = row;
         // 오픈채팅 제외(D-18).
         if link_id.unwrap_or(0) > 0 {
             continue;
         }
-        let is_direct = direct_uid.unwrap_or(0) > 0;
+        let direct_uid = direct_uid.unwrap_or(0);
+        let is_direct = direct_uid > 0;
         let kind = if is_direct { RoomKind::Direct } else { RoomKind::Group };
         let name = non_empty(chat_name)
-            .or_else(|| if is_direct { non_empty(display) } else { None })
-            .or_else(|| if is_direct { non_empty(friend) } else { None })
-            .or_else(|| if is_direct { non_empty(nick) } else { None })
+            .or_else(|| {
+                if is_direct {
+                    names.get(&direct_uid).cloned()
+                } else {
+                    member_blob.as_deref().and_then(|b| group_name(b, &names, me))
+                }
+            })
             .unwrap_or_else(|| "(이름 없음)".to_string());
         out.push(Room { chat_id, kind, name, member_count: members });
     }
@@ -404,5 +471,36 @@ mod tests {
         assert_eq!(parse_attachments(6, Some(r#"{"name":"하트"}"#))[0].kind, AttachKind::Sticker);
         assert!(parse_attachments(1, Some("")).is_empty());
         assert!(parse_attachments(26, Some(r#"{"src_message":"안녕"}"#)).is_empty());
+    }
+
+    /// 카톡 Mac 의 displayMemberIds 와 같은 **바이너리 plist 정수 배열**을 만든다.
+    fn bplist_ids(ids: &[i64]) -> Vec<u8> {
+        let arr = plist::Value::Array(ids.iter().map(|&i| plist::Value::Integer(i.into())).collect());
+        let mut buf = Vec::new();
+        arr.to_writer_binary(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn 표시멤버_bplist_를_정수로_푼다() {
+        let blob = bplist_ids(&[61342504, 8596879, 29083527]);
+        assert_eq!(parse_member_ids(&blob), vec![61342504, 8596879, 29083527]);
+        assert!(parse_member_ids(&bplist_ids(&[])).is_empty());
+        assert!(parse_member_ids(b"not a plist").is_empty());
+    }
+
+    #[test]
+    fn 단체방_이름은_멤버_이름을_쉼표로_잇는다() {
+        let mut names = HashMap::new();
+        names.insert(1i64, "엄마".to_string());
+        names.insert(2i64, "하지니♥️".to_string());
+        names.insert(3i64, "형".to_string());
+        let me = 99i64;
+        // 표시 멤버 셋 — 나(99)는 섞여 있어도 빠진다.
+        let blob = bplist_ids(&[1, 2, me, 3]);
+        assert_eq!(group_name(&blob, &names, me).as_deref(), Some("엄마, 하지니♥️, 형"));
+        // 아무도 못 풀면 None(→ 호출부가 "(이름 없음)").
+        assert_eq!(group_name(&bplist_ids(&[404]), &names, me), None);
+        assert_eq!(group_name(&bplist_ids(&[]), &names, me), None);
     }
 }
