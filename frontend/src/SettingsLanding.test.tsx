@@ -30,3 +30,16 @@ it("콜백 쿼리로 설정의 그 탭이 열리고 거부 결과를 알린 뒤 
   // 프로필 이미지가 있으면 내비 아바타가 그것으로 선다(W-15)
   await waitFor(() => expect(container.querySelector("img.scax-side-nav__avatar")?.getAttribute("src")).toBe("/api/profile/image?v=1"));
 });
+
+it("콜백이 connect=error(토큰 교환 실패)로 오면 설정 화면에 오류 배너가 선다(검수 W-1)", async () => {
+  window.history.replaceState(null, "", "/?surface=settings&tab=mail&connect=error");
+  vi.stubGlobal("WebSocket", undefined);
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+    if (String(input) === "/api/auth/me") return json({ member_id: "haram", display_name: "유하람", organizations: [], capabilities: [] });
+    return json([]);
+  });
+  render(<App />);
+  const banner = await screen.findByRole("alert");
+  expect(banner.textContent).toContain("연결하지 못했습니다");
+  expect(window.location.search).toBe("");
+});

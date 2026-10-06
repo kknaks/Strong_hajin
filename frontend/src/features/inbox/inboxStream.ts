@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { inboxStreamUrl } from "../../lib/api";
 import { openExternal } from "../../lib/shell";
 import type { InboxStreamEvent } from "../../lib/viewModels";
+import { safeHref } from "./inboxModel";
 
 /**
  * 사용자 사건 채널 `/api/inbox/stream` 구독 (SPEC-008 §4.4 실시간 갱신 · AC-10b).
@@ -87,10 +88,15 @@ export function createInboxEventHub(): InboxEventHub {
 }
 
 /**
- * 외부 링크 열기 — 데스크톱이면 `open_external` 로 OS 브라우저에, 브라우저면 새 탭(`noopener`)으로(§2.1 ⑦).
+ * 외부 링크 열기 — 데스크톱이면 `open_external` 로 OS 브라우저에, 브라우저면 새 탭(`noopener,noreferrer`)으로(§2.1 ⑦).
  * 셸이 있는데 실패하면 웹으로 폴백하지 않는다(U-4 — 앱 창 안에 두 번째 웹뷰가 앉는 사고).
+ * **http · https · mailto 밖의 주소는 열지 않는다**(검수 F-1 — `javascript:` 가 우리 origin 에서 돌지 않게).
+ * 돌려주는 값: 열었는가.
  */
-export async function openLink(url: string): Promise<void> {
-  const outcome = await openExternal(url);
-  if (outcome === "absent") window.open(url, "_blank", "noopener,noreferrer");
+export async function openLink(url: string): Promise<boolean> {
+  const safe = safeHref(url);
+  if (!safe) return false;
+  const outcome = await openExternal(safe);
+  if (outcome === "absent") window.open(safe, "_blank", "noopener,noreferrer");
+  return outcome !== "failed";
 }

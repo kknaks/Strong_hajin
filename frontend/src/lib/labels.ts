@@ -1553,6 +1553,7 @@ export const settingsScreen = {
   connectFailed: "연결을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.",
   connectDenied: "연결되지 않았습니다.",
   connectOk: "연결했습니다.",
+  connectError: "연결하지 못했습니다 — 동의는 받았지만 서버가 연결을 마치지 못했습니다. 다시 시도해 주세요.",
   /* 메일 */
   mailIntro: "받은편지함의 메일을 우리 DB 로 적재한다. 계정마다 한 번 연결하면 된다.",
   mailConnectTitle: "Google 계정 연결",
@@ -1665,7 +1666,8 @@ export const settingsScreen = {
   deviceRevokeTitle: "기기 연결 철회",
   deviceRevokeLines: (name: string) => [`${name} 의 데스크톱 앱이 더 이상 카톡을 올리지 못한다.`, "다시 쓰려면 그 Mac 의 앱에서 「이 Mac 연결」을 누른다."],
   deviceStored: "이 Mac 을 연결했습니다.",
-  deviceStoreFailed: "이 Mac 의 키체인에 연결 정보를 넣지 못했습니다. 다시 시도해 주세요.",
+  /** 새 발급은 서버가 옛 토큰을 먼저 철회한다 — 키체인 저장이 실패하면 이 Mac 의 수집이 멈춘 상태다(검수 W-3). */
+  deviceStoreFailed: "이 Mac 의 키체인에 연결 정보를 넣지 못했습니다 — 지금 이 Mac 의 수집이 멈췄습니다. 다시 「이 Mac 연결」을 누르세요.",
   deviceFailed: "기기를 연결하지 못했습니다.",
   /* 프로필 */
   me: "내 정보",

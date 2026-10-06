@@ -22,6 +22,9 @@ export const MAIL_SANDBOX = "allow-same-origin allow-popups allow-popups-to-esca
 
 const REMOTE_ATTRIBUTE = "data-ax-remote-src";
 
+/** 듣는 손을 이미 단 iframe 문서. */
+const wired = new WeakSet<Document>();
+
 /* 시안 `.scax-mail-html` 규칙을 iframe 문서용으로 — 값은 부모의 토큰을 그대로 옮겨 쓴다(아래 TOKENS). */
 const FRAME_CSS = `
 html,body{margin:0;padding:0;background:transparent}
@@ -92,8 +95,16 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
       doc.head.appendChild(style);
     }
     setBlocked(doc.querySelectorAll(`img[${REMOTE_ATTRIBUTE}]:not([src])`).length);
-    /* 링크 — iframe 안에서 열지 않고 부모가 연다 */
-    doc.addEventListener("click", (event) => {
+    /* 같은 문서에 load 가 두 번 와도 듣는 손은 한 벌만 — 링크가 두 번 열리지 않게 */
+    if (wired.has(doc)) {
+      measure();
+      return;
+    }
+    wired.add(doc);
+    /* 링크 — iframe 안에서 열지 않고 부모가 연다. 가운데 클릭(auxclick)도 같다(검수 W-6 — 데스크톱은 새 창을 막는다).
+       열 수 없는 스킴(F-1)은 막기만 하고 열지 않는다. */
+    const intercept = (event: MouseEvent) => {
+      if (event.type === "auxclick" && event.button !== 1) return;
       const target = event.target as Element | null;
       const anchor = target?.closest?.("a[href]");
       if (!anchor) return;
@@ -101,7 +112,9 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
       if (!href || href.startsWith("#")) return;
       event.preventDefault();
       void openLink(href);
-    });
+    };
+    doc.addEventListener("click", intercept);
+    doc.addEventListener("auxclick", intercept);
     /* 인용 접기·그림이 실리면 높이가 바뀐다 */
     doc.addEventListener("toggle", measure, true);
     doc.querySelectorAll("img").forEach((image) => image.addEventListener("load", measure));

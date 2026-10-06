@@ -35,8 +35,8 @@ const MAIL = {
   unread: true,
   safe_html: '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'"><p>일정표 본문</p>',
   attachments: [
-    { aid: "a1", name: "범위.pdf", size: 1200000, mime: "application/pdf", kind: "file", state: "remote" },
-    { aid: "a2", name: "현장.jpg", size: 2400000, mime: "image/jpeg", kind: "image", state: "remote" },
+    { aid: "a1", name: "범위.pdf", size: 1200000, mime: "application/pdf", kind: "file", state: "reference" },
+    { aid: "a2", name: "현장.jpg", size: 2400000, mime: "image/jpeg", kind: "image", state: "reference" },
   ],
   sent_replies: [{ local_id: "s0", status: "sent", payload: { to: ["서지안 <jian@noeul.example>"], cc: [], body: "지난 답장" }, error: null, created_at: T(1), sent_at: T(1) }],
 };
@@ -46,7 +46,7 @@ const ROOM = {
   users: { U1: { name: "한서윤" }, U2: { name: "오지훈" }, B1: { name: "배포 알리미", is_bot: true } },
   next_cursor: null,
   messages: [
-    { id: "1", key: "1.0", at: T(1), author: "U1", thread_key: null, raw: { user: "U1", text: "첫 줄" }, attachments: [] },
+    { id: "1", key: "1.0", at: T(1), author: "U1", thread_key: null, raw: { user: "U1", text: "첫 줄 <javascript:alert(document.cookie)|미끼 링크>" }, attachments: [] },
     { id: "2", key: "2.0", at: T(3), author: "U1", thread_key: null, raw: { user: "U1", text: "이어서 <@U2> 확인" }, attachments: [] },
     { id: "3", key: "3.0", at: T(4), author: "B1", thread_key: "3.0", raw: { bot_id: "B1", text: "배포 *완료*", reply_count: 1, reply_users: ["U2"], latest_reply: "1791245400.0" }, attachments: [] },
     { id: "4", key: "4.0", at: T(5), author: "U2", thread_key: "3.0", raw: { user: "U2", text: "스레드 답글" }, attachments: [] },
@@ -278,7 +278,7 @@ describe("슬랙·카톡 본문 — 대화방 · 스레드 3열 · 조회 전용
   it("5분 묶음 · 멘션 이름 · 봇 「앱」 · 스레드 답글은 본문에서 빠지고 오른쪽 패널에 선다 · 슬랙에서 열기", async () => {
     render(<Harness />);
     fireEvent.click(await rail().findByText("#pilot-launch"));
-    expect(await body().findByText("첫 줄")).toBeTruthy();
+    expect(await body().findByText(/첫 줄/)).toBeTruthy();
     expect(document.querySelectorAll(".scax-imsg--grouped")).toHaveLength(1);
     expect(body().getByText("@오지훈")).toBeTruthy();
     expect(body().getByText("앱")).toBeTruthy();
@@ -293,6 +293,20 @@ describe("슬랙·카톡 본문 — 대화방 · 스레드 3열 · 조회 전용
     expect(document.querySelector(".scax-inbox-main--thread")).not.toBeNull();
     fireEvent.click(within(panel).getByRole("button", { name: "스레드 닫기" }));
     expect(body().queryByRole("complementary")).toBeNull();
+  });
+
+  it("javascript: 링크는 링크로 서지 않고 눌러도 새 창이 열리지 않는다(검수 F-1)", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(<Harness />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    const bait = await body().findByText(/미끼 링크/);
+    expect(bait.closest("a")).toBeNull();
+    fireEvent.click(bait);
+    expect(open).not.toHaveBeenCalled();
+    // 안전한 퍼머링크는 새 탭(noopener,noreferrer)으로 연다
+    fireEvent.click(body().getByRole("link", { name: "슬랙에서 열기" }));
+    await waitFor(() => expect(open).toHaveBeenCalledWith("https://noeul.slack.com/archives/C01", "_blank", "noopener,noreferrer"));
   });
 
   it("보내기 — 내 이름으로 바로 서고 「보내는 중」 · 실패 사건이면 「다시 보내기」는 같은 멱등 키로", async () => {

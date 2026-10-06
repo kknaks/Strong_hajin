@@ -68,14 +68,15 @@ const surfaceLabel: Record<ProductSurface, string> = {
  * 첫 화면을 주소의 쿼리로 고른다 — OAuth 콜백이 `?surface=settings&tab=…&connect=ok|denied` 로 돌아온다
  * (SPEC-008 §4.2 N-2 · 라우터 없는 SPA 라 쿼리다). 읽은 뒤 주소에서 지운다 — 새로고침이 결과를 다시 알리지 않게.
  */
-function readLanding(): { surface: ProductSurface; tab?: SettingsTab; connect: "ok" | "denied" | null } {
+function readLanding(): { surface: ProductSurface; tab?: SettingsTab; connect: "ok" | "denied" | "error" | null } {
   const params = new URLSearchParams(window.location.search);
   if (params.get("surface") !== "settings") return { surface: "today", connect: null };
   const tabParam = params.get("tab");
   const tab: SettingsTab | undefined =
     tabParam === "mail" || tabParam === "slack" || tabParam === "kakao" || tabParam === "account" ? tabParam : undefined;
   const connectParam = params.get("connect");
-  const connect = connectParam === "ok" || connectParam === "denied" ? connectParam : null;
+  /* `error` = 서버의 토큰 교환 실패(BE-1 `complete_callback` · 검수 W-1) — 조용히 버리지 않는다 */
+  const connect = connectParam === "ok" || connectParam === "denied" || connectParam === "error" ? connectParam : null;
   const url = new URL(window.location.href);
   ["surface", "tab", "connect"].forEach((key) => url.searchParams.delete(key));
   window.history.replaceState(null, "", url);

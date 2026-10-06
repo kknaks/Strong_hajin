@@ -192,7 +192,14 @@ export async function openExternal(url: string): Promise<OpenExternalOutcome> {
        넘기지도 않는다: 셸 안에서 그것은 **앱 창 안에 두 번째 웹뷰가 앉는** 길이고,
        U-4 가 막으려는 바로 그 사고다.
        **그러나 조용히 삼키지는 않는다**(리뷰 W-6) — 실패를 그대로 돌려주고 기록을 남긴다. */
-    console.warn(`[shell] 외부 링크를 열지 못했습니다(E-14c). url=${url}`);
+    /* 주소 전체는 남기지 않는다 — 메일·슬랙 링크에는 추적 토큰이 실릴 수 있다(검수 W-5). host 만. */
+    let host = "?";
+    try {
+      host = new URL(url).host;
+    } catch {
+      /* 주소가 아니면 host 도 없다 */
+    }
+    console.warn(`[shell] 외부 링크를 열지 못했습니다(E-14c). host=${host}`);
     return "failed";
   }
 }

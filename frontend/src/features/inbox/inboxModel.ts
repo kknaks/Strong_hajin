@@ -93,6 +93,30 @@ export function mentionName(userId: string, people: InboxPeople, fallback?: stri
   return people[userId]?.name || fallback || userId;
 }
 
+/* ===== 링크 스킴 — 여는 것은 http · https · mailto 뿐 (검수 F-1) =====
+ * 슬랙 원문은 사람만 쓰지 않는다 — 봇·앱·웹훅이 정한 주소가 그대로 쌓인다(D-13). `javascript:`·`data:` 같은 주소를
+ * 링크로 만들면 브라우저의 새 창이 우리 origin 을 물려받아 세션 쿠키로 `/api` 를 부를 수 있다. 그래서 허용 목록 밖은
+ * **링크가 아니라 글자로** 그린다. 여는 자리(`openLink`)도 같은 검사를 한 번 더 한다. */
+
+const SAFE_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+
+/** 열어도 되는 주소면 정규화한 주소를, 아니면 `null`. 상대 주소·스킴 없는 글자도 `null` 이다. */
+export function safeHref(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url.trim());
+    return SAFE_SCHEMES.has(parsed.protocol) ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 링크 조각 — 안전하지 않으면 글자 조각으로 떨어진다. */
+function linkSeg(label: string, href: string): Seg {
+  const safe = safeHref(href);
+  return safe ? { link: label || safe, href: safe } : label || href;
+}
+
 /* ===== 슬랙 mrkdwn → 조각 ===== */
 
 const ENTITIES: Record<string, string> = { "&lt;": "<", "&gt;": ">", "&amp;": "&" };
@@ -111,7 +135,7 @@ export function parseInline(text: string, people: InboxPeople): Seg[] {
       if (sigil === "@") out.push({ mention: label ? label.replace(/^@/, "") : mentionName(target, people) });
       else if (sigil === "#") out.push({ mention: label ? `#${label}` : `#${target}` });
       else if (sigil === "!") out.push({ mention: (label ?? target).replace(/^subteam\^\w+$/, "그룹") });
-      else out.push({ link: unescapeSlack(label ?? target), href: unescapeSlack(target) });
+      else out.push(linkSeg(unescapeSlack(label ?? target), unescapeSlack(target)));
     } else if (code !== undefined) out.push({ code: unescapeSlack(code) });
     else if (bold !== undefined) out.push({ b: unescapeSlack(bold) });
     else if (italic !== undefined) out.push({ i: unescapeSlack(italic) });
@@ -199,7 +223,7 @@ function richSegs(elements: unknown, people: InboxPeople): Seg[] {
         break;
       }
       case "link":
-        out.push({ link: String(element.text || element.url || ""), href: String(element.url ?? "") });
+        out.push(linkSeg(String(element.text || ""), String(element.url ?? "")));
         break;
       case "user":
         out.push({ mention: mentionName(String(element.user_id ?? ""), people) });
@@ -340,7 +364,7 @@ export function slackUnfurls(raw: Record<string, unknown>): Unfurl[] {
   return (raw.attachments as Array<Record<string, unknown>>)
     .filter((item) => item.title || item.text || item.service_name)
     .map((item) => {
-      const href = String(item.title_link ?? item.original_url ?? item.from_url ?? "") || null;
+      const href = safeHref(String(item.title_link ?? item.original_url ?? item.from_url ?? ""));
       let domain = "";
       try {
         domain = href ? new URL(href).hostname : "";

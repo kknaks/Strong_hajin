@@ -16,6 +16,7 @@ import {
   isTopLevel,
   plainBlocks,
   roomKindLabel,
+  safeHref,
   slackAuthor,
   slackBlocks,
   slackReactions,
@@ -613,6 +614,7 @@ export function RoomView({
   };
 
   const header = page?.room;
+  const permalink = safeHref(header?.permalink);
   const title = header?.name ?? card.title;
   const roomType = header?.room_type ?? card.room_type;
   const members = header?.member_count ?? card.member_count;
@@ -643,13 +645,13 @@ export function RoomView({
               ) : null}
             </div>
           </div>
-          {!kakao && header?.permalink ? (
+          {!kakao && permalink ? (
             <a
               className="scax-room-head__open"
-              href={header.permalink}
+              href={permalink}
               onClick={(event) => {
                 event.preventDefault();
-                void openLink(header.permalink as string);
+                void openLink(permalink);
               }}
               rel="noreferrer"
               target="_blank"

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { Button } from "../../ds/Button";
 import { Empty } from "../../ds/Empty";
 import { Icon } from "../../ds/icons/Icon";
 import {
@@ -97,7 +98,7 @@ export function SettingsPage({
   session: OrganizationProfile;
   initialTab?: SettingsTab;
   /** OAuth 콜백 결과(N-2) — 화면이 한 번 알린다. */
-  connectResult?: "ok" | "denied" | null;
+  connectResult?: "ok" | "denied" | "error" | null;
   onProfileImage: (url: string | null) => void;
   characterBusy: boolean;
   characterError: string | null;
@@ -117,6 +118,8 @@ export function SettingsPage({
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const announced = useRef(false);
+  /** 콜백이 `connect=error`(토큰 교환 실패)로 돌아왔다 — 설정 화면 머리에 오류 배너로 선다(검수 W-1). */
+  const [callbackFailed, setCallbackFailed] = useState(connectResult === "error");
 
   const mail = integrations.filter((item) => item.kind === "mail");
   const slack = integrations.find((item) => item.kind === "slack") ?? null;
@@ -187,7 +190,7 @@ export function SettingsPage({
     if (announced.current || !connectResult) return;
     announced.current = true;
     if (connectResult === "ok") onNotice(copy.connectOk);
-    else onError(copy.connectDenied);
+    else if (connectResult === "denied") onError(copy.connectDenied);
   }, [connectResult, onError, onNotice]);
 
   const counts: Partial<Record<SettingsTab, number>> = { mail: mail.length, slack: slackRooms.length, kakao: kakaoRooms.length };
@@ -360,6 +363,12 @@ export function SettingsPage({
 
   return (
     <div className="scax-set-view">
+      {callbackFailed ? (
+        <div className="scax-inbox-notice scax-inbox-notice--danger" role="alert">
+          <span className="scax-inbox-notice__text">{copy.connectError}</span>
+          <Button label={copy.close} onClick={() => setCallbackFailed(false)} size="sm" tone="neutral" variant="outlined" />
+        </div>
+      ) : null}
       {body}
       <ConfirmBox busy={busy} confirm={confirm} onClose={() => setConfirm(null)} onConfirm={() => void run()} />
     </div>

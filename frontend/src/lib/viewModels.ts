@@ -1566,7 +1566,8 @@ export type InboxAttachment = {
   size: number | null;
   mime: string | null;
   kind: "image" | "album" | "file" | "video" | "audio" | "sticker" | string;
-  state: "remote" | "pending" | "stored" | "expired" | "too_large" | "not_stored" | string;
+  /** 메일·슬랙 = `reference`(받을 때 중계) · 카톡 = `pending`·`stored`·`expired`·`too_large`·`not_stored`. */
+  state: "reference" | "pending" | "stored" | "expired" | "too_large" | "not_stored" | string;
 };
 
 /** 우리가 보낸 답장 기록(D-47) — `status` 는 `sending`·`sent`·`failed`. */

@@ -11,6 +11,7 @@ import {
   parseAddress,
   parseInline,
   parseMrkdwn,
+  safeHref,
   replyRecipients,
   shortWhen,
   slackAuthor,
@@ -28,7 +29,7 @@ describe("슬랙 렌더 — blocks 우선 · mrkdwn 대체 (SPEC-008 §5 프론�
       " 완료 ",
       { code: "v1.2" },
       " ",
-      { link: "문서", href: "https://a.example" },
+      { link: "문서", href: "https://a.example/" },
       " ",
       { mention: "한서윤" },
       " ",
@@ -91,6 +92,24 @@ describe("슬랙 렌더 — blocks 우선 · mrkdwn 대체 (SPEC-008 §5 프론�
       { emoji: ":custom_party:", count: 1 },
     ]);
     expect(emojiOf("fire")).toBe("🔥");
+  });
+});
+
+describe("링크 스킴 — http · https · mailto 만 (검수 F-1)", () => {
+  it("javascript: · data: · 상대 주소는 링크가 아니라 글자로", () => {
+    expect(safeHref("https://a.example/x")).toBe("https://a.example/x");
+    expect(safeHref("mailto:a@b.example")).toBe("mailto:a@b.example");
+    expect(safeHref("javascript:alert(1)")).toBeNull();
+    expect(safeHref(" JavaScript:alert(1)")).toBeNull();
+    expect(safeHref("data:text/html,<script>")).toBeNull();
+    expect(safeHref("/api/x")).toBeNull();
+    expect(parseInline("<javascript:alert(1)|보기> <https://ok.example|좋음>", {})).toEqual(["보기", " ", { link: "좋음", href: "https://ok.example/" }]);
+    const raw = {
+      blocks: [{ type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "link", url: "javascript:alert(1)", text: "누르기" }] }] }],
+      attachments: [{ title: "미끼", title_link: "javascript:alert(1)" }],
+    };
+    expect(slackBlocks(raw, {})).toEqual([{ p: ["누르기"] }]);
+    expect(slackUnfurls(raw)[0].href).toBeNull();
   });
 });
 
