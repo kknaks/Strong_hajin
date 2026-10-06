@@ -100,11 +100,16 @@ console.log(`tauri-local: opening ${localOrigin}`);
 console.log(`tauri-local: disposable Rust tree ${tempShell}`);
 console.log(`tauri-local: flavors/${flavor.name} shell.config.json and product-shell.json are untouched`);
 
+// medi-ax 판은 카톡 수집기 cargo feature 를 켠다(SPEC-006 v0.6.0 W3-8). 개인판은 켜지 않는다 —
+// build.rs 가 feature↔판을 대조하므로 medi-ax 를 feature 없이 돌리면 빌드가 멈춘다.
+const featureArgs = flavor.name === "medi-ax" ? ["--features", "kakao-collector"] : [];
+
 child = spawn(
   "npx",
   [
     "--prefix", frontendRoot, "--no-install", "tauri", "dev", "--no-dev-server",
     "--config", join(tempFlavor, "tauri.conf.json"),
+    ...featureArgs,
   ],
   {
     cwd: tempRoot,

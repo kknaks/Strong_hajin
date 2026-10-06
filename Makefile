@@ -143,9 +143,12 @@ shell-verify-strict:
 # 서명은 APPLE_SIGNING_IDENTITY 를 환경으로 주면 tauri 가 한다. 판 오버레이(--config)와 SHELL_FLAVOR 를
 # **함께** 넘긴다 — 둘이 갈리면 build.rs 가 빌드를 멈춘다(이름은 A 판인데 주소는 B 판인 실행 파일 방지).
 #   make shell-build SHELL_FLAVOR=medi-ax SHELL_BUILD_ARGS="--bundles app,dmg"
+# medi-ax 판은 카톡 수집기 cargo feature 를 켠다(SPEC-006 v0.6.0 W3-8 · build.rs 가 feature↔판을 대조).
+# strong-hajin(개인판)은 feature 없이 — 수집기 심볼이 바이너리에 들지 않는다.
 shell-build: shell-verify-strict
 	cd frontend && SHELL_FLAVOR="$(SHELL_FLAVOR)" npx --no-install tauri build \
-	  --config "src-tauri/flavors/$(SHELL_FLAVOR)/tauri.conf.json" $(SHELL_BUILD_ARGS)
+	  --config "src-tauri/flavors/$(SHELL_FLAVOR)/tauri.conf.json" \
+	  $(if $(filter medi-ax,$(SHELL_FLAVOR)),--features kakao-collector,) $(SHELL_BUILD_ARGS)
 
 # fixture origin 판을 굽기 «전» 점검 + 명령 안내. **기본은 dry-run 이라 굽지 않는다.**
 # 주소를 정하는 두 곳(shell.config.json · capabilities/product-shell.json)이 서로, 그리고

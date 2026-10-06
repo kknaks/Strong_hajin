@@ -226,8 +226,21 @@ for (const name of capabilities) {
   const urls = capability.remote?.urls ?? [];
   if (urls.length !== 1) fail(`${name}: remote.urls 가 하나가 아니다 (${urls.length})`);
   if (urls.some((url) => url.includes("://*."))) fail(`${name}: 와일드카드 서브도메인을 쓰고 있다`);
-  if ((capability.permissions ?? []).length !== 4) {
-    fail(`${name}: 권한이 넷이 아니다 (${(capability.permissions ?? []).length})`);
+  // 커맨드 수 — strong-hajin = 넷, medi-ax = 일곱(넷 + 카톡 셋 · SPEC-006 v0.6.0 W3-1).
+  const perms = capability.permissions ?? [];
+  const kakaoPerms = ["allow-kakao-list-rooms", "allow-kakao-collector-status", "allow-kakao-store-device-token"];
+  const wantCount = flavor.name === "medi-ax" ? 7 : 4;
+  if (perms.length !== wantCount) {
+    fail(`${name}: 판 ${flavor.name} 의 커맨드 수가 ${wantCount} 가 아니다 (${perms.length})`);
+  }
+  if (flavor.name === "medi-ax") {
+    for (const p of kakaoPerms) if (!perms.includes(p)) fail(`${name}: medi-ax 에 ${p} 가 없다`);
+  } else if (kakaoPerms.some((p) => perms.includes(p))) {
+    fail(`${name}: 개인판에 카톡 커맨드가 샜다 (${perms.join(", ")})`);
+  }
+  // 어느 판이든 파일·프로세스·범용 셸 표면은 없다(AC-T23).
+  for (const forbidden of ["fs:", "shell:", "process:", "opener:", "open-path", "reveal-item"]) {
+    if (perms.some((p) => p.includes(forbidden))) fail(`${name}: ${forbidden} 표면이 열렸다`);
   }
   if (urls.some((url) => url.includes(".invalid"))) {
     notes.push(`${name}: 운영 origin 이 아직 자리표시다(${urls[0]}) — fixture/운영 판을 구우려면 먼저 채워야 한다`);

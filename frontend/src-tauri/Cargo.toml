@@ -43,3 +43,61 @@ ureq = { version = "3.4.2", default-features = false, features = ["native-tls-no
 # `allow_microphone_on_webview2` 를 이식한다. 없으면 `getUserMedia` 가 **프롬프트 없이** 실패한다.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+
+# ── 카톡 수집기 (회사판 medi-ax 전용) 의 선택 의존 ─────────────────────────────
+# SPEC-009 · SPEC-006 v0.6.0 「외부 채널 수집기 수용」. **개인판 strong-hajin 빌드에는
+# feature `kakao-collector` 가 꺼져 아래가 하나도 컴파일되지 않는다**(판 가르기 N-10 · W3-8) —
+# 수집·트레이·FDA·카톡 커맨드가 바이너리에 없다. build.rs 가 feature↔판을 대조해 어긋나면 멈춘다.
+[dependencies.rusqlite]
+# 로컬 카톡 DB = SQLCipher. mykakao Mac 방식(자체 키 유도 + 표준 sqlcipher · DEC-001·SPEC-001)을
+# Rust 로 옮긴다. bundled-sqlcipher-vendored-openssl: 시스템 의존 없이 SQLCipher+OpenSSL 을 함께 빌드.
+version = "0.32"
+features = ["bundled-sqlcipher-vendored-openssl"]
+optional = true
+
+[dependencies.keyring]
+# 기기 토큰을 **macOS 키체인**에 둔다(창 쿠키 아님 · R3-F1). 응답에 토큰을 돌려주지 않는다.
+version = "3"
+features = ["apple-native"]
+optional = true
+
+[dependencies.sha1]
+# 키 유도(secure_key·db_name)에서 쓰는 SHA-1(hashed_uuid).
+version = "0.10"
+optional = true
+
+[dependencies.sha2]
+# 키 유도(SHA-256)·userId 복구(SHA-512 preimage).
+version = "0.10"
+optional = true
+
+[dependencies.pbkdf2]
+# secure_key·db_name 의 PBKDF2-HMAC-SHA256(100k · dklen 128).
+version = "0.12"
+default-features = false
+features = ["hmac"]
+optional = true
+
+[dependencies.base64]
+# hashed_uuid 의 표준 base64.
+version = "0.22"
+optional = true
+
+[dependencies.plist]
+# 로그인 계정 식별자(user_id) 복구 — Preferences plist 의 REVISION 해시를 읽는다.
+version = "1"
+optional = true
+
+[features]
+# medi-ax 판에서만 켜는 수집기. 빌드는 `--features kakao-collector` 로 켠다(Makefile·run-tauri-local).
+kakao-collector = [
+  "tauri/tray-icon",
+  "tauri/image-png",
+  "dep:rusqlite",
+  "dep:keyring",
+  "dep:sha1",
+  "dep:sha2",
+  "dep:pbkdf2",
+  "dep:base64",
+  "dep:plist",
+]
