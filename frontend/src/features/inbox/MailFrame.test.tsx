@@ -44,3 +44,18 @@ it("javascript: 링크는 막기만 하고 열지 않는다", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(open).not.toHaveBeenCalled();
 });
+
+it("원격 이미지는 처음부터 우리 프록시로만 달리고(배너 없음), 실패하면 깨진 아이콘 대신 alt 글자만 남는다(FE 수정 판 2)", () => {
+  render(<MailFrame html="<p>본문</p>" messageId="m1" />);
+  const frame = screen.getByTitle("메일 본문") as HTMLIFrameElement;
+  const doc = frame.contentDocument!;
+  doc.body.innerHTML = '<img id="a" alt="로고" data-ax-remote-src="https://tracker.example/p.png?u=1"><img id="b" alt="배너" data-ax-remote-src="https://cdn.example/b.jpg">';
+  fireEvent.load(frame);
+  expect(doc.getElementById("a")!.getAttribute("src")).toBe(`/api/inbox/mail/m1/remote-image?u=${encodeURIComponent("https://tracker.example/p.png?u=1")}`);
+  expect(doc.getElementById("b")!.getAttribute("src")).toMatch(/^\/api\/inbox\/mail\/m1\/remote-image\?u=/);
+  expect(screen.queryByText(/원격 이미지/)).toBeNull();
+  expect(screen.queryByRole("button", { name: "이미지 보기" })).toBeNull();
+  doc.getElementById("a")!.dispatchEvent(new Event("error"));
+  expect(doc.getElementById("a")).toBeNull();
+  expect(doc.querySelector(".ax-img-missing")?.textContent).toBe("로고");
+});

@@ -1663,7 +1663,7 @@ export function inboxRoomAttachmentUrl(roomId: string, aid: string): string {
   return `/api/inbox/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(aid)}`;
 }
 
-/** 메일 본문의 원격 이미지 — 「이미지 보기」를 눌렀을 때만 **서버 프록시**로(추적 픽셀 차단 · N-5). */
+/** 메일 본문의 원격 이미지 — 처음부터 보이되 **서버 프록시**로만 받는다(보낸 쪽 서버에 직접 붙지 않음 · N-5 · FE 수정 판 2). */
 export function inboxRemoteImageUrl(messageId: string, url: string): string {
   return `/api/inbox/mail/${encodeURIComponent(messageId)}/remote-image?u=${encodeURIComponent(url)}`;
 }

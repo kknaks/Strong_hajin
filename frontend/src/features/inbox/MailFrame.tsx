@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Button } from "../../ds/Button";
 import { inboxRemoteImageUrl } from "../../lib/api";
 import { inboxScreen as copy } from "../../lib/labels";
 import { openLink } from "./inboxStream";
@@ -14,7 +13,9 @@ import { openLink } from "./inboxStream";
  *   스크립트가 없으니 `allow-same-origin` 은 안전하고, 그 덕에 부모가 문서를 읽는다.
  * - **높이는 부모가** `contentDocument` 높이를 재서 맞춘다(스크립트 없는 iframe 은 postMessage 를 못 보낸다).
  * - **링크는 부모가 가로챈다** — 웹이면 새 탭(`noopener`), 데스크톱이면 `open_external`(iframe 안 `_blank` 는 셸이 막는다).
- * - **원격 이미지는 기본 차단**, 「이미지 보기」를 누르면 서버 프록시(`remote-image`)로만 단다(추적 픽셀 · N-5).
+ * - **원격 이미지는 처음부터 보이되 우리 이미지 프록시(`remote-image`)로만** 단다(사용자 결정 2026-10-06 · FE 수정 판 2) —
+ *   Gmail 처럼 사용자 브라우저가 보낸 쪽 서버에 직접 붙지 않는다(IP 노출 없음 · SSRF 규칙은 서버가 지킨다 · N-5).
+ *   CSP `img-src 'self' data:` 그대로 — 이미지 출처는 우리 프록시뿐이다. 프록시가 실패한 그림은 깨진 아이콘 대신 빈 자리(alt 글자).
  * - 글자 모양은 앱 토큰 값을 iframe 에 옮겨 단다(iframe 은 부모 CSS 를 물려받지 않는다) — 시안 `.scax-mail-html` 규칙 그대로.
  */
 
@@ -39,7 +40,7 @@ details{margin-top:var(--scax-space-300)}
 details>summary{display:inline-block;padding:var(--scax-space-050) var(--scax-space-250);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size);color:var(--scax-color-ink-neutral);cursor:pointer;list-style:none}
 details>summary::-webkit-details-marker{display:none}
 details[open]>summary{margin-bottom:var(--scax-space-300)}
-img[${REMOTE_ATTRIBUTE}]:not([src]){display:inline-block;min-width:24px;min-height:24px;background:var(--scax-color-fill-weak)}
+.ax-img-missing{display:inline-block;color:var(--scax-color-ink-neutral);font-size:var(--scax-text-caption1-size)}
 `;
 
 const TOKENS = [
@@ -75,8 +76,6 @@ function frameStyle(): string {
 export function MailFrame({ html, messageId }: { html: string; messageId: string }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(120);
-  const [blocked, setBlocked] = useState(0);
-  const [shown, setShown] = useState(false);
 
   const measure = useCallback(() => {
     const doc = frame.current?.contentDocument;
@@ -94,7 +93,20 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
       style.textContent = frameStyle();
       doc.head.appendChild(style);
     }
-    setBlocked(doc.querySelectorAll(`img[${REMOTE_ATTRIBUTE}]:not([src])`).length);
+    /* 원격 이미지 — 처음부터 프록시 주소로 단다. 실패하면 깨진 아이콘 대신 alt 글자만 남긴다 */
+    doc.querySelectorAll<HTMLImageElement>(`img[${REMOTE_ATTRIBUTE}]`).forEach((image) => {
+      const remote = image.getAttribute(REMOTE_ATTRIBUTE);
+      if (!remote || image.getAttribute("src")) return;
+      image.addEventListener("load", measure);
+      image.addEventListener("error", () => {
+        const missing = doc.createElement("span");
+        missing.className = "ax-img-missing";
+        missing.textContent = image.getAttribute("alt") ?? "";
+        image.replaceWith(missing);
+        measure();
+      });
+      image.setAttribute("src", inboxRemoteImageUrl(messageId, remote));
+    });
     /* 같은 문서에 load 가 두 번 와도 듣는 손은 한 벌만 — 링크가 두 번 열리지 않게 */
     if (wired.has(doc)) {
       measure();
@@ -119,12 +131,7 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
     doc.addEventListener("toggle", measure, true);
     doc.querySelectorAll("img").forEach((image) => image.addEventListener("load", measure));
     measure();
-  }, [measure]);
-
-  useEffect(() => {
-    setShown(false);
-    setBlocked(0);
-  }, [html]);
+  }, [measure, messageId]);
 
   /* 폭이 바뀌면 글이 다시 흘러 높이가 바뀐다 */
   useEffect(() => {
@@ -132,35 +139,15 @@ export function MailFrame({ html, messageId }: { html: string; messageId: string
     return () => window.removeEventListener("resize", measure);
   }, [measure]);
 
-  const showImages = () => {
-    const doc = frame.current?.contentDocument;
-    if (!doc) return;
-    doc.querySelectorAll<HTMLImageElement>(`img[${REMOTE_ATTRIBUTE}]`).forEach((image) => {
-      const remote = image.getAttribute(REMOTE_ATTRIBUTE);
-      if (!remote || image.getAttribute("src")) return;
-      image.addEventListener("load", measure);
-      image.setAttribute("src", inboxRemoteImageUrl(messageId, remote));
-    });
-    setShown(true);
-  };
-
   return (
-    <>
-      {blocked > 0 && !shown ? (
-        <div className="scax-inbox-notice" role="status">
-          <span className="scax-inbox-notice__text">{copy.remoteBlocked(blocked)}</span>
-          <Button label={copy.remoteShow} onClick={showImages} size="sm" tone="neutral" variant="outlined" />
-        </div>
-      ) : null}
-      <iframe
-        className="scax-mail-frame"
-        onLoad={prepare}
-        ref={frame}
-        sandbox={MAIL_SANDBOX}
-        srcDoc={html}
-        style={{ height }}
-        title={copy.mailFrame}
-      />
-    </>
+    <iframe
+      className="scax-mail-frame"
+      onLoad={prepare}
+      ref={frame}
+      sandbox={MAIL_SANDBOX}
+      srcDoc={html}
+      style={{ height }}
+      title={copy.mailFrame}
+    />
   );
 }

@@ -1450,8 +1450,6 @@ export const inboxScreen = {
   account: "받은 계정",
   subject: "제목",
   mailFrame: "메일 본문",
-  remoteBlocked: (count: number) => `원격 이미지 ${count}개를 막아 두었습니다 — 보낸 쪽이 열람을 알 수 있습니다.`,
-  remoteShow: "이미지 보기",
   attachCount: (count: number) => `첨부 ${count}개`,
   download: (name: string) => `${name} 받기`,
   downloadAll: "모두 다운로드",
