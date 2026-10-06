@@ -16,6 +16,8 @@ JOB_KIND_MATERIAL_EXTRACTION = "material.extraction"
 #: 「정리 중」에서 두 트랙을 한 벌로 합치는 잡 (SCAX-SPEC-004 §8). 회의당 하나이고 재시도는 `/finalize` 가 건다.
 JOB_KIND_MEETING_FINALIZE = "meeting.finalize"
 JOB_KIND_DAILY_REPORT_GENERATE = "daily_report.generate"
+#: 메시지함 답장 전송(WORK-011 · BE 수정 판 1). 접수가 「보내는 중」 행과 함께 넣고 연동 워커가 보낸다.
+JOB_KIND_EXTERNAL_REPLY_DELIVER = "external.reply_deliver"
 
 TERMINAL_JOB_STATES = frozenset({"completed", "failed"})
 

@@ -102,3 +102,8 @@
    시안이 함께 고친 공용 버그 둘(`.section-row` · `.material-list li > .scax-button--inline`)은
    업무 상세 밖에서도 같은 증상이라 `components.css` 가 가져갔다. */
 @import "./task-detail.css";
+
+/* 메시지함 · 설정 (WORK-011 FE-a·FE-b) — 시안 handoff/inbox·settings 의 CSS 를 옮겼다. 각 파일 머리 주석 참조.
+   메시지함의 슬랙 대화 줄은 AX 대화(`ax.css` 의 `.scax-msg`)와 이름이 겹쳐 `.scax-imsg` 로 바꿔 실었다. */
+@import "./inbox.css";
+@import "./settings.css";

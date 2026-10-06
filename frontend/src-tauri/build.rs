@@ -108,6 +108,7 @@ fn resolve_flavor() -> String {
 fn main() {
     println!("cargo:rerun-if-env-changed=SHELL_FLAVOR");
     println!("cargo:rerun-if-env-changed=TAURI_CLI_VERBOSITY");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_KAKAO_COLLECTOR");
     println!("cargo:rerun-if-changed=flavors");
     let flavor = resolve_flavor();
     for file in [
@@ -120,17 +121,43 @@ fn main() {
     // 소스가 `include_str!(concat!("../flavors/", env!("SHELL_FLAVOR"), ...))` 로 그 판의 파일을 싣는다.
     println!("cargo:rustc-env=SHELL_FLAVOR={flavor}");
 
+    // ── 판 가르기(N-10 · W3-8): 카톡 수집기 feature 는 **medi-ax 에서만** 켠다 ──────────────
+    // 카톡 수집·트레이·FDA·카톡 커맨드는 cargo feature `kakao-collector` 로만 컴파일된다.
+    // 「medi-ax 인데 feature 가 꺼졌다」·「개인판인데 켜졌다」를 **여기서 멈춘다** — 그래야 개인판
+    // 바이너리에 수집기 심볼이 들지 않고(shell-final-preflight 가 확인), medi-ax capability 의
+    // `allow-kakao-*` 권한이 생성된 ACL 과 어긋나 빌드가 샐 일이 없다.
+    let kakao = std::env::var_os("CARGO_FEATURE_KAKAO_COLLECTOR").is_some();
+    assert_eq!(
+        kakao,
+        flavor == "medi-ax",
+        "feature `kakao-collector` 는 medi-ax 판에서만 켠다 (flavor={flavor}, feature={kakao}). \
+         medi-ax 는 `--features kakao-collector` 로, strong-hajin 은 feature 없이 굽는다"
+    );
+
+    // 웹에 여는 커맨드 — 기본 넷, medi-ax 는 카톡 셋이 더해져 일곱(SPEC-006 v0.6.0 · W3-1).
+    let mut commands = vec![
+        "shell_info",
+        "wake_guard_acquire",
+        "wake_guard_release",
+        "open_external",
+    ];
+    if kakao {
+        commands.extend([
+            "kakao_list_rooms",
+            "kakao_collector_status",
+            "kakao_store_device_token",
+        ]);
+    }
+    // `commands()` 는 `&'static [&'static str]` 을 받는다(원래 코드가 배열 리터럴을 쓴 이유). 원소는
+    // 전부 문자열 리터럴이라 leak 해도 메모리가 늘지 않는다(빌드 스크립트 수명 동안 한 벌).
+    let commands: &'static [&'static str] = Box::leak(commands.into_boxed_slice());
+
     let capabilities: &'static str =
         Box::leak(format!("./flavors/{flavor}/capabilities/**/*").into_boxed_str());
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .capabilities_path_pattern(capabilities)
-            .app_manifest(tauri_build::AppManifest::new().commands(&[
-                "shell_info",
-                "wake_guard_acquire",
-                "wake_guard_release",
-                "open_external",
-            ])),
+            .app_manifest(tauri_build::AppManifest::new().commands(commands)),
     )
     .expect("tauri-build 실패 — tauri.conf.json 과 flavors/<판>/ 을 확인한다");
 }

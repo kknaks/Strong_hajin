@@ -1,4 +1,4 @@
-export type ProductSurface = "today" | "calendar" | "meetings" | "work" | "report" | "project" | "org" | "graph";
+export type ProductSurface = "today" | "calendar" | "meetings" | "work" | "report" | "project" | "org" | "graph" | "inbox" | "settings";
 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
 export type GraphNodeKind = "person" | "team" | "project" | "work_request" | "task" | "material" | "meeting" | "report";
@@ -647,6 +647,14 @@ export type OrganizationProfile = {
     character_key: string;
     version: number;
   };
+  /**
+   * 프로필 이미지 주소(SPEC-008 §4.7 — `GET /api/organization/me` 확장). 없으면 `null` → 이니셜 아바타.
+   * 서버가 아직 싣지 않으면 칸 자체가 없다 — 그때도 이니셜이다.
+   */
+  profile_image_url?: string | null;
+  /** 직책·직무 — 프로필 머리의 읽기 전용 값(SPEC-008 §2.6). 서버가 싣지 않으면 「—」로 선다. */
+  position?: string | null;
+  job?: string | null;
 };
 
 export type DailyReportDraft = {
@@ -1434,4 +1442,216 @@ export type TaskScheduleMutation = {
 export type ScheduleRelease = {
   released_count: number;
   reason: "out_of_range" | "task_dates_cleared" | null;
+};
+
+/* ===== 외부 채널 연동 · 메시지함 (SPEC-008 §4 · WORK-011 FE-a·FE-b) =====
+ * 모양은 SPEC §4 가 정본이고, 이름은 서버 응답(`modules/external_channels/application.py`·`inbox.py`)을 그대로 쓴다.
+ * 서버가 아직 싣지 않는 칸은 `?` 로 두고 없을 때의 화면을 정해 둔다 — 지어내지 않는다. */
+
+export type IntegrationKind = "mail" | "slack" | "kakao";
+/** `connected` 실시간 · `backfilling` 과거 채우는 중 · `disconnected` 끊김 · `removed` 소프트 딜리트(목록에 안 온다). */
+export type IntegrationStatus = "connected" | "backfilling" | "disconnected" | "removed";
+
+/** 카톡 수집기(Mac 앱)가 마지막으로 올린 상태 — §4.6 status. 90초 무보고면 서버가 `app_state: "off"` 로 판정한다. */
+export type KakaoCollector = {
+  app_state: "on" | "off";
+  device_name: string | null;
+  app_version: string | null;
+  kakao_state: "running" | "off" | "unreadable" | string | null;
+  kakao_reason: "permission" | "version" | "unknown" | string | null;
+  account_name: string | null;
+  account_changed: boolean;
+  reported_at: string | null;
+};
+
+export type Integration = {
+  id: string;
+  kind: IntegrationKind;
+  status: IntegrationStatus;
+  /** 메일 = 계정 주소 · 슬랙 = 워크스페이스 이름 · 카톡 = 빈 값. */
+  display_name: string;
+  synced_count: number;
+  last_synced_at: string | null;
+  /** 과거 채우는 중일 때 지금까지 채운 건수. */
+  backfill_count: number;
+  collector: KakaoCollector | null;
+};
+
+/** 슬랙 = `channel`·`private`·`dm`·`group_dm` · 카톡 = `direct`·`group` (§4.1). */
+export type IntegrationRoomType = "channel" | "private" | "dm" | "group_dm" | "direct" | "group";
+export type IntegrationRoomStatus = "backfilling" | "live" | "paused";
+
+/** 고른 방(= 수집 방) — 서버 정본(N-7). `room_id` 는 서버 내부 id, `external_id` 는 슬랙 channel / 카톡 chatId. */
+export type IntegrationRoom = {
+  room_id: string;
+  external_id: string;
+  type: IntegrationRoomType | string;
+  name: string;
+  member_count: number | null;
+  synced_count: number;
+  status: IntegrationRoomStatus | string;
+};
+
+/** 슬랙 방 고르기 창의 한 줄 — `GET /api/integrations/slack/available-rooms`. `room_id` 는 슬랙 channel id 다. */
+export type SlackAvailableRoom = {
+  room_id: string;
+  type: IntegrationRoomType | string;
+  name: string;
+  is_bot: boolean;
+  member_count: number | null;
+  already_added: boolean;
+};
+
+/** 카톡 방 고르기 창의 한 줄 — 서버가 아니라 **데스크톱 앱이 로컬에서** 읽어 준다(`kakao_list_rooms` · R-F1). */
+export type KakaoLocalRoom = {
+  chat_id: string;
+  type: "direct" | "group";
+  name: string;
+  member_count: number | null;
+};
+
+export type DeviceToken = {
+  id: string;
+  device_name: string;
+  created_at: string;
+  last_used_at: string | null;
+};
+
+export type InboxSource = "all" | "mail" | "slack" | "kakao";
+
+export type InboxMailCard = {
+  kind: "mail";
+  message_id: string;
+  integration_id: string;
+  /** 받은 계정(메일 주소). */
+  account: string;
+  subject: string | null;
+  /** `이름 <주소>` 한 줄 그대로. */
+  sender: string | null;
+  at: string;
+  unread: boolean;
+  attach_count: number;
+  snippet: string | null;
+};
+
+export type InboxPreviewLine = { author: string | null; text: string | null; at: string };
+
+export type InboxRoomCard = {
+  kind: "slack" | "kakao";
+  room_id: string;
+  integration_id: string;
+  room_type: IntegrationRoomType | string;
+  title: string;
+  member_count: number | null;
+  unread_count: number;
+  last_at: string;
+  at: string;
+  /** 마지막 3줄(오래된 것부터). */
+  preview?: InboxPreviewLine[];
+};
+
+export type InboxCard = InboxMailCard | InboxRoomCard;
+
+export type InboxPage = {
+  items: InboxCard[];
+  next_cursor: string | null;
+  /** 출처별 «미읽음 카드 수» — 레일 숫자(§2.1). */
+  unread_counts?: Partial<Record<InboxSource, number>>;
+};
+
+/** 첨부 — 메일·슬랙은 받을 때 중계, 카톡은 저장본(`stored`) 또는 낼 수 없음(`expired`·`too_large`·`not_stored`). */
+export type InboxAttachment = {
+  aid: string;
+  name: string;
+  size: number | null;
+  mime: string | null;
+  kind: "image" | "album" | "file" | "video" | "audio" | "sticker" | string;
+  /** 메일·슬랙 = `reference`(받을 때 중계) · 카톡 = `pending`·`stored`·`expired`·`too_large`·`not_stored`. */
+  state: "reference" | "pending" | "stored" | "expired" | "too_large" | "not_stored" | string;
+};
+
+/** 우리가 보낸 답장 기록(D-47) — `status` 는 `sending`·`sent`·`failed`. */
+export type InboxSentReply = {
+  local_id: string;
+  status: "sending" | "sent" | "failed" | string;
+  payload: {
+    reply_all?: boolean;
+    to?: string[];
+    cc?: string[];
+    subject?: string;
+    body?: string;
+    text?: string;
+    thread_ts?: string | null;
+    files?: Array<{ name: string; size: number; mime?: string | null }>;
+  };
+  error: string | null;
+  created_at: string;
+  sent_at: string | null;
+};
+
+export type InboxMail = {
+  message_id: string;
+  integration_id: string;
+  account: string;
+  thread_id: string | null;
+  subject: string | null;
+  sender: string | null;
+  to: string[];
+  cc: string[];
+  reply_to: string[];
+  /** 원문 Date 머리 그대로(없을 수 있다). 화면은 `at` 으로 그린다. */
+  date: string | null;
+  at: string;
+  unread: boolean;
+  /** 서버가 소독한 **렌더용 안전본**(CSP meta 포함) — 샌드박스 iframe 에만 담는다(F-3). */
+  safe_html: string;
+  attachments: InboxAttachment[];
+  sent_replies: InboxSentReply[];
+};
+
+export type InboxRoomHeader = {
+  room_id: string;
+  integration_id: string;
+  kind: "slack" | "kakao";
+  room_type: IntegrationRoomType | string;
+  name: string;
+  member_count: number | null;
+  external_id: string;
+  read_up_to_key: string | null;
+  /** 「슬랙에서 열기」 퍼머링크(UX-4). 서버가 싣지 않으면 단추를 그리지 않는다. */
+  permalink?: string | null;
+};
+
+/** 방의 메시지 한 줄 — `raw` 는 원문 JSON 그대로(D-28, 렌더는 프론트). 슬랙 = Slack message · 카톡 = 수집기가 올린 줄. */
+export type InboxRoomMessage = {
+  id: string;
+  /** 슬랙 ts · 카톡 logId. 읽음(`up_to_ts`)·스레드(`thread_ts`)에 쓴다. */
+  key: string;
+  at: string;
+  author: string | null;
+  thread_key: string | null;
+  raw: Record<string, unknown>;
+  attachments: InboxAttachment[];
+};
+
+/** 이름 풀이표 — 슬랙 사용자 id → 이름·봇 여부. 서버가 싣지 않으면 원문 `user_profile` 로 푼다. */
+export type InboxPeople = Record<string, { name: string; is_bot?: boolean }>;
+
+export type InboxRoomPage = {
+  room: InboxRoomHeader;
+  messages: InboxRoomMessage[];
+  next_cursor: string | null;
+  users?: InboxPeople;
+};
+
+/** 사용자 사건 채널(`/api/inbox/stream`) 한 건 — 본문은 싣지 않고 «무엇이 바뀌었는지»만 온다(NOTIFY 계약). */
+export type InboxStreamEvent = {
+  v: number;
+  type: "inbox.message_arrived" | "inbox.reply_result" | "integration.changed" | string;
+  member_id: string;
+  integration_id?: string;
+  room_id?: string;
+  message_id?: string;
+  source_kind?: IntegrationKind;
+  data?: { local_id?: string; status?: string; error?: string | null; [key: string]: unknown };
 };

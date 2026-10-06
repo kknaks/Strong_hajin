@@ -79,15 +79,9 @@
 /* 오브 안에서는 원형 마스크를 벗는다 — 뒤의 그라데이션이 테두리 역할을 한다 */
 .scax-agent__launch .scax-character{width:100%;height:100%;border-radius:0;background:transparent}
 
-/* 캐릭터 고르기 모달 (구 styles.css:931~939) */
-.scax-character-picker{width:min(760px,100%)}
+/* 캐릭터 고르기 — 모달은 없어졌고(WORK-011 FE-b · W-14) 고르기는 설정 › 프로필 설정(`settings.css` 의 `.scax-set-char*`)이 맡는다.
+   남은 것은 «저장값을 지원하지 않는다» 안내 한 줄뿐이다 — 프로필 설정의 캐릭터 카드가 그대로 쓴다. */
 .scax-character-picker__notice{margin:0 0 var(--scax-space-300);padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-sm);background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-size:var(--scax-text-caption1-size)}
-.scax-character-picker__error{margin:0 0 var(--scax-space-300);padding:var(--scax-space-250) var(--scax-space-300);border:1px solid var(--scax-color-danger);border-radius:var(--scax-radius-sm);background:var(--scax-color-danger-soft);color:var(--scax-color-danger);font-size:var(--scax-text-caption1-size)}
-.scax-character-picker__grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--scax-space-250)}
-.scax-character-picker__option{display:grid;justify-items:center;gap:var(--scax-space-150);min-width:0;padding:var(--scax-space-300) var(--scax-space-200);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);cursor:pointer}
-.scax-character-picker__option[aria-checked="true"]{border-color:var(--scax-color-accent);background:var(--scax-color-accent-08)}
-.scax-character-picker__option b{overflow:hidden;max-width:100%;font-size:var(--scax-text-label2-size);text-overflow:ellipsis;white-space:nowrap}
-.scax-character-picker__option small{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption2-size)}
 
 /* ───────────────────────────────────────────────────────────────── 드로어 골격
    DS `.scax-drawer`(workspace.css:80) 는 오버레이 안에 서는 520 짜리 판이다.

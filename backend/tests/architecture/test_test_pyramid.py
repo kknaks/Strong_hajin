@@ -13,6 +13,8 @@ PURE_DOMAIN_MODULES = (
     "actions/confirmation.py",
     "actions/policy.py",
     "actions/replay.py",
+    # 사용자 사건 채널의 계약(채널 이름·페이로드) — 보내는 워커(BE-2)와 듣는 WS(BE-3)가 같은 글자를 쓴다.
+    "external_channels/events.py",
     "meetings/batch.py",
     "meetings/finalize.py",
     "meetings/material_policy.py",

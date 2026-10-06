@@ -32,6 +32,8 @@ mod config;
 mod connection;
 mod download;
 mod guard;
+#[cfg(feature = "kakao-collector")]
+mod kakao;
 mod power;
 mod shell_ui;
 
@@ -400,6 +402,187 @@ fn watch_load(shell: SharedShell, window: WebviewWindow, target: Url) {
     }
 }
 
+/// 메인 창(웹뷰)을 **새로** 만든다 — 부팅 때 한 번, 그리고 medi-ax 트레이 「열기」가 닫힌 창을 다시
+/// 만들 때(R3-F2). 창의 모든 훅(네비게이션·새 창·내려받기·페이지 로드·창 사건)은 **여기 한 곳**에
+/// 있어 두 경로가 갈라지지 않는다. L-06·S-6·AC-T32 는 그대로다(창을 실제로 만들고/파괴한다).
+fn spawn_main_window(
+    app: &AppHandle,
+    shell: &SharedShell,
+    start_url: Url,
+    nav_allow: Vec<String>,
+    app_origin: Option<String>,
+    do_watch: bool,
+) -> tauri::Result<WebviewWindow> {
+    let load_shell = shell.clone();
+    let nav_app = app.clone();
+    let nav_origin = app_origin.clone();
+    let popup_origin = app_origin.clone();
+    let popup_app = app.clone();
+    let saved_origin = app_origin.clone();
+    let saved_shell = shell.clone();
+
+    let window =
+        WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(start_url.clone()))
+            // 창 제목 = 판의 productName(flavors/<판>/tauri.conf.json). 이름을 두 곳에 두지 않는다.
+            .title(app.package_info().name.clone())
+            .inner_size(1280.0, 860.0)
+            // 원격 웹의 HTML5 drag/drop 을 WKWebView 가 직접 처리해야 한다.
+            // Tauri 의 네이티브 파일 드롭 핸들러를 켜 두면 웹의 drag/drop 이벤트를 소비한다.
+            .disable_drag_drop_handler()
+            // **쿠키가 남아야 재시작 후에도 로그인이 유지된다**(AC-T26·AC-T35).
+            // incognito 를 켜면 실행할 때마다 로그아웃된다 — 켜지 않는다.
+            .incognito(false)
+            .on_navigation(move |url| {
+                // 셸 자기 화면은 언제나 허용한다 — 커맨드 권한과는 무관하다.
+                if url.scheme() == SHELL_SCHEME {
+                    return true;
+                }
+                let origin = guard::origin_of(url);
+                let allowed = nav_allow.iter().any(|entry| entry == &origin);
+                if !allowed {
+                    // `E-05` — 취소하고 기본 브라우저로 넘긴다.
+                    // **점유는 그대로다**(L-11 · I-4): 막힌 이동은 문서 교체가 아니다.
+                    if matches!(url.scheme(), "http" | "https") {
+                        if let Err(error) =
+                            tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+                        {
+                            log_event("nav", &format!("외부 열기 실패: {error}"));
+                        }
+                    }
+                    log_event("nav", &format!("blocked origin={origin} — 점유는 유지한다(L-11)"));
+                    return false;
+                }
+                // U-5 — 같은 origin 의 `/api/` 이동은 **셸이 받아 본다.** 창은 그대로 둔다.
+                // macOS 는 `_blank` 도 여기를 먼저 지난다 — 그래서 두 번째 창도 뜨지 않는다.
+                if download::is_api_request(url, nav_origin.as_deref()) {
+                    take_over_api_link(nav_app.clone(), nav_origin.clone(), url.clone(), "navigation");
+                    return false;
+                }
+                log_event("nav", &format!("allowed origin={origin}"));
+                true
+            })
+            // U-5 · AC-T45 — 새 창 링크(Windows 는 `_blank` 가 이쪽으로만 온다).
+            // `/api/` 가 아니면 **지금 동작을 그대로** 둔다: 핸들러가 없을 때 macOS(wry)는 새 창을
+            // 만들지 않았고(`nil`), Windows 는 WebView2 기본 동작이었다(OQ-T13 불변).
+            .on_new_window(move |url, _features| {
+                if download::is_api_request(&url, popup_origin.as_deref()) {
+                    take_over_api_link(popup_app.clone(), popup_origin.clone(), url, "new-window");
+                    return NewWindowResponse::Deny;
+                }
+                if cfg!(target_os = "macos") {
+                    NewWindowResponse::Deny
+                } else {
+                    NewWindowResponse::Allow
+                }
+            })
+            // 웹뷰가 스스로 내려받기로 넘기는 것(표시할 수 없는 형식 · `<a download>`)도 같은 규칙 —
+            // 다운로드 폴더 · 대화상자 없음 · 같은 이름이면 번호 · 결과는 웹 사건.
+            .on_download(move |webview, event| {
+                let notify = |ok: bool, name: Option<&str>| {
+                    if let Some(window) = webview.app_handle().get_webview_window(MAIN_WINDOW) {
+                        notify_download(&window, saved_origin.as_deref(), ok, name);
+                    }
+                };
+                match event {
+                    DownloadEvent::Requested { url, destination } => {
+                        let suggested = destination
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .and_then(|name| download::safe_file_name(&name))
+                            .unwrap_or_else(|| "download".to_string());
+                        let dir = match webview.app_handle().path().download_dir() {
+                            Ok(dir) => dir,
+                            Err(error) => {
+                                // fix1 W6 — 취소하는 길도 실패로 알린다.
+                                log_event("download", &format!("다운로드 폴더를 찾지 못했다: {error}"));
+                                notify(false, None);
+                                return false;
+                            }
+                        };
+                        let Ok(mut pending) = saved_shell.downloads.lock() else {
+                            log_event("download", "진행 장부 잠금 실패");
+                            notify(false, None);
+                            return false;
+                        };
+                        let Some(path) = download::free_path_avoiding(&dir, &suggested, &pending) else {
+                            log_event("download", "빈 이름을 찾지 못했다");
+                            drop(pending);
+                            notify(false, None);
+                            return false;
+                        };
+                        pending.start(url.as_str(), path.clone());
+                        *destination = path;
+                        true
+                    }
+                    DownloadEvent::Finished { url, success, .. } => {
+                        let path = saved_shell
+                            .downloads
+                            .lock()
+                            .ok()
+                            .and_then(|mut pending| pending.finish(url.as_str()));
+                        if success {
+                            if let Some(path) = &path {
+                                download::mark_quarantined(path);
+                            }
+                        }
+                        let name = path
+                            .as_ref()
+                            .and_then(|path| path.file_name())
+                            .map(|name| name.to_string_lossy().to_string());
+                        log_event("download", &format!("webview-download success={success} name={name:?}"));
+                        notify(success, name.as_deref().filter(|_| success));
+                        true
+                    }
+                    _ => true,
+                }
+            })
+            .on_page_load(move |window, payload| {
+                let label = window.label().to_string();
+                match payload.event() {
+                    tauri::webview::PageLoadEvent::Started => {
+                        // **L-09 — 문서가 «실제로» 바뀌었다.** 그 창의 세션을 전부 푼다.
+                        // 막힌 이동(`E-05`)·같은 문서 안 주소 변경(L-11)은 여기까지 오지 않는다.
+                        load_shell.clear_window(&label, "document-replaced(L-09)");
+                    }
+                    tauri::webview::PageLoadEvent::Finished => {
+                        // 문서가 떴다 — 로드 감시를 푼다(U-2 로 넘어가지 않는다).
+                        load_shell.watch.finish();
+                        log_event("load", &format!("finished url={}", payload.url()));
+                    }
+                }
+            })
+            .build()?;
+
+    #[cfg(windows)]
+    {
+        for webview in app.webviews().values() {
+            allow_microphone_on_webview2(webview)?;
+        }
+    }
+
+    // 원격 주소를 열 때만 감시한다. 셸 자기 화면은 감시할 이유가 없다.
+    if do_watch {
+        watch_load(shell.clone(), window.clone(), start_url.clone());
+    }
+
+    let event_shell = shell.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { .. } => {
+            // **요청은 «완료»가 아니다**(I-4·I-5 · `E-12`). 여기서 점유를 풀면,
+            // 사용자가 「계속 녹음」을 고른 바로 그 순간 기기가 잠들 수 있게 된다.
+            log_event("win", "close-requested — 아무것도 풀지 않는다");
+        }
+        WindowEvent::Destroyed => {
+            // **L-06 — 창이 «실제로» 닫혔다.** 웹이 해제를 못 불렀어도 여기서 풀린다.
+            // medi-ax 는 창이 파괴돼도 프로세스가 메뉴 막대에 남는다(RunEvent::ExitRequested · R3-F2).
+            event_shell.clear_window(MAIN_WINDOW, "window-destroyed(L-06)");
+        }
+        _ => {}
+    });
+
+    Ok(window)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let shell: SharedShell = Arc::new(Shell::new());
@@ -427,7 +610,7 @@ pub fn run() {
 
     let protocol_shell = shell.clone();
     let watch_target = target.clone();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(shell.clone())
         // 셸 자기 화면(U-2 · 미설정)을 내보내는 자리. **원격 문서와 섞이지 않는다.**
@@ -457,183 +640,82 @@ pub fn run() {
                 .expect("셸 화면 응답")
         })
         .setup(move |app| {
-            let nav_allow = navigation_allowlist.clone();
-            let nav_shell = shell.clone();
-            let load_shell = shell.clone();
-            let nav_app = app.handle().clone();
-            let nav_origin = app_origin.clone();
-            let popup_origin = app_origin.clone();
-            let popup_app = app.handle().clone();
-            let saved_origin = app_origin.clone();
-            let saved_shell = shell.clone();
+            let handle = app.handle().clone();
+            let do_watch = matches!(watch_target, Target::Configured { .. });
+            // 창(웹뷰)과 그 훅은 `spawn_main_window` 한 곳에 있다 — 부팅과 트레이 「열기」가 같은 창을 만든다.
+            spawn_main_window(
+                &handle,
+                &shell,
+                start_url.clone(),
+                navigation_allowlist.clone(),
+                app_origin.clone(),
+                do_watch,
+            )?;
 
-            let window =
-                WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(start_url.clone()))
-                    // 창 제목 = 판의 productName(flavors/<판>/tauri.conf.json). 이름을 두 곳에 두지 않는다.
-                    .title(app.package_info().name.clone())
-                    .inner_size(1280.0, 860.0)
-                    // 원격 웹의 HTML5 drag/drop 을 WKWebView 가 직접 처리해야 한다.
-                    // Tauri 의 네이티브 파일 드롭 핸들러를 켜 두면 웹의 drag/drop 이벤트를 소비한다.
-                    .disable_drag_drop_handler()
-                    // **쿠키가 남아야 재시작 후에도 로그인이 유지된다**(AC-T26·AC-T35).
-                    // incognito 를 켜면 실행할 때마다 로그아웃된다 — 켜지 않는다.
-                    .incognito(false)
-                    .on_navigation(move |url| {
-                        // 셸 자기 화면은 언제나 허용한다 — 커맨드 권한과는 무관하다.
-                        if url.scheme() == SHELL_SCHEME {
-                            return true;
-                        }
-                        let origin = guard::origin_of(url);
-                        let allowed = nav_allow.iter().any(|entry| entry == &origin);
-                        if !allowed {
-                            // `E-05` — 취소하고 기본 브라우저로 넘긴다.
-                            // **점유는 그대로다**(L-11 · I-4): 막힌 이동은 문서 교체가 아니다.
-                            if matches!(url.scheme(), "http" | "https") {
-                                if let Err(error) =
-                                    tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
-                                {
-                                    log_event("nav", &format!("외부 열기 실패: {error}"));
-                                }
-                            }
-                            log_event("nav", &format!("blocked origin={origin} — 점유는 유지한다(L-11)"));
-                            return false;
-                        }
-                        // U-5 — 같은 origin 의 `/api/` 이동은 **셸이 받아 본다.** 창은 그대로 둔다.
-                        // macOS 는 `_blank` 도 여기를 먼저 지난다 — 그래서 두 번째 창도 뜨지 않는다.
-                        if download::is_api_request(url, nav_origin.as_deref()) {
-                            take_over_api_link(nav_app.clone(), nav_origin.clone(), url.clone(), "navigation");
-                            return false;
-                        }
-                        log_event("nav", &format!("allowed origin={origin}"));
-                        true
-                    })
-                    // U-5 · AC-T45 — 새 창 링크(Windows 는 `_blank` 가 이쪽으로만 온다).
-                    // `/api/` 가 아니면 **지금 동작을 그대로** 둔다: 핸들러가 없을 때 macOS(wry)는 새 창을
-                    // 만들지 않았고(`nil`), Windows 는 WebView2 기본 동작이었다(OQ-T13 불변).
-                    .on_new_window(move |url, _features| {
-                        if download::is_api_request(&url, popup_origin.as_deref()) {
-                            take_over_api_link(popup_app.clone(), popup_origin.clone(), url, "new-window");
-                            return NewWindowResponse::Deny;
-                        }
-                        if cfg!(target_os = "macos") {
-                            NewWindowResponse::Deny
-                        } else {
-                            NewWindowResponse::Allow
-                        }
-                    })
-                    // 웹뷰가 스스로 내려받기로 넘기는 것(표시할 수 없는 형식 · `<a download>`)도 같은 규칙 —
-                    // 다운로드 폴더 · 대화상자 없음 · 같은 이름이면 번호 · 결과는 웹 사건.
-                    .on_download(move |webview, event| {
-                        let notify = |ok: bool, name: Option<&str>| {
-                            if let Some(window) = webview.app_handle().get_webview_window(MAIN_WINDOW) {
-                                notify_download(&window, saved_origin.as_deref(), ok, name);
-                            }
-                        };
-                        match event {
-                            DownloadEvent::Requested { url, destination } => {
-                                let suggested = destination
-                                    .file_name()
-                                    .map(|name| name.to_string_lossy().to_string())
-                                    .and_then(|name| download::safe_file_name(&name))
-                                    .unwrap_or_else(|| "download".to_string());
-                                let dir = match webview.app_handle().path().download_dir() {
-                                    Ok(dir) => dir,
-                                    Err(error) => {
-                                        // fix1 W6 — 취소하는 길도 실패로 알린다.
-                                        log_event("download", &format!("다운로드 폴더를 찾지 못했다: {error}"));
-                                        notify(false, None);
-                                        return false;
-                                    }
-                                };
-                                let Ok(mut pending) = saved_shell.downloads.lock() else {
-                                    log_event("download", "진행 장부 잠금 실패");
-                                    notify(false, None);
-                                    return false;
-                                };
-                                let Some(path) = download::free_path_avoiding(&dir, &suggested, &pending) else {
-                                    log_event("download", "빈 이름을 찾지 못했다");
-                                    drop(pending);
-                                    notify(false, None);
-                                    return false;
-                                };
-                                pending.start(url.as_str(), path.clone());
-                                *destination = path;
-                                true
-                            }
-                            DownloadEvent::Finished { url, success, .. } => {
-                                let path = saved_shell
-                                    .downloads
-                                    .lock()
-                                    .ok()
-                                    .and_then(|mut pending| pending.finish(url.as_str()));
-                                if success {
-                                    if let Some(path) = &path {
-                                        download::mark_quarantined(path);
-                                    }
-                                }
-                                let name = path
-                                    .as_ref()
-                                    .and_then(|path| path.file_name())
-                                    .map(|name| name.to_string_lossy().to_string());
-                                log_event("download", &format!("webview-download success={success} name={name:?}"));
-                                notify(success, name.as_deref().filter(|_| success));
-                                true
-                            }
-                            _ => true,
-                        }
-                    })
-                    .on_page_load(move |window, payload| {
-                        let label = window.label().to_string();
-                        match payload.event() {
-                            tauri::webview::PageLoadEvent::Started => {
-                                // **L-09 — 문서가 «실제로» 바뀌었다.** 그 창의 세션을 전부 푼다.
-                                // 막힌 이동(`E-05`)·같은 문서 안 주소 변경(L-11)은 여기까지 오지 않는다.
-                                load_shell.clear_window(&label, "document-replaced(L-09)");
-                            }
-                            tauri::webview::PageLoadEvent::Finished => {
-                                // 문서가 떴다 — 로드 감시를 푼다(U-2 로 넘어가지 않는다).
-                                load_shell.watch.finish();
-                                log_event("load", &format!("finished url={}", payload.url()));
-                            }
-                        }
-                    })
-                    .build()?;
-
-            #[cfg(windows)]
+            // ── medi-ax: 수집기 + 메뉴 막대 트레이 (판 가르기 — strong-hajin 에는 컴파일되지 않는다) ──
+            #[cfg(feature = "kakao-collector")]
             {
-                for webview in app.webviews().values() {
-                    allow_microphone_on_webview2(webview)?;
-                }
-            }
+                // 수집기는 창과 무관하게 기기 토큰 Bearer 로 돈다(R3-F2). base = 운영 origin(=/api 와 같은 origin).
+                let shared = match app_origin.clone() {
+                    Some(origin) => kakao::collector::spawn(origin),
+                    None => kakao::collector::Shared::default(),
+                };
+                app.manage(shared);
 
-            // 원격 주소를 열 때만 감시한다. 셸 자기 화면은 감시할 이유가 없다.
-            if matches!(watch_target, Target::Configured { .. }) {
-                watch_load(nav_shell.clone(), window.clone(), start_url.clone());
+                // 트레이 「열기」가 **닫힌 창을 새로** 만든다(창은 닫을 때 실제로 파괴된다 · R3-F2).
+                let tray_shell = shell.clone();
+                let tray_start = start_url.clone();
+                let tray_nav = navigation_allowlist.clone();
+                let tray_origin = app_origin.clone();
+                kakao::tray::build(&handle, move |app| {
+                    if let Err(error) = spawn_main_window(
+                        app,
+                        &tray_shell,
+                        tray_start.clone(),
+                        tray_nav.clone(),
+                        tray_origin.clone(),
+                        false,
+                    ) {
+                        log_event("tray", &format!("창을 다시 만들지 못했다: {error}"));
+                    }
+                })?;
             }
-
-            let event_shell = shell.clone();
-            window.on_window_event(move |event| match event {
-                WindowEvent::CloseRequested { .. } => {
-                    // **요청은 «완료»가 아니다**(I-4·I-5 · `E-12`). 여기서 점유를 풀면,
-                    // 사용자가 「계속 녹음」을 고른 바로 그 순간 기기가 잠들 수 있게 된다.
-                    log_event("win", "close-requested — 아무것도 풀지 않는다");
-                }
-                WindowEvent::Destroyed => {
-                    // **L-06 — 창이 «실제로» 닫혔다.** 웹이 해제를 못 불렀어도 여기서 풀린다.
-                    event_shell.clear_window(MAIN_WINDOW, "window-destroyed(L-06)");
-                }
-                _ => {}
-            });
             Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            shell_info,
-            wake_guard_acquire,
-            wake_guard_release,
-            open_external
-        ])
-        .run(tauri::generate_context!())
+        });
+
+    // 커맨드 목록 — medi-ax 는 카톡 셋이 더해져 **일곱**, strong-hajin 은 **넷**(SPEC-006 v0.6.0 · W3-1).
+    #[cfg(feature = "kakao-collector")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        shell_info,
+        wake_guard_acquire,
+        wake_guard_release,
+        open_external,
+        kakao::commands::kakao_list_rooms,
+        kakao::commands::kakao_collector_status,
+        kakao::commands::kakao_store_device_token
+    ]);
+    #[cfg(not(feature = "kakao-collector"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        shell_info,
+        wake_guard_acquire,
+        wake_guard_release,
+        open_external
+    ]);
+
+    let app = builder
+        .build(tauri::generate_context!())
         .expect("셸을 띄우지 못했습니다");
+
+    // medi-ax: 마지막 창이 닫혀도(웹뷰 파괴 · Destroyed 는 그대로 돈다) 프로세스는 메뉴 막대에 남는다.
+    // 종료는 트레이 「종료」뿐이다(R3-F2 · OQ-T10 닫힘). strong-hajin 은 이 콜백이 아무것도 하지 않아 종전 그대로다.
+    app.run(move |_app_handle, _event| {
+        #[cfg(feature = "kakao-collector")]
+        if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
+            if kakao::tray::should_prevent_exit() {
+                api.prevent_exit();
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -760,27 +842,49 @@ mod tests {
     }
 
     #[test]
-    fn 웹에_여는_커맨드는_정확히_넷이다() {
-        // AC-T23 — 파일·프로세스·범용 셸·open_path 권한이 **하나도** 없다.
+    fn 웹에_여는_커맨드가_판에_맞다() {
+        // AC-T23 / AC-T47 (SPEC-006 v0.6.0) — strong-hajin = **넷**, medi-ax = **일곱**(넷 + 카톡 셋).
+        // 어느 판이든 파일·프로세스·범용 셸·open_path 표면은 **하나도** 없다 — 카톡 커맨드도 Rust 가
+        // 읽어 결과만 주지 웹에 파일 권한을 열지 않는다(「외부 채널 수집기 수용」 절).
+        let flavor = env!("SHELL_FLAVOR");
         let permissions = capability()["permissions"]
             .as_array()
             .expect("permissions 배열")
             .iter()
             .map(|value| value.as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(permissions.len(), 4, "커맨드 넷을 넘었다: {permissions:?}");
-        for expected in [
+        let mut expected = vec![
             "allow-shell-info",
             "allow-wake-guard-acquire",
             "allow-wake-guard-release",
             "allow-open-external",
-        ] {
-            assert!(permissions.contains(&expected.to_string()), "{expected} 가 없다");
+        ];
+        if flavor == "medi-ax" {
+            expected.extend([
+                "allow-kakao-list-rooms",
+                "allow-kakao-collector-status",
+                "allow-kakao-store-device-token",
+            ]);
+        }
+        assert_eq!(
+            permissions.len(),
+            expected.len(),
+            "판 {flavor} 의 커맨드 수가 다르다: {permissions:?}"
+        );
+        for want in &expected {
+            assert!(permissions.contains(&want.to_string()), "{want} 가 없다");
         }
         for forbidden in ["fs:", "shell:", "process:", "opener:", "open-path", "reveal-item"] {
             assert!(
                 !permissions.iter().any(|item| item.contains(forbidden)),
                 "{forbidden} 표면이 열렸다: {permissions:?}"
+            );
+        }
+        // strong-hajin 판은 카톡 커맨드가 **없어야** 한다(판 가르기 — 개인판엔 수집기 자체가 없다).
+        if flavor != "medi-ax" {
+            assert!(
+                !permissions.iter().any(|p| p.contains("kakao")),
+                "개인판에 카톡 커맨드가 샜다: {permissions:?}"
             );
         }
         // 커맨드 목록과 `invoke_handler` 가 어긋나면 ACL 이 통과해도 호출이 깨진다.

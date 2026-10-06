@@ -1,0 +1,313 @@
+/* 메시지함 (WORK-011 FE-a · SPEC-008 §2.1·2.2·2.8) — 확정 시안 handoff/inbox/css/inbox.css 를 옮겼다.
+ *
+ * 원본에서 달라진 것 셋:
+ * 1. 슬랙 대화 줄 `.scax-msg*` 를 **`.scax-imsg*` 로 바꿔 실었다.** AX 대화 드로어(`ax.css`)가 같은 이름
+ *    `.scax-msg`·`.scax-msg__body`·`.scax-msg--failed` 를 이미 쓰고 있어, 그대로 실으면 두 화면의 말풍선이
+ *    서로의 규칙(grid · 여백 · pre-wrap)을 덮는다. 이름만 바꿨고 값은 한 글자도 바꾸지 않았다.
+ * 2. 카드의 `[role="button"]` hover·focus·선택 규칙 4줄은 `projects.css` 가 이미 같은 값으로 갖고 있어 뺐다.
+ * 3. 시안 전용 상태 토글(`.scax-inbox-dev`)은 제품 화면이 아니라 뺐다.
+ */
+
+/* ===== 좌 레일 — 카드 목록 ===== */
+.scax-inbox-list{display:flex;flex-direction:column;gap:var(--scax-space-300);padding-bottom:var(--scax-space-400)}
+.scax-inbox-card--read .scax-inbox-card__title{color:var(--scax-color-ink-neutral);font-weight:var(--scax-fw-medium)}
+.scax-inbox-card__top{align-items:center}
+.scax-inbox-card__dot{width:6px;height:6px;border-radius:var(--scax-radius-pill);background:var(--scax-color-danger)}
+
+/* 대화방 카드 — 쌓인 메시지 미리보기 */
+.scax-room-preview{display:flex;flex-direction:column;gap:var(--scax-space-150);align-self:stretch;margin:0;padding:var(--scax-space-250) var(--scax-space-300);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface-alt);list-style:none}
+.scax-room-preview__line{display:flex;gap:var(--scax-space-200);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);letter-spacing:var(--scax-text-caption1-ls);color:var(--scax-color-ink-neutral)}
+.scax-room-preview__who{flex:0 0 auto;font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-room-preview__text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scax-room-preview__at{flex:0 0 auto;color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-room-preview__more{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive)}
+
+/* ===== 본문 틀 ===== */
+.scax-inbox-main{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;padding:var(--scax-space-500) var(--scax-space-600);overflow-y:auto}
+.scax-inbox-main--empty{align-items:center;justify-content:center}
+.scax-inbox-main--room{padding:0;overflow:hidden}
+.scax-inbox-skel{display:flex;flex-direction:column;gap:var(--scax-space-300);width:100%}
+
+/* ===== 메일 — 읽기 폭 720 ===== */
+.scax-mail{display:flex;flex-direction:column;gap:var(--scax-space-500);width:100%}
+.scax-mail__title{margin:0;font-size:20px;line-height:28px;font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong);text-wrap:pretty}
+.scax-mail__head{display:grid;grid-template-columns:88px minmax(0,1fr);gap:var(--scax-space-150) var(--scax-space-400);margin:0;padding:var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface-alt);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);letter-spacing:var(--scax-text-label2-ls)}
+.scax-mail__head dt{color:var(--scax-color-ink-assistive)}
+.scax-mail__head dd{margin:0;min-width:0;color:var(--scax-color-ink);overflow-wrap:anywhere}
+.scax-mail__head strong{font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-mail__addr{color:var(--scax-color-ink-assistive)}
+
+/* HTML 메일 틀 — 원래 모양(문단 · 표 · 목록 · 서명 · 인용)을 담는다 */
+.scax-mail-html{font-size:var(--scax-text-body2-size,15px);line-height:1.7;color:var(--scax-color-ink);overflow-wrap:anywhere}
+.scax-mail-html p{margin:0 0 var(--scax-space-300)}
+.scax-mail-html ul,.scax-mail-html ol{margin:0 0 var(--scax-space-300);padding-left:var(--scax-space-600)}
+.scax-mail-html ul{list-style:disc}
+.scax-mail-html ol{list-style:decimal}
+.scax-mail-html table{width:100%;margin:0 0 var(--scax-space-400);border-collapse:collapse;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh)}
+.scax-mail-html th,.scax-mail-html td{padding:var(--scax-space-200) var(--scax-space-300);border:1px solid var(--scax-color-line);text-align:left;vertical-align:top}
+.scax-mail-html th{background:var(--scax-color-surface-alt);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-mail-html .sig{margin-top:var(--scax-space-500);padding-top:var(--scax-space-300);border-top:1px solid var(--scax-color-line-weak);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);color:var(--scax-color-ink-assistive)}
+.scax-mail-html blockquote{margin:0;padding:var(--scax-space-100) 0 var(--scax-space-100) var(--scax-space-400);border-left:3px solid var(--scax-color-line-strong);color:var(--scax-color-ink-neutral)}
+.scax-mail-html .quote-head{color:var(--scax-color-ink-assistive);font-size:var(--scax-text-label2-size)}
+.scax-mail-html--quoted{margin-top:var(--scax-space-300)}
+.scax-mail__quote-toggle{padding:var(--scax-space-050) var(--scax-space-250);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface);font:inherit;font-size:var(--scax-text-caption1-size);color:var(--scax-color-ink-neutral);cursor:pointer}
+.scax-mail__quote-toggle:hover{background:var(--scax-color-fill-weak)}
+.scax-mail__quote-toggle:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-mail__files{display:flex;flex-direction:column;gap:var(--scax-space-300);padding-top:var(--scax-space-400);border-top:1px solid var(--scax-color-line-weak)}
+.scax-mail__files-title{margin:0;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-assistive)}
+.scax-mail__images{display:flex;flex-wrap:wrap;gap:var(--scax-space-300)}
+.scax-mail__image{display:flex;flex-direction:column;gap:var(--scax-space-150);width:260px;margin:0}
+.scax-mail__image .scax-fcard{width:100%}
+
+/* ===== 첨부 공용 — 파일 카드 · 접는 머리 · PDF · 썸네일 · URL 미리보기 ===== */
+.scax-fmark{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;border-radius:var(--scax-radius-md);color:var(--scax-color-ink-inverse);font-size:10px;line-height:1;font-weight:var(--scax-fw-bold);letter-spacing:.02em}
+.scax-fmark--size-md{width:36px;height:36px}
+.scax-fmark--size-sm{width:28px;height:28px;border-radius:var(--scax-radius-sm);font-size:9px}
+.scax-fmark--pdf{background:var(--scax-color-danger)}
+.scax-fmark--md{background:var(--scax-color-info)}
+.scax-fmark--xlsx{background:var(--scax-color-accent-strong)}
+.scax-fmark--docx{background:var(--scax-color-accent)}
+.scax-fmark--zip{background:var(--scax-color-warning)}
+.scax-fmark--png,.scax-fmark--jpg{background:var(--scax-color-progress)}
+
+.scax-fcard{display:flex;align-items:center;gap:var(--scax-space-250);width:260px;max-width:100%;min-height:56px;padding:var(--scax-space-200) var(--scax-space-200) var(--scax-space-200) var(--scax-space-250);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface)}
+.scax-fcard__text{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-width:0}
+.scax-fcard__name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-fcard__type{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive)}
+.scax-fcard-row{display:flex;flex-wrap:wrap;gap:var(--scax-space-200)}
+
+.scax-attach{display:flex;flex-direction:column;align-items:flex-start;gap:var(--scax-space-150);margin-top:var(--scax-space-200)}
+.scax-fold{display:flex;align-items:center;gap:var(--scax-space-200);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-fold__toggle{display:inline-flex;align-items:center;gap:var(--scax-space-050);padding:0;border:0;background:none;font:inherit;color:inherit;cursor:pointer}
+.scax-fold__toggle:hover{color:var(--scax-color-ink-neutral)}
+.scax-fold__toggle:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-fold__label{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scax-fold__sep{width:1px;height:12px;background:var(--scax-color-line-strong)}
+.scax-fold__action{display:inline-flex;align-items:center;gap:var(--scax-space-050);color:var(--scax-color-ink-neutral);text-decoration:none}
+.scax-fold__action:hover{color:var(--scax-color-ink-strong)}
+
+.scax-pdf{display:flex;flex-direction:column;width:420px;max-width:100%;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);overflow:hidden}
+.scax-pdf__head{display:flex;align-items:center;gap:var(--scax-space-250);padding:var(--scax-space-250) var(--scax-space-250) var(--scax-space-250) var(--scax-space-300);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-pdf__page{position:relative;height:200px;padding:var(--scax-space-400) var(--scax-space-500) 0;background:var(--scax-color-fill-weak);overflow:hidden}
+.scax-pdf__page::after{content:"";position:absolute;left:0;right:0;bottom:0;height:56px;background:linear-gradient(to bottom,transparent,var(--scax-color-fill-weak))}
+.scax-pdf__sheet{display:flex;flex-direction:column;gap:var(--scax-space-150);padding:var(--scax-space-500);border-radius:var(--scax-radius-xs) var(--scax-radius-xs) 0 0;background:var(--scax-color-surface);box-shadow:var(--scax-shadow-card)}
+.scax-pdf__title{margin:0 0 var(--scax-space-150);font-size:var(--scax-text-label1-size);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-pdf__line{margin:0;font-size:10px;line-height:15px;color:var(--scax-color-ink-neutral)}
+.scax-pdf__bar{display:block;height:6px;margin-top:var(--scax-space-150);border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak)}
+.scax-pdf__bar--short{width:60%}
+
+/* 썸네일 — 목업에서는 그림 자리. 실제로는 받은 이미지가 선다 */
+.scax-thumb{position:relative;display:flex;align-items:center;justify-content:center;flex:0 0 auto;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:linear-gradient(135deg,var(--scax-color-hero-sky-left),var(--scax-color-hero-sky-right));color:var(--scax-color-ink-assistive);overflow:hidden}
+.scax-thumb--lg{width:360px;max-width:100%;height:220px}
+.scax-thumb--md{width:260px;height:160px}
+.scax-thumb--sm{width:80px;height:80px;border-radius:var(--scax-radius-md)}
+.scax-thumb__cap{position:absolute;left:var(--scax-space-200);bottom:var(--scax-space-150);font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-neutral)}
+.scax-thumb--sm .scax-thumb__cap{display:none}
+
+.scax-unfurl{display:flex;align-items:flex-start;gap:var(--scax-space-400);width:520px;max-width:100%;margin-top:var(--scax-space-200);padding:var(--scax-space-300) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface)}
+.scax-unfurl__text{display:flex;flex-direction:column;gap:var(--scax-space-050);flex:1 1 auto;min-width:0}
+.scax-unfurl__site{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-unfurl__title{font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-info)}
+.scax-unfurl__desc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-neutral)}
+.scax-unfurl__domain{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive)}
+
+/* ===== 슬랙 대화방 ===== */
+.scax-room-head{display:flex;align-items:center;gap:var(--scax-space-400);flex:0 0 auto;padding:var(--scax-space-400) var(--scax-space-600);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-room-head__lead{display:flex;flex-direction:column;gap:var(--scax-space-100);flex:1 1 auto;min-width:0}
+.scax-room-head__title{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-headline-size);line-height:var(--scax-text-headline-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-room-head__meta{display:flex;align-items:center;gap:var(--scax-space-150);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-room-head__open{display:inline-flex;align-items:center;gap:var(--scax-space-100);flex:0 0 auto;font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);color:var(--scax-color-ink-neutral);text-decoration:none}
+.scax-room-head__open:hover{color:var(--scax-color-ink-strong);text-decoration:underline}
+
+.scax-room-log{position:relative;flex:1 1 auto;min-height:0;overflow-y:auto}
+.scax-room-log__inner{display:flex;flex-direction:column;padding:var(--scax-space-300) var(--scax-space-600) var(--scax-space-800)}
+.scax-room-log__new{position:sticky;bottom:var(--scax-space-400);display:flex;justify-content:center;pointer-events:none}
+.scax-room-log__new-pill{display:inline-flex;align-items:center;gap:var(--scax-space-100);padding:var(--scax-space-150) var(--scax-space-400);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);font-weight:var(--scax-fw-semibold);box-shadow:var(--scax-shadow-raised)}
+
+/* 날짜 구분 — 가운데 알약 */
+.scax-day-divider{position:relative;display:flex;justify-content:center;margin:var(--scax-space-400) 0 var(--scax-space-200)}
+.scax-day-divider::before{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:var(--scax-color-line-weak)}
+.scax-day-divider__pill{position:relative;padding:var(--scax-space-050) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-neutral)}
+
+/* 메시지 — 아바타 열 + 본문. 묶인 메시지는 아바타 자리에 시각만 */
+.scax-imsg{display:grid;grid-template-columns:40px minmax(0,1fr);column-gap:var(--scax-space-300);padding:var(--scax-space-200) 0 var(--scax-space-050)}
+.scax-imsg--grouped{padding-top:var(--scax-space-050)}
+.scax-imsg__gutter{display:flex;justify-content:flex-start}
+.scax-imsg__at-side{width:40px;padding-top:3px;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive);text-align:right;font-variant-numeric:tabular-nums}
+.scax-imsg__main{display:flex;flex-direction:column;min-width:0}
+.scax-imsg__head{display:flex;align-items:baseline;gap:var(--scax-space-200)}
+.scax-imsg__name{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-imsg__app{padding:0 var(--scax-space-100);border-radius:var(--scax-radius-xs);background:var(--scax-color-fill-weak);font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-alt)}
+.scax-imsg__at{font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive);font-variant-numeric:tabular-nums}
+.scax-imsg__body{font-size:var(--scax-text-label1-size);line-height:1.6;color:var(--scax-color-ink);overflow-wrap:anywhere}
+.scax-imsg-p{margin:0}
+.scax-imsg-p strong,.scax-imsg-list strong{font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-imsg-list{margin:var(--scax-space-100) 0;padding-left:var(--scax-space-600);list-style:disc}
+ol.scax-imsg-list{list-style:decimal}
+.scax-imsg-list li{margin:2px 0}
+.scax-imsg-list--sub{margin:2px 0;list-style:circle}
+.scax-imsg-code{padding:1px var(--scax-space-100);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-xs);background:var(--scax-color-surface-alt);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;color:var(--scax-color-danger)}
+.scax-imsg-mention{padding:0 2px;border-radius:var(--scax-radius-xs);background:var(--scax-color-accent-08);color:var(--scax-color-accent);font-weight:var(--scax-fw-medium)}
+.scax-imsg-link{color:var(--scax-color-info);text-decoration:none}
+.scax-imsg-link:hover{text-decoration:underline}
+.scax-imsg-emoji{font-size:1.1em}
+
+.scax-imsg-avatar{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;border-radius:var(--scax-radius-md);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-imsg-avatar--md{width:36px;height:36px;font-size:var(--scax-text-label1-size)}
+.scax-imsg-avatar--xs{width:20px;height:20px;border-radius:var(--scax-radius-xs);font-size:10px}
+.scax-imsg-avatar--a{background:var(--scax-color-accent-soft)}
+.scax-imsg-avatar--b{background:var(--scax-color-progress-soft)}
+.scax-imsg-avatar--c{background:var(--scax-color-warning-soft)}
+.scax-imsg-avatar--d{background:var(--scax-color-danger-soft)}
+.scax-imsg-avatar--e{background:var(--scax-color-neutral-soft)}
+.scax-imsg-avatar--bot{background:var(--scax-color-surface-inverse);color:var(--scax-color-ink-inverse)}
+
+/* 리액션 — 읽기 전용 칩 (누를 수 없고 더하는 단추도 없다) */
+.scax-reacts{display:flex;flex-wrap:wrap;gap:var(--scax-space-100);margin-top:var(--scax-space-200)}
+.scax-react{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:24px;padding:0 var(--scax-space-200);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);line-height:1;color:var(--scax-color-ink-neutral)}
+.scax-react__count{font-weight:var(--scax-fw-semibold);font-variant-numeric:tabular-nums}
+
+/* 스레드 — 부모 아래 「답글 N개 · 마지막 답글」 줄, 펼치면 들여쓴 답글 */
+.scax-thread{display:flex;flex-direction:column;align-items:flex-start;margin-top:var(--scax-space-150)}
+.scax-thread__line{display:inline-flex;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-100) var(--scax-space-200) var(--scax-space-100) var(--scax-space-100);border:1px solid transparent;border-radius:var(--scax-radius-md);background:none;font:inherit;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive);cursor:pointer}
+.scax-thread__line:hover{border-color:var(--scax-color-line);background:var(--scax-color-surface)}
+.scax-thread__line:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-thread__faces{display:inline-flex;gap:2px}
+.scax-thread__count{font-weight:var(--scax-fw-bold);color:var(--scax-color-info)}
+
+/* ===== 답장 (2026-10-06) — 슬랙 입력창 · 스레드 답글 · 메일 답장 칸 =====
+   첨부는 DS DropZone(.scax-dropzone / --over) · FileList(.scax-file-list) 를 그대로 쓴다. 여기서는 그 둘을 감싸는 자리만 만든다. */
+
+/* 슬랙 입력창 — 대화 아래에 붙는다 */
+.scax-room-compose{flex:0 0 auto;padding:0 var(--scax-space-600) var(--scax-space-500)}
+.scax-composer-box{position:relative;display:flex;flex-direction:column;gap:0;border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);overflow:hidden}
+.scax-composer-box:focus-within{border-color:var(--scax-color-ink-assistive)}
+.scax-composer-box.scax-dropzone{padding:0;gap:0}
+.scax-composer-box__drop{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.scax-composer-box__drop .scax-dropzone__cursor{position:static;margin-right:var(--scax-space-200)}
+.scax-composer-box__drop-text{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);font-weight:var(--scax-fw-semibold);color:var(--scax-color-accent)}
+.scax-composer-box.scax-dropzone--over>:not(.scax-composer-box__drop){opacity:.25}
+.scax-composer-box__tools{display:flex;align-items:center;gap:var(--scax-space-050);padding:var(--scax-space-150) var(--scax-space-200);border-bottom:1px solid var(--scax-color-line-weak);background:var(--scax-color-surface-alt)}
+.scax-composer-box__tool{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:0 var(--scax-space-100);border:0;border-radius:var(--scax-radius-xs);background:none;font:inherit;font-size:var(--scax-text-label2-size);color:var(--scax-color-ink-neutral);cursor:pointer}
+.scax-composer-box__tool:hover{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-strong)}
+.scax-composer-box__tool:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+.scax-composer-box__tool--b{font-weight:var(--scax-fw-bold)}
+.scax-composer-box__tool--i{font-style:italic;font-family:Georgia,serif}
+.scax-composer-box__tool--code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--scax-text-caption1-size)}
+.scax-composer-box__input{display:block;width:100%;min-height:44px;max-height:180px;padding:var(--scax-space-300) var(--scax-space-400) var(--scax-space-100);border:0;outline:0;resize:none;background:transparent;font:inherit;font-size:var(--scax-text-label1-size);line-height:1.6;color:var(--scax-color-ink)}
+.scax-composer-box__input::placeholder{color:var(--scax-color-ink-assistive)}
+.scax-composer-box__files{padding:var(--scax-space-100) var(--scax-space-400) var(--scax-space-200)}
+.scax-composer-box__files .scax-file-row{max-width:420px}
+.scax-composer-box__foot{display:flex;align-items:center;gap:var(--scax-space-200);padding:var(--scax-space-100) var(--scax-space-200) var(--scax-space-200)}
+.scax-composer-box__hint{margin-right:auto;font-size:var(--scax-text-caption2-size);line-height:var(--scax-text-caption2-lh);color:var(--scax-color-ink-assistive)}
+.scax-composer-box__send{display:inline-flex;align-items:center;justify-content:center;width:32px;height:28px;border:0;border-radius:var(--scax-radius-sm);background:var(--scax-color-accent);color:var(--scax-color-ink-inverse);cursor:pointer}
+.scax-composer-box__send:disabled{background:var(--scax-color-fill-weak);color:var(--scax-color-ink-disabled);cursor:default}
+.scax-composer-box__send:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+
+/* 내가 보낸 메시지 — 보내는 중 · 실패 */
+.scax-imsg--sending .scax-imsg__body,.scax-imsg--sending .scax-attach{opacity:.55}
+.scax-imsg-state{display:inline-flex;align-items:center;gap:var(--scax-space-100);margin-top:var(--scax-space-100);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-imsg-state--failed{color:var(--scax-color-danger)}
+.scax-imsg-state__retry{margin-left:var(--scax-space-100);padding:0;border:0;background:none;font:inherit;font-weight:var(--scax-fw-semibold);color:var(--scax-color-danger);text-decoration:underline;cursor:pointer}
+.scax-imsg--failed .scax-imsg__body{color:var(--scax-color-ink-neutral)}
+
+/* 메일 — 머리 오른쪽 답장 · 전체 답장 */
+.scax-mail__top{display:flex;align-items:flex-start;gap:var(--scax-space-400)}
+.scax-mail__top>.scax-mail__title{flex:1 1 auto;min-width:0}
+.scax-mail__actions{display:flex;gap:var(--scax-space-200);flex:0 0 auto}
+
+/* 메일 답장 작성 칸 — 원문 아래 (모달 아님) */
+.scax-reply{display:flex;flex-direction:column;gap:var(--scax-space-300);padding:var(--scax-space-400) var(--scax-space-500) var(--scax-space-500);border:1px solid var(--scax-color-line-strong);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-card)}
+.scax-reply--busy{opacity:.85}
+.scax-reply__head{display:flex;align-items:baseline;gap:var(--scax-space-300);padding-bottom:var(--scax-space-200);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-reply__kind{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-reply__from{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-reply__row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:var(--scax-space-300);min-height:32px}
+.scax-reply__label{font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);color:var(--scax-color-ink-assistive)}
+.scax-reply__subject{font-size:var(--scax-text-label1-size);line-height:var(--scax-text-label1-lh);color:var(--scax-color-ink-strong)}
+.scax-reply__chips{display:flex;flex-wrap:wrap;align-items:center;gap:var(--scax-space-150);min-height:32px;padding:var(--scax-space-050) 0;border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-reply__chip{display:inline-flex;align-items:center;gap:var(--scax-space-100);height:26px;padding:0 var(--scax-space-050) 0 var(--scax-space-250);border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak);font-size:var(--scax-text-label2-size);line-height:1;color:var(--scax-color-ink-strong)}
+.scax-reply__chip-addr{font-size:var(--scax-text-caption2-size);color:var(--scax-color-ink-assistive)}
+.scax-reply__chip-x{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:var(--scax-radius-pill);background:none;color:var(--scax-color-ink-assistive);cursor:pointer}
+.scax-reply__chip-x:hover{background:var(--scax-color-line);color:var(--scax-color-ink-strong)}
+.scax-reply .scax-reply__chip-input{flex:1 1 120px;min-width:120px;height:26px;min-height:0;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;outline:0;background:none;font:inherit;font-size:var(--scax-text-label2-size);color:var(--scax-color-ink)}
+.scax-reply__body{display:block;width:100%;min-height:140px;padding:var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);outline:0;resize:vertical;background:var(--scax-color-surface);font:inherit;font-size:var(--scax-text-body2-size,15px);line-height:1.7;color:var(--scax-color-ink)}
+.scax-reply__body:focus{border-color:var(--scax-color-accent);box-shadow:var(--scax-focus-ring)}
+.scax-reply__body:disabled{background:var(--scax-color-surface-alt)}
+.scax-reply__quote{display:flex;flex-direction:column;align-items:flex-start}
+.scax-reply__quote .scax-mail-html--quoted{align-self:stretch}
+.scax-reply__foot{display:flex;justify-content:flex-end;gap:var(--scax-space-200);padding-top:var(--scax-space-100)}
+
+/* 보낸 답장 — 원문 아래 한 덩어리 */
+.scax-sent{display:flex;flex-direction:column;gap:var(--scax-space-300);padding:var(--scax-space-400) var(--scax-space-500);border:1px solid var(--scax-color-line);border-left:3px solid var(--scax-color-accent);border-radius:var(--scax-radius-lg);background:var(--scax-color-surface-alt)}
+.scax-sent__head{display:flex;align-items:center;gap:var(--scax-space-300);flex-wrap:wrap}
+.scax-sent__badge{display:inline-flex;align-items:center;gap:var(--scax-space-100);font-size:var(--scax-text-label2-size);line-height:var(--scax-text-label2-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-accent)}
+.scax-sent__meta{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-sent__body{margin:0;white-space:pre-line;font-size:var(--scax-text-body2-size,15px);line-height:1.7;color:var(--scax-color-ink)}
+
+/* 시안 전용 상태 토글 — 아래에 두면 입력창을 가리므로 화면 머리 가운데에 한 줄로 둔다 */
+
+/* ===== 3열 — 슬랙 스레드 패널 (2026-10-06 피드백 모음 1) =====
+   평소 [목록 | 대화] 2열, 「답글 N개」를 누르면 [목록 | 대화 | 스레드] 3열. 스레드 패널 폭은 고정, 대화 열이 줄어든다.
+   한 번에 스레드 하나만 열린다. 본문은 읽기 폭 제한 없이 남은 폭을 다 쓴다. */
+.scax-inbox-main--room{flex-direction:row}
+.scax-room-col{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0}
+.scax-imsg--active{margin:0 calc(-1 * var(--scax-space-300));padding-left:var(--scax-space-300);padding-right:var(--scax-space-300);border-radius:var(--scax-radius-md);background:var(--scax-color-warning-soft)}
+.scax-thread__line--open{border-color:var(--scax-color-line);background:var(--scax-color-surface)}
+.scax-thread-panel{display:flex;flex-direction:column;flex:0 0 420px;width:420px;min-height:0;border-left:1px solid var(--scax-color-line);background:var(--scax-color-surface)}
+.scax-thread-panel__head{display:flex;align-items:center;gap:var(--scax-space-200);flex:0 0 auto;min-height:72px;padding:var(--scax-space-300) var(--scax-space-400) var(--scax-space-300) var(--scax-space-500);border-bottom:1px solid var(--scax-color-line-weak)}
+.scax-thread-panel__title{flex:1 1 auto;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--scax-text-body1-size);line-height:var(--scax-text-body1-lh);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-strong)}
+.scax-thread-panel__room{font-weight:var(--scax-fw-regular);color:var(--scax-color-ink-assistive)}
+.scax-thread-panel__log{flex:1 1 auto;min-height:0;overflow-y:auto;padding:var(--scax-space-300) var(--scax-space-500) var(--scax-space-500)}
+.scax-thread-panel__log .scax-unfurl,.scax-thread-panel__log .scax-pdf,.scax-thread-panel__log .scax-thumb--lg{width:100%}
+.scax-thread-panel__count{position:relative;display:flex;align-items:center;gap:var(--scax-space-300);margin:var(--scax-space-300) 0 var(--scax-space-100);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.scax-thread-panel__count::after{content:"";flex:1 1 auto;height:1px;background:var(--scax-color-line-weak)}
+.scax-thread-panel__compose{flex:0 0 auto;padding:0 var(--scax-space-500) var(--scax-space-500)}
+.scax-thread-panel__compose .scax-composer-box__hint{display:none}
+
+/* ===== 카카오톡 (2026-10-06) — 조회 전용 대화방의 첨부 =====
+   대화 모양은 슬랙과 같고(입력창·스레드 없음), 여기서는 카톡에만 있는 첨부 모양만 더한다. */
+.scax-album{display:grid;grid-template-columns:repeat(2,160px);grid-auto-rows:120px;gap:var(--scax-space-100);border-radius:var(--scax-radius-lg);overflow:hidden}
+.scax-album--1{grid-template-columns:320px;grid-auto-rows:220px}
+.scax-album--3{grid-template-columns:repeat(3,120px)}
+.scax-album__cell{position:relative;display:block;min-width:0}
+.scax-thumb--cell{width:100%;height:100%;border-radius:0;border:0}
+.scax-album__more{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(23,23,25,.45);font-size:var(--scax-text-headline-size);font-weight:var(--scax-fw-bold);color:var(--scax-color-ink-inverse)}
+.scax-media-chip{display:inline-flex;align-items:center;gap:var(--scax-space-200);height:32px;padding:0 var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-pill);background:var(--scax-color-fill-weak);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-neutral)}
+.scax-media-chip__label{font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-strong)}
+.scax-media-chip__len{font-variant-numeric:tabular-nums}
+.scax-media-chip__note{color:var(--scax-color-ink-assistive)}
+.scax-imsg-emoticon{display:inline-block;margin-top:var(--scax-space-050);font-size:var(--scax-text-label1-size);color:var(--scax-color-ink-assistive)}
+.scax-fcard--expired{border-style:dashed;background:var(--scax-color-surface-alt)}
+.scax-fcard--expired .scax-fcard__name{color:var(--scax-color-ink-assistive);font-weight:var(--scax-fw-medium);text-decoration:line-through}
+.scax-fmark--expired{background:var(--scax-color-line-strong)}
+
+/* ===== 앱이 더한 자리 (시안에 없는 것 — DS-gaps 에 적었다) =====
+   시안은 그림·HTML 을 흉내낸 자리로 두었다. 제품은 실물을 담으므로 그 그릇만 더한다. 값은 전부 토큰이다. */
+
+/* 받은 이미지 — 썸네일 상자를 꽉 채운다(시안 `.scax-thumb` 의 그라데이션 자리) */
+.scax-thumb__link{display:block;width:100%;height:100%}
+.scax-thumb__img{display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
+
+/* HTML 메일 — 샌드박스 iframe(F-3). 높이는 부모가 문서 높이를 재서 맞춘다 */
+.scax-mail-frame{display:block;width:100%;min-height:80px;border:0;background:var(--scax-color-surface)}
+
+/* 안내 한 줄(설정의 콜백 실패 · 카톡 계정 바뀜) — DS StatusNote 의 한 줄 모양 */
+.scax-inbox-notice{display:flex;align-items:center;gap:var(--scax-space-300);padding:var(--scax-space-200) var(--scax-space-400);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-neutral)}
+.scax-inbox-notice__text{flex:1 1 auto;min-width:0}
+.scax-inbox-notice--danger{border-color:var(--scax-color-danger);background:var(--scax-color-danger-soft);color:var(--scax-color-danger)}
+
+/* 대화 위로 더 읽기 · 레일 더 보기 */
+.scax-room-log__older,.scax-inbox-list__more{display:flex;justify-content:center;padding:var(--scax-space-200) 0}
+.scax-imsg-pre{margin:var(--scax-space-100) 0;padding:var(--scax-space-200) var(--scax-space-300);border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface-alt);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--scax-text-caption1-size);white-space:pre-wrap}
+.scax-imsg-quote{margin:var(--scax-space-100) 0;padding-left:var(--scax-space-300);border-left:3px solid var(--scax-color-line-strong);color:var(--scax-color-ink-neutral)}
+.scax-imsg-p{white-space:pre-wrap}
+.scax-imsg-avatar__img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
+/* 본문 칸 — 배너 줄 + 메일/대화방 본문. 본문이 남은 높이를 다 갖고 자기 안에서 스크롤한다 */
+.scax-inbox-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+
+/* 머리 [!] 연결 경고 배지 + 팝오버 목록(D-50 · 로컬 피드백 1) — DS Button·Badge·Popover 를 쓰고 자리만 여기서 */
+.scax-inbox-warn{gap:var(--scax-space-100);color:var(--scax-color-danger)}
+.scax-inbox-warn__list{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding:var(--scax-space-100);list-style:none}
+.scax-inbox-warn__row{display:flex;align-items:center;gap:var(--scax-space-200)}
+.scax-inbox-warn__text{flex:1 1 auto;min-width:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink)}

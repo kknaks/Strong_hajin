@@ -109,6 +109,7 @@ from ax_workspace.modules.organization_access.application import (
     UnsupportedAssistantCharacter,
 )
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.entrypoints.http_inbox import register_inbox_routes
 from ax_workspace.entrypoints.http_auth import (
     SESSION_COOKIE,
     SESSION_MAX_AGE,
@@ -116,6 +117,7 @@ from ax_workspace.entrypoints.http_auth import (
     connection_principal,
     cookie_secure,
     developer_principal,
+    device_principal,
     session_id_from,
     session_principal,
 )
@@ -203,6 +205,25 @@ from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.ai import AiProvider
 from ax_workspace.modules.ax_execution.conversation_commands import (ConversationCreateInput as CreateConversationRequest, ConversationMessageInput as SendConversationMessageRequest, ConversationCancelInput as ConversationCancelRequest)
 from ax_workspace.modules.notifications import NotificationNotFound
+from ax_workspace.modules.external_channels.application import (
+    AddRoomsCommand as AddIntegrationRoomsRequest,
+    ConnectStart,
+    DeviceTokenIssueCommand as IssueDeviceTokenRequest,
+    DeviceTokenIssued,
+    DeviceTokenView,
+    AvailableRoomsPage,
+    IntegrationView,
+    KakaoHandshakeView,
+    RoomView,
+)
+from ax_workspace.modules.external_channels.domain import (
+    IntegrationDisconnected,
+    UpstreamUnavailableError,
+    IntegrationAlreadyConnected,
+    IntegrationNotConfigured,
+    InvalidRoomSelection,
+    OAuthStateRejected,
+)
 from ax_workspace.modules.organization_access.commands import AssistantCharacterInput as SetAssistantCharacterRequest
 from ax_workspace.modules.work.assignment_commands import AssignmentDeclineInput as DeclineTaskAssignmentRequest
 from ax_workspace.modules.work.request_commands import TaskVersionInput as TaskVersionRequest, TaskProposalInput as TaskProposalRequest, TaskProposalResponseInput as TaskProposalResponseRequest, TaskReopenInput as TaskReopenRequest, WorkRequestVersionInput as WorkRequestVersionRequest, WorkRequestDecisionInput as WorkRequestDecisionRequest, WorkRequestNegotiationInput as WorkRequestNegotiationRequest, WorkRequestRevisionInput as WorkRequestAmendRequest, WorkRequestRevisionInput as WorkRequestResubmitRequest, WorkRequestCreateInput as CreateWorkRequestRequest, WorkRequestCommentInput as CommentRequest, WorkRequestMaterialLinkInput as WorkRequestMaterialLinkRequest
@@ -474,6 +495,23 @@ class ActionDecisionRequest(BaseModel):
 
 
 def _runtime_error(error: Exception) -> HTTPException:
+    # 외부 채널 (SPEC-008 § Case Matrix). 남의 연동·방·기기 토큰은 아래 `ResourceNotFound` 가 404 로 가린다.
+    if isinstance(error, OAuthStateRejected):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+    if isinstance(error, IntegrationAlreadyConnected):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, IntegrationDisconnected):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "disconnected", "message": str(error)})
+    if isinstance(error, UpstreamUnavailableError):
+        return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"code": "upstream_unavailable"})
+    if isinstance(error, IntegrationNotConfigured):
+        # 비밀값 파일이 없으면 그 연동이 스스로 없다고 말한다(SPEC-008 §5 비밀값 위치) — 서버 고장이 아니다.
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "integration_not_configured", "kind": error.kind, "message": str(error)},
+        )
+    if isinstance(error, InvalidRoomSelection):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error))
     if isinstance(error, BrowserInteractionConflict):
         return HTTPException(status_code=409, detail=str(error))
     if isinstance(error, ValidationError):
@@ -689,6 +727,155 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
         except AssistantCharacterPreferenceConflict as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    # --- 외부 채널 연동 (SPEC-008 §4.2·§4.3·§4.6 · WORK-011 Phase BE-1) -------------------------
+    # 연결 시작은 302 가 아니라 JSON 이다(F-2) — 데스크톱 셸은 같은 origin `/api/` 이동을 가로채 redirect 0 으로
+    # 부른다. 웹은 `authorize_url` 로 이동, 데스크톱은 `open_external` 로 OS 브라우저에서 연다.
+
+    @app.post("/api/integrations/{kind}/connect")
+    def start_integration_connect(
+        kind: Literal["mail", "slack"],
+        response: Response,
+        principal: Principal = Depends(developer_principal),
+    ) -> ConnectStart:
+        try:
+            started = app.state.workflow_application.start_integration_connect(principal, kind)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        response.headers["Cache-Control"] = "no-store"
+        return started
+
+    @app.get("/api/integrations/{kind}/callback")
+    def integration_callback(
+        kind: Literal["mail", "slack"],
+        request: Request,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ) -> Response:
+        """동의를 마친 OS 브라우저가 돌아오는 곳. **쿠키가 아니라 `state` 로 회원을 찾는다**(F-2) — 세션이 없어도 된다.
+
+        다만 세션 쿠키가 있고 그 회원이 `state` 의 회원과 다르면 400 이다(검수 W-2 — 링크 넘기기 차단).
+        """
+        try:
+            browser = session_principal(request)
+        except HTTPException:
+            browser = None  # 세션은 있는데 회원이 비활성 — 그 쿠키는 아무도 증명하지 않는다
+        try:
+            outcome = app.state.workflow_application.complete_integration_callback(
+                kind, state=state, code=code, error=error, browser_member_id=str(browser.id) if browser else None
+            )
+        except Exception as failure:
+            raise _runtime_error(failure) from failure
+        return Response(
+            status_code=status.HTTP_302_FOUND,
+            headers={"Location": outcome.redirect_url, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+
+    @app.post("/api/integrations/{integration_id}/reconnect")
+    def reconnect_integration(
+        integration_id: UUID,
+        response: Response,
+        principal: Principal = Depends(developer_principal),
+    ) -> ConnectStart:
+        try:
+            started = app.state.workflow_application.reconnect_integration(principal, integration_id)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        response.headers["Cache-Control"] = "no-store"
+        return started
+
+    @app.post("/api/integrations/{integration_id}/disconnect", status_code=status.HTTP_204_NO_CONTENT)
+    def disconnect_integration(integration_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+        try:
+            app.state.workflow_application.disconnect_integration(principal, integration_id)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/integrations")
+    def list_integrations(principal: Principal = Depends(developer_principal)) -> list[IntegrationView]:
+        return app.state.workflow_application.list_integrations(principal)
+
+    @app.get("/api/integrations/kakao/handshake")
+    def kakao_handshake(principal: Principal = Depends(device_principal)) -> KakaoHandshakeView:
+        """수집기의 시작·재동기 — **기기 토큰만** 통한다(R3-F1). 서버의 고른 방(정본)을 chatId 와 함께 내려준다."""
+        return app.state.workflow_application.kakao_handshake(principal)
+
+    @app.post("/api/integrations/kakao/reset-account", status_code=status.HTTP_204_NO_CONTENT)
+    def kakao_reset_account(principal: Principal = Depends(developer_principal)) -> Response:
+        """계정이 바뀐 뒤 사람이 설정에서 「다시 연결」— **웹 세션 라우트**다(4차 검수 ★2). 앱은 handshake 의 `reset_at` 으로 안다."""
+        try:
+            app.state.workflow_application.kakao_reset_account(principal)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/integrations/slack/available-rooms")
+    def available_slack_rooms(
+        q: str | None = None,
+        cursor: str | None = None,
+        principal: Principal = Depends(developer_principal),
+    ) -> AvailableRoomsPage:
+        """슬랙 방 고르기 창(SPEC-008 §4.3 · F-2) — **내가 참여한** 방만, 내 사용자 토큰으로 실시간 조회. 끊김 409."""
+        try:
+            return app.state.workflow_application.available_slack_rooms(principal, q=q, cursor=cursor)
+        except Exception as error:
+            raise _runtime_error(error) from error
+
+    @app.get("/api/integrations/{integration_id}/rooms")
+    def list_integration_rooms(integration_id: UUID, principal: Principal = Depends(developer_principal)) -> list[RoomView]:
+        try:
+            return app.state.workflow_application.integration_rooms(principal, integration_id)
+        except Exception as error:
+            raise _runtime_error(error) from error
+
+    @app.post("/api/integrations/{integration_id}/rooms", status_code=status.HTTP_202_ACCEPTED)
+    def add_integration_rooms(
+        integration_id: UUID,
+        request: AddIntegrationRoomsRequest,
+        principal: Principal = Depends(developer_principal),
+    ) -> Response:
+        try:
+            app.state.workflow_application.add_integration_rooms(principal, integration_id, request)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+
+    @app.delete("/api/integrations/{integration_id}/rooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def remove_integration_room(
+        integration_id: UUID,
+        room_id: UUID,
+        principal: Principal = Depends(developer_principal),
+    ) -> Response:
+        try:
+            app.state.workflow_application.remove_integration_room(principal, integration_id, room_id)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post("/api/device-tokens", status_code=status.HTTP_201_CREATED)
+    def issue_device_token(
+        request: IssueDeviceTokenRequest,
+        response: Response,
+        principal: Principal = Depends(developer_principal),
+    ) -> DeviceTokenIssued:
+        """장수명 기기 토큰 — 원문은 **이 응답에서만** 보인다(서버는 해시만). 같은 회원의 옛 토큰은 철회된다(D-45)."""
+        issued = app.state.workflow_application.issue_device_token(principal, request)
+        response.headers["Cache-Control"] = "no-store"
+        return issued
+
+    @app.get("/api/device-tokens")
+    def list_device_tokens(principal: Principal = Depends(developer_principal)) -> list[DeviceTokenView]:
+        return app.state.workflow_application.list_device_tokens(principal)
+
+    @app.delete("/api/device-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def revoke_device_token(token_id: UUID, principal: Principal = Depends(developer_principal)) -> Response:
+        try:
+            app.state.workflow_application.revoke_device_token(principal, token_id)
+        except Exception as error:
+            raise _runtime_error(error) from error
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/my-work")
     def my_work(include_closed: bool = False, principal: Principal = Depends(developer_principal)) -> list[TaskListEntry]:
@@ -2573,6 +2760,7 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok", "profile": settings.profile}
 
+    register_inbox_routes(app)  # 메시지함·답장·사용자 WS·카톡 수신·프로필 설정 (WORK-011 BE-3 · entrypoints/http_inbox.py)
     return app
 
 

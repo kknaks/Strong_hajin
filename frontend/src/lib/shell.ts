@@ -14,6 +14,8 @@
  * (문서가 다시 보이게 될 때 — L-14). 셸은 신호가 없다고 해서 점유를 풀지 않는다.
  */
 
+import type { KakaoLocalRoom } from "./viewModels";
+
 export type WakeState = "off" | "on" | "degraded";
 
 export type ShellInfo = {
@@ -190,7 +192,14 @@ export async function openExternal(url: string): Promise<OpenExternalOutcome> {
        넘기지도 않는다: 셸 안에서 그것은 **앱 창 안에 두 번째 웹뷰가 앉는** 길이고,
        U-4 가 막으려는 바로 그 사고다.
        **그러나 조용히 삼키지는 않는다**(리뷰 W-6) — 실패를 그대로 돌려주고 기록을 남긴다. */
-    console.warn(`[shell] 외부 링크를 열지 못했습니다(E-14c). url=${url}`);
+    /* 주소 전체는 남기지 않는다 — 메일·슬랙 링크에는 추적 토큰이 실릴 수 있다(검수 W-5). host 만. */
+    let host = "?";
+    try {
+      host = new URL(url).host;
+    } catch {
+      /* 주소가 아니면 host 도 없다 */
+    }
+    console.warn(`[shell] 외부 링크를 열지 못했습니다(E-14c). host=${host}`);
     return "failed";
   }
 }
@@ -231,4 +240,86 @@ export function onShellDownload(
   };
   scope.addEventListener(SHELL_DOWNLOAD_EVENT, listener);
   return () => scope.removeEventListener(SHELL_DOWNLOAD_EVENT, listener);
+}
+
+/* ===== 카톡 수집기 커맨드 셋 (SPEC-006 v0.6.0 · SPEC-008 §2.5·§4.3 · WORK-011 FE-b) =====
+ *
+ * medi-ax 데스크톱 판만 `kakao_list_rooms`·`kakao_collector_status`·`kakao_store_device_token` 을 연다.
+ * 이 파일은 **그 커맨드를 부르는 자리만** 둔다 — 실제 커맨드(Rust)는 SHELL Phase 몫이다.
+ *
+ * - **앱 웹뷰 판정은 «커맨드가 있는지»** 로 한다(§2.5): 셸이 없거나(브라우저 · 개인판처럼 커맨드가 안 열린 셸)
+ *   부르기가 실패하면 「없다」 — 화면은 「방 추가는 Mac 앱에서」 안내로 간다.
+ * - 커맨드의 응답 모양은 SHELL Phase 가 이 아래 정규화와 맞춘다. 어긋나면 **여기 한 곳만** 고친다.
+ */
+
+
+let kakaoProbe: Promise<boolean> | null = null;
+
+/** 이 창이 카톡 커맨드를 가진 데스크톱 앱 웹뷰인가. 한 번 알아낸 답은 기억한다(창이 사는 동안 바뀌지 않는다). */
+export function hasKakaoCollector(): Promise<boolean> {
+  if (!hasShell()) return Promise.resolve(false);
+  if (!kakaoProbe) {
+    kakaoProbe = call<unknown>("kakao_collector_status").then(
+      () => true,
+      () => false,
+    );
+  }
+  return kakaoProbe;
+}
+
+/** 시험용 — 판정 기억을 비운다. */
+export function forgetKakaoCollectorProbe() {
+  kakaoProbe = null;
+}
+
+export type KakaoRoomsOutcome =
+  | { kind: "ok"; rooms: KakaoLocalRoom[] }
+  /** 커맨드가 없다 — 브라우저이거나 카톡 커맨드가 없는 판이다. */
+  | { kind: "absent" }
+  /** 카카오톡이 꺼져 있어 목록을 못 읽었다(§4 Case Matrix). */
+  | { kind: "kakao_off" }
+  | { kind: "failed" };
+
+function readLocalRoom(value: unknown): KakaoLocalRoom | null {
+  if (typeof value !== "object" || value === null) return null;
+  const row = value as Record<string, unknown>;
+  const chatId = row.chat_id ?? row.chatId ?? row.id;
+  const type = row.type === "direct" || row.type === "group" ? row.type : null;
+  if ((typeof chatId !== "string" && typeof chatId !== "number") || !type) return null;
+  const count = row.member_count ?? row.members;
+  return {
+    chat_id: String(chatId),
+    type,
+    name: typeof row.name === "string" ? row.name : "",
+    member_count: typeof count === "number" ? count : null,
+  };
+}
+
+/** 이 Mac 카카오톡의 방 목록(1:1·단체 · 오픈채팅 제외) — 서버가 아니라 Rust 가 로컬 DB 에서 읽는다(R-F1). */
+export async function kakaoListRooms(): Promise<KakaoRoomsOutcome> {
+  if (!(await hasKakaoCollector())) return { kind: "absent" };
+  try {
+    const reply = await call<unknown>("kakao_list_rooms");
+    const list = Array.isArray(reply) ? reply : (reply as { rooms?: unknown })?.rooms;
+    if (!Array.isArray(list)) return { kind: "failed" };
+    return { kind: "ok", rooms: list.map(readLocalRoom).filter((room): room is KakaoLocalRoom => room !== null) };
+  } catch (error) {
+    if (String(error).includes("kakao_off")) return { kind: "kakao_off" };
+    return { kind: "failed" };
+  }
+}
+
+/**
+ * 웹이 발급받은 기기 토큰을 **Rust 키체인에** 넘긴다(R3-F1 ④). 응답에 토큰을 돌려받지 않는다.
+ * 부르는 쪽은 결과와 상관없이 토큰을 화면·저장소에 남기지 않는다.
+ */
+export async function kakaoStoreDeviceToken(token: string): Promise<"stored" | "absent" | "failed"> {
+  if (!(await hasKakaoCollector())) return "absent";
+  try {
+    await call<void>("kakao_store_device_token", { token });
+    return "stored";
+  } catch {
+    console.warn("[shell] 기기 토큰을 키체인에 넣지 못했습니다.");
+    return "failed";
+  }
 }

@@ -2003,5 +2003,293 @@ class AuthSessionRecord(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# ── 외부 채널 연동 (SPEC-008 · WORK-011 Phase BE-1) ─────────────────────────────────────────────
+# 연동이 aggregate 다(D-26): 고른 방·메시지·첨부·읽음·보낸 답장이 그 아래 매달리고, 연동은 **연결한 회원 것**이다
+# (D-24). 같은 방을 동료 둘이 골라도 **사람마다 따로** 한 벌씩 저장한다(D-25 · OQ-808) — 그래서 모든 중복 방지
+# 키가 연동 범위다. 지우지 않는다: 연결 해제·방 빼기는 `removed_at` 을 찍는 소프트 딜리트뿐이고 물리 삭제가 없다
+# (D-27 · D-46 · OQ-805 — 회사 데이터라 계속 보관). 동기화 상태 칸(마지막 반영 지점·백필 진행·watch 만료)은
+# BE-2(연동 워커)가 쓰고 BE-3(메시지함)·설정 화면이 읽는다 — 두 Phase 가 이 파일을 다시 열지 않게 여기서 다 놓는다.
+
+
+class ExternalIntegrationRecord(Base):
+    """연동 하나 = 회원 × 종류 × 외부 계정. 메일은 주소마다(D-10), 슬랙은 워크스페이스 하나, 카톡은 회원당 하나."""
+
+    __tablename__ = "external_integrations"
+    __table_args__ = (
+        # 같은 주소·워크스페이스를 다시 연결하면 **새 행이 아니라 이 행이 되살아난다**(D-46).
+        UniqueConstraint("member_id", "kind", "account_key", name="uq_external_integrations_member_account"),
+        CheckConstraint("kind IN ('mail', 'slack', 'kakao')", name="ck_external_integrations_kind"),
+        CheckConstraint(
+            "status IN ('connected', 'backfilling', 'disconnected', 'removed')",
+            name="ck_external_integrations_status",
+        ),
+        Index("ix_external_integrations_member_id", "member_id"),
+        # 슬랙 팬아웃(W-8): 이벤트 1건의 (team, channel) 을 고른 «모든» 연동을 찾는다.
+        Index("ix_external_integrations_kind_account_key", "kind", "account_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: 외부 계정의 정체 — 메일=소문자 주소 · 슬랙=team id · 카톡=`kakao`(회원당 하나).
+    account_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    #: 화면에 보이는 이름 — 메일 주소 · 슬랙 워크스페이스 이름 · 카톡 로그인 계정 이름.
+    display_name: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    #: 비밀이 아닌 외부 계정 정보(슬랙 team 이름·도메인·user id 등). 토큰은 여기 두지 않는다.
+    account_meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 저장 토큰은 `AX_EXTERNAL_TOKEN_ENCRYPTION_KEY` 로 잠근 Fernet 토큰이다 — 평문은 DB·로그에 없다(OQ-801).
+    access_token_encrypted: Mapped[str | None] = mapped_column(Text)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scopes: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    # ── 동기화 상태 (BE-2 가 쓴다) ──
+    #: Gmail `historyId` — 재시작 메우기의 «마지막 반영 지점»(D-22).
+    sync_cursor: Mapped[str | None] = mapped_column(String(200))
+    #: Gmail `users.watch` 만료(7일 · 매일 갱신).
+    watch_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 최초 백필 진행 — 「과거 메일 채우는 중 · N건」.
+    backfill_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    backfill_cursor: Mapped[str | None] = mapped_column(String(500))
+    backfill_done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 「DB 적재 건수」·「마지막 수집」.
+    synced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 끊김 사유(`token_expired`·`revoked`·…) — 배너·상태 문구(D-50). 비밀은 싣지 않는다.
+    disconnected_reason: Mapped[str | None] = mapped_column(String(40))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    # ── 카톡 수집기 (SPEC-008 §4.6) ──
+    #: 웹에서 방을 더하거나 빼면 올라간다. status 응답이 이 값을 돌려 앱이 handshake 를 다시 부른다(W3-3).
+    selected_rooms_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    #: 계정이 바뀐 뒤 사람이 「다시 연결」한 시각 — handshake 의 `reset_at`(W-4·N-9).
+    account_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 마지막 status 보고 전문(`app`·`kakao`·`account`·`account_changed`)과 그 시각 — 90초 무보고 = 앱 꺼짐(W-3).
+    collector_status: Mapped[dict | None] = mapped_column(JSON)
+    collector_reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: 소프트 딜리트(D-27). 되살리면 비운다(D-46).
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExternalRoomRecord(Base):
+    """고른 방(수집 방). 슬랙·카톡 모두 **서버가 정본**이다(R-F1 정정). `id` 가 API 의 `room_id`(W3-9)."""
+
+    __tablename__ = "external_rooms"
+    __table_args__ = (
+        # 다시 고르면 되살린다 — 같은 외부 방은 연동마다 한 줄.
+        UniqueConstraint("integration_id", "external_id", name="uq_external_rooms_integration_external"),
+        CheckConstraint(
+            "room_type IN ('channel', 'private', 'dm', 'group_dm', 'direct', 'group')",
+            name="ck_external_rooms_type",
+        ),
+        CheckConstraint("status IN ('backfilling', 'live', 'paused')", name="ck_external_rooms_status"),
+        Index("ix_external_rooms_integration_id", "integration_id"),
+        # 슬랙 팬아웃(W-8): channel id 로 그 방을 고른 연동들을 찾는다.
+        Index("ix_external_rooms_external_id", "external_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    integration_id: Mapped[UUID] = mapped_column(ForeignKey("external_integrations.id"), nullable=False)
+    #: 슬랙 channel id · 카톡 chatId — 회원끼리 겹칠 수 있다(W3-9).
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    room_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    member_count: Mapped[int | None] = mapped_column(Integer)
+    room_meta: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 저장된 값. `paused` 는 카톡 수집기 상태에서 **읽을 때 파생**한다(W-1) — 저장하지 않는다.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # ── 동기화 상태 (BE-2 · 카톡 수신이 쓴다) ──
+    #: 마지막 반영 지점 — 슬랙 `ts` · 카톡 `logId`(문자열). handshake 의 `last_logId`.
+    last_message_key: Mapped[str | None] = mapped_column(String(64))
+    backfill_cursor: Mapped[str | None] = mapped_column(String(500))
+    backfill_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    backfill_done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    synced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExternalMessageRecord(Base):
+    """원문 메시지 — 그대로 저장한다(D-28). 메일은 단건(`room_id` 없음), 슬랙·카톡은 방에 속한다."""
+
+    __tablename__ = "external_messages"
+    __table_args__ = (
+        # 중복 방지 키(전부 연동 범위 · D-25): 슬랙 (연동, channel, ts) · Gmail (연동, '', message id) ·
+        # 카톡 (연동, chatId, logId). 메일은 방이 없어 container_key 가 빈 글자다.
+        UniqueConstraint(
+            "integration_id", "container_key", "external_key", name="uq_external_messages_dedup"
+        ),
+        CheckConstraint("source_kind IN ('mail', 'slack', 'kakao')", name="ck_external_messages_source_kind"),
+        Index("ix_external_messages_integration_sent_at", "integration_id", "sent_at"),
+        Index("ix_external_messages_room_sent_at", "room_id", "sent_at"),
+        Index("ix_external_messages_room_thread", "room_id", "thread_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    integration_id: Mapped[UUID] = mapped_column(ForeignKey("external_integrations.id"), nullable=False)
+    room_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_rooms.id"))
+    source_kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    container_key: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    external_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: 슬랙 `thread_ts` · Gmail `threadId`.
+    thread_key: Mapped[str | None] = mapped_column(String(200))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: 목록 카드용 요약(원문에서 뽑은 것) — 메일 제목·보낸 사람·두 줄. 원문이 정본이다.
+    subject: Mapped[str | None] = mapped_column(String(1000))
+    author: Mapped[str | None] = mapped_column(String(500))
+    preview: Mapped[str | None] = mapped_column(Text)
+    raw: Mapped[dict] = mapped_column(JSON, nullable=False)
+    #: HTML 메일의 **렌더용 안전본**(소독본, F-3). 원문은 `raw` 에 그대로다.
+    safe_html: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ExternalAttachmentRecord(Base):
+    """첨부 메타. 메일·슬랙은 **참조만**(받을 때 중계, D-29) · 카톡은 저장본 경로(D-30) — DB 는 경로만."""
+
+    __tablename__ = "external_attachments"
+    __table_args__ = (
+        UniqueConstraint("message_id", "aid", name="uq_external_attachments_message_aid"),
+        CheckConstraint(
+            "kind IN ('image', 'album', 'file', 'video', 'audio', 'sticker')", name="ck_external_attachments_kind"
+        ),
+        CheckConstraint(
+            "state IN ('reference', 'pending', 'stored', 'expired', 'too_large', 'not_stored')",
+            name="ck_external_attachments_state",
+        ),
+        # 카톡 업로드 `POST …/kakao/attachments/{aid}` 가 aid 하나로 찾는다.
+        Index("ix_external_attachments_aid", "aid"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("external_messages.id"), nullable=False)
+    #: API 의 첨부 id. 카톡 = SHA-256("{integration_id}:{chatId}:{logId}:{seq}") hex(W3-2 · N-8).
+    aid: Mapped[str] = mapped_column(String(128), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: reference(메일·슬랙 중계) · pending(카톡 업로드 대기) · stored · expired · too_large(50MB 초과) ·
+    #: not_stored(동영상·음성 — 표시만, D-31).
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    size: Mapped[int | None] = mapped_column(BigInteger)
+    mime: Mapped[str | None] = mapped_column(String(200))
+    #: 상류 참조 — Gmail attachmentId · 슬랙 file id. 비밀이 아니다(받을 때는 회원 토큰으로).
+    external_ref: Mapped[str | None] = mapped_column(Text)
+    #: 카톡 저장본의 저장소 키(hostPath 아래). 바이트는 DB 에 없다.
+    storage_key: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExternalReadStateRecord(Base):
+    """읽음 — **사용자별**(D-25 · W-4). 방은 `up_to` 까지(미읽음 수 재계산), 메일은 단건."""
+
+    __tablename__ = "external_read_states"
+    __table_args__ = (
+        UniqueConstraint("member_id", "room_id", name="uq_external_read_states_member_room"),
+        UniqueConstraint("member_id", "message_id", name="uq_external_read_states_member_message"),
+        CheckConstraint(
+            "(room_id IS NOT NULL AND message_id IS NULL) OR (room_id IS NULL AND message_id IS NOT NULL)",
+            name="ck_external_read_states_one_target",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    room_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_rooms.id"))
+    message_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_messages.id"))
+    #: 방 읽음의 경계 — 요청의 `up_to_ts` 와 그 메시지 시각.
+    read_up_to_key: Mapped[str | None] = mapped_column(String(64))
+    read_up_to_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ExternalSentReplyRecord(Base):
+    """보낸 답장 = **우리가 보낸 기록**(D-47). 메일 보낸편지함을 재수집하지 않는다. `id` 가 202 의 `local_id`."""
+
+    __tablename__ = "external_sent_replies"
+    __table_args__ = (
+        # 재시도 중복 방지 = Idempotency-Key(SPEC-008 §4.4).
+        UniqueConstraint("member_id", "idempotency_key", name="uq_external_sent_replies_member_key"),
+        CheckConstraint("status IN ('sending', 'sent', 'failed')", name="ck_external_sent_replies_status"),
+        Index("ix_external_sent_replies_integration_id", "integration_id"),
+        Index("ix_external_sent_replies_message_id", "message_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    integration_id: Mapped[UUID] = mapped_column(ForeignKey("external_integrations.id"), nullable=False)
+    room_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_rooms.id"))
+    #: 메일 답장이 붙는 원문(「보낸 답장」 덩어리가 그 아래 선다).
+    message_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_messages.id"))
+    source_kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: 보낸 내용(본문·받는 사람·참조·thread_ts·첨부 이름/크기). 첨부 바이트는 싣지 않는다.
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 상류가 돌려준 것 — 슬랙 `ts` · Gmail message id.
+    external_ref: Mapped[str | None] = mapped_column(String(200))
+    error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExternalDeviceTokenRecord(Base):
+    """수집기(Mac 앱)의 장수명 기기 토큰(OQ-906 · R3-F1). **해시만** 보관 — 원문은 발급 응답에서만 한 번 보인다."""
+
+    __tablename__ = "external_device_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_external_device_tokens_hash"),
+        Index("ix_external_device_tokens_member_id", "member_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    device_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: SHA-256 hex. 토큰은 32바이트 난수라 소금 없는 한 번 해시로 충분하다(추측할 사전이 없다).
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 철회 — 설정에서 · 새 발급(D-45) · 비밀번호 변경(R3-F1 ⑤).
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExternalOAuthStateRecord(Base):
+    """연결 시작이 발급한 **일회용 `state`**(F-2). 콜백은 쿠키가 아니라 이것으로 회원을 찾는다. 해시만 보관."""
+
+    __tablename__ = "external_oauth_states"
+    __table_args__ = (
+        UniqueConstraint("state_hash", name="uq_external_oauth_states_hash"),
+        CheckConstraint("kind IN ('mail', 'slack')", name="ck_external_oauth_states_kind"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: reconnect 가 발급했으면 그 연동. connect 면 비어 있다.
+    integration_id: Mapped[UUID | None] = mapped_column(ForeignKey("external_integrations.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProfileImageRecord(Base):
+    """프로필 이미지 — DB 는 저장 경로만, 바이트는 hostPath(SPEC-008 §4.1·§5 저장 · D-30 결)."""
+
+    __tablename__ = "profile_images"
+
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), primary_key=True)
+    storage_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 def make_session_factory(database_url: str):
     return sessionmaker(bind=create_engine(database_url, pool_pre_ping=True), expire_on_commit=False)

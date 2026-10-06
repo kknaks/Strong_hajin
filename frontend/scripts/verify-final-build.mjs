@@ -228,8 +228,18 @@ if (capabilityFiles.length !== 1) {
   const urls = capability.remote?.urls ?? [];
 
   if (capability.local !== false) block(`G3 ${capabilityFiles[0]}: local 이 false 가 아니다`);
-  if ((capability.permissions ?? []).length !== 4) {
-    block(`G3 ${capabilityFiles[0]}: 권한이 넷이 아니다 (${(capability.permissions ?? []).length})`);
+  // 커맨드 수 — strong-hajin = 넷, medi-ax = 일곱(넷 + 카톡 셋 · SPEC-006 v0.6.0). 개인판 바이너리에
+  // 카톡 커맨드·수집기 심볼이 없어야 한다(W3-8) — 여기선 capability 로, cargo 쪽은 build.rs 가 막는다.
+  const g3perms = capability.permissions ?? [];
+  const g3kakao = ["allow-kakao-list-rooms", "allow-kakao-collector-status", "allow-kakao-store-device-token"];
+  const g3want = flavor.name === "medi-ax" ? 7 : 4;
+  if (g3perms.length !== g3want) {
+    block(`G3 ${capabilityFiles[0]}: 판 ${flavor.name} 의 커맨드 수가 ${g3want} 가 아니다 (${g3perms.length})`);
+  }
+  if (flavor.name === "medi-ax") {
+    for (const p of g3kakao) if (!g3perms.includes(p)) block(`G3 ${capabilityFiles[0]}: medi-ax 에 ${p} 가 없다`);
+  } else if (g3kakao.some((p) => g3perms.includes(p))) {
+    block(`G3 ${capabilityFiles[0]}: 개인판에 카톡 커맨드가 샜다`);
   }
   if (urls.length !== 1) {
     block(`G3 ${capabilityFiles[0]}: remote.urls 가 하나가 아니다 (${urls.length})`);
