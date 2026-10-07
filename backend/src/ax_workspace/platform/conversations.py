@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
+import json
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -27,11 +28,18 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationContextReferenceInput,
     ConversationError,
     ConversationNotFound,
+    ContextMessageNotFound,
     ConversationExecution,
     ConversationExecutionQueue,
     ConversationQueueOverflow,
 )
 from ax_workspace.modules.ax_execution.ai import AiDelegatedToolContext
+from ax_workspace.modules.external_channels.message_context import (
+    SOURCE_LABELS,
+    MessageContextComposer,
+    MessageNotFound,
+)
+from ax_workspace.platform.external_channels_inbox_store import SqlAlchemyInboxStore
 from ax_workspace.modules.organization_access.domain import Principal
 from ax_workspace.platform.persistence import (
     ActionItemRecord,
@@ -311,6 +319,8 @@ class SqlAlchemyConversationRepository:
                 for ref in refs
             ],
         )
+        contexts: dict[UUID, str] = {}
+        composer = MessageContextComposer(SqlAlchemyInboxStore(self._session))
         for stored, current in zip(refs, refreshed, strict=True):
             if (
                 stored.resource_id != current["resource_id"]
@@ -318,6 +328,14 @@ class SqlAlchemyConversationRepository:
                 or stored.summary != current["summary"]
             ):
                 raise ConversationError("context resource is stale")
+            if stored.resource_type == INBOX_MESSAGE and stored.included:
+                # **서버가 우리 DB 에서 조합해** 이 턴의 프롬프트에 싣는다(D-31) — 실행 직전의 둘레 그대로. 실은 범위는
+                # `label` 로 남겨 말풍선 아래 한 줄이 된다(WP4 계약 고정 1).
+                composed = composer.compose(str(principal.id), UUID(stored.resource_id))
+                stored.label = composed.label[:300]
+                contexts[stored.id] = json.dumps(
+                    {"label": composed.label, **composed.document}, ensure_ascii=False, separators=(",", ":")
+                )
         return AiConversationRequest(
             prompt="\n".join(fragment.body for fragment in fragments),
             provider_session_ref=turn.provider_session_ref,
@@ -329,8 +347,10 @@ class SqlAlchemyConversationRepository:
                     "resource_id": str(item["resource_id"]),
                     "resource_version": str(item["resource_version"]),
                     "summary": str(item["summary"]),
+                    # 메시지 맥락 JSON — 한 줄 요약과 따로 **덩어리로** 싣는다(프롬프트 조립이 읽는다).
+                    **({"context": contexts[stored.id]} if stored.id in contexts else {}),
                 }
-                for item in refreshed
+                for stored, item in zip(refs, refreshed, strict=True)
                 if item["included"]
             ],
             delegated_tool_context=AiDelegatedToolContext(
@@ -827,6 +847,8 @@ class SqlAlchemyConversationRepository:
                     "resource_version": ref.resource_version,
                     "summary": ref.summary,
                     "included": ref.included,
+                    # 말풍선 아래 참고 자료 한 줄(`inbox_message` · 조합 뒤) — 없으면 null(WP4 계약 고정 1).
+                    "label": ref.label,
                 }
                 for ref in refs
             ],
@@ -981,6 +1003,10 @@ class SqlAlchemyConversationExecutionGuard:
                         pass
 
 
+#: 메시지함 메시지 참고 자료(SPEC-008 §4.8 ①).
+INBOX_MESSAGE = "inbox_message"
+
+
 class SqlAlchemyConversationContextResolver:
     """Resolves reference data from current authorized SCAX records, never the client."""
 
@@ -1003,7 +1029,37 @@ class SqlAlchemyConversationContextResolver:
             return self._task(principal, reference)
         if reference.resource_type == "work_request":
             return self._work_request(principal, reference)
+        if reference.resource_type == INBOX_MESSAGE:
+            return self._inbox_message(principal, reference)
         raise ConversationError("unsupported context resource type")
+
+    def _inbox_message(
+        self,
+        principal: Principal,
+        reference: ConversationContextReferenceInput,
+    ) -> dict[str, str | bool]:
+        """메시지함 메시지 — **가리키기만** 한다(SPEC-008 §4.8 ①). 남의 것 · 지운 방·연동이면 404(존재를 가린다).
+
+        판은 `1` 고정이다(메시지는 판을 갖지 않는다 — 수정·삭제 표지는 조합 때 반영). `summary` 는 실행 직전 다시 해석해도
+        같아야 하므로(낡음 검사) 방 이름 같은 바뀔 수 있는 글자를 담지 않는다 — 실제 범위는 조합이 `label` 로 남긴다.
+        """
+        try:
+            message_id = UUID(reference.resource_id)
+        except ValueError as error:
+            raise ContextMessageNotFound() from error
+        try:
+            found = MessageContextComposer(SqlAlchemyInboxStore(self._session)).reference(str(principal.id), message_id)
+        except MessageNotFound as error:
+            raise ContextMessageNotFound() from error
+        if reference.resource_version != 1:
+            raise ConversationError("context resource is stale")
+        return {
+            "resource_type": INBOX_MESSAGE,
+            "resource_id": found.message_id,
+            "resource_version": "1",
+            "summary": f"{SOURCE_LABELS.get(found.source_kind, found.source_kind)} 메시지",
+            "included": reference.included,
+        }
 
     def _task(
         self,

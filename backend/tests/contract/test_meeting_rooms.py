@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 import logging
 from threading import Event, Lock, Thread
@@ -26,6 +27,7 @@ from ax_workspace.modules.meetings.rooms import (
     ReservationBooked,
     RoomGatewayUnavailable,
     RoomOutcomeUnknown,
+    RoomReservationGone,
     RoomUnavailable,
 )
 from ax_workspace.modules.meetings.commands import MeetingReservationInput
@@ -67,6 +69,11 @@ class FakeRoomGateway:
         #: 그 시간에 이미 찬 방 번호. `available` 과 `create` 가 같은 사실을 읽는다.
         self.busy: set[int] = set()
         self.availability_calls: list[tuple[str, str, str]] = []
+        #: 찬 방을 쥔 예약의 외부 번호 — `available(ignoring=…)` 이 자기 예약을 점유에서 빼는지 본다.
+        self.occupant: dict[int, str] = {}
+        self.ignored: list[str | None] = []
+        #: 예약 시스템에 **없는** 외부 번호(이미 지워짐) — `update`·`cancel` 이 404(`RoomReservationGone`)로 답한다.
+        self.gone: set[str] = set()
         # 두 축을 함께 세운다: 민아는 **이름**으로(데모 이메일이 회사 계정과 다르다),
         # 지호는 **이메일**로 이어진다. 실제 데모가 꼭 이 모양이다.
         self.people = [
@@ -79,11 +86,17 @@ class FakeRoomGateway:
             raise self.error
         return list(self.ALL_ROOMS)
 
-    def available(self, date: str, start: str, end: str) -> list[MeetingRoom]:
+    def available(self, date: str, start: str, end: str, *, ignoring: str | None = None) -> list[MeetingRoom]:
         if self.error is not None:
             raise self.error
         self.availability_calls.append((date, start, end))
-        return [room for room in self.ALL_ROOMS if room.room_id not in self.busy]
+        self.ignored.append(ignoring)
+        # 찬 방 중 `ignoring` 예약(수정 중인 회의 자신의 자리)이 쥔 방은 비어 있는 것으로 본다 (SPEC-010 §4.1).
+        return [
+            room
+            for room in self.ALL_ROOMS
+            if room.room_id not in self.busy or (ignoring is not None and self.occupant.get(room.room_id) == ignoring)
+        ]
 
     def members(self) -> list[dict[str, str]]:
         if self.error is not None:
@@ -103,11 +116,15 @@ class FakeRoomGateway:
     def update(self, external_id: str, *, date: str, start: str, end: str, room_id: int | None = None) -> None:
         if self.error is not None:
             raise self.error
+        if external_id in self.gone:
+            raise RoomReservationGone("예약 시스템에 그 예약이 없습니다")
         self.updated.append({"external_id": external_id, "date": date, "start": start, "end": end, "room_id": room_id})
 
     def cancel(self, external_id: str) -> None:
         if self.error is not None:
             raise self.error
+        if external_id in self.gone:
+            raise RoomReservationGone("예약 시스템에 그 예약이 없습니다")
         self.cancelled.append(external_id)
 
 
@@ -128,7 +145,81 @@ def test_the_connect_transport_failure_is_an_unknown_mutation_outcome() -> None:
 
     gateway._opener = BrokenOpener()
     with pytest.raises(RoomOutcomeUnknown):
-        gateway.update("reservation-1", date="2026-09-20", start="10:00", end="11:00", room_id=3)
+        # 방을 주지 않은 이동은 PUT 직전 확인(W-5)이 없다 — 곧장 PUT 이 끊긴다.
+        gateway.update("reservation-1", date="2026-09-20", start="10:00", end="11:00")
+
+
+class _ConnectStub:
+    """읽기는 답하고 PUT 은 기록하는 최소 Connect — 어댑터의 PUT 직전 확인(W-5)을 본다."""
+
+    def __init__(self, reservations: list[dict], *, put_fails: bool = False) -> None:
+        self.reservations = reservations
+        self.put_fails = put_fails
+        self.puts: list[str] = []
+
+    def open(self, request, *, timeout):
+        import io
+
+        path = request.full_url.split("tdl.invalid", 1)[1]
+        if request.get_method() == "PUT":
+            if self.put_fails:
+                raise TimeoutError
+            self.puts.append(path)
+            body = b"{}"
+        elif path.startswith("/api/rooms"):
+            body = json.dumps([{"id": 3, "name": "회의실 3", "capacity": 6}, {"id": 5, "name": "회의실 5", "capacity": 12}]).encode()
+        else:
+            body = json.dumps(self.reservations).encode()
+
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        return Response(body)
+
+
+def _connect(stub: _ConnectStub) -> TheConnectGateway:
+    gateway = TheConnectGateway(
+        base_url="https://tdl.invalid", email="booker@example.com", password="secret", company_id=1, notify=False, timeout_seconds=0.01
+    )
+    gateway._authenticated = True
+    gateway._opener = stub
+    return gateway
+
+
+def test_the_connect_says_gone_when_the_reservation_no_longer_exists() -> None:
+    """검수 W-r2-2 — PUT·DELETE 가 404 면 「없음」(`RoomReservationGone`) — 닿지 못함(`RoomGatewayUnavailable`)과 가른다."""
+    import urllib.error
+
+    class Missing(_ConnectStub):
+        def open(self, request, *, timeout):
+            if request.get_method() in {"PUT", "DELETE"}:
+                raise urllib.error.HTTPError(request.full_url, 404, "not found", {}, None)
+            return super().open(request, timeout=timeout)
+
+    with pytest.raises(RoomReservationGone):
+        _connect(Missing([])).cancel("reservation-1")
+    with pytest.raises(RoomReservationGone):
+        _connect(Missing([])).update("reservation-1", date="2026-09-20", start="10:00", end="11:00", room_id=3)
+
+
+def test_the_connect_put_checks_the_room_is_still_free_right_before_moving() -> None:
+    """검수 W-5 — 재확인과 PUT 사이에 남이 그 방을 잡았으면 겹쳐 옮기지 않는다. 자기 예약은 점유로 세지 않는다."""
+    taken = _ConnectStub([{"id": 77, "room_id": 5, "start_time": "10:30", "end_time": "11:30"}])
+    with pytest.raises(RoomUnavailable) as refused:
+        _connect(taken).update("reservation-1", date="2026-09-20", start="10:00", end="11:00", room_id=5)
+    assert taken.puts == [] and [room.room_id for room in refused.value.available] == [3]
+    mine = _ConnectStub([{"id": "reservation-1", "room_id": 5, "start_time": "10:30", "end_time": "11:30"}])
+    _connect(mine).update("reservation-1", date="2026-09-20", start="10:00", end="11:00", room_id=5)
+    assert mine.puts == ["/api/reservations/reservation-1"]
+    broken = _ConnectStub([], put_fails=True)
+    with pytest.raises(RoomOutcomeUnknown):
+        _connect(broken).update("reservation-1", date="2026-09-20", start="10:00", end="11:00", room_id=3)
 
 
 def test_the_connect_transport_failure_on_a_read_is_not_an_unknown_mutation() -> None:
@@ -227,10 +318,11 @@ def test_the_room_list_comes_from_the_booking_system_rather_than_a_list_we_keep(
     client, _, _ = _stack(tmp_path)
     listed = client.get("/api/meetings/rooms", headers=MINA)
     assert listed.status_code == 200, listed.text
+    # 항목 모양 = `{room_id, name, capacity, available, current, unavailable_reason}` (SPEC-010 §4.1 · WP3 계약 고정 4).
     assert listed.json() == [
-        {"room_id": 2, "name": "회의실 2 (4인)", "capacity": 4},
-        {"room_id": 3, "name": "회의실 3 (6인)", "capacity": 6},
-        {"room_id": 5, "name": "회의실 5 (12인)", "capacity": 12},
+        {"room_id": 2, "name": "회의실 2 (4인)", "capacity": 4, "available": True, "current": False, "unavailable_reason": None},
+        {"room_id": 3, "name": "회의실 3 (6인)", "capacity": 6, "available": True, "current": False, "unavailable_reason": None},
+        {"room_id": 5, "name": "회의실 5 (12인)", "capacity": 12, "available": True, "current": False, "unavailable_reason": None},
     ]
 
 
@@ -258,20 +350,20 @@ def test_asking_with_a_time_returns_only_the_rooms_free_then(tmp_path) -> None:
     )
     assert listed.status_code == 200, listed.text
     assert listed.json() == [
-        {"room_id": 2, "name": "회의실 2 (4인)", "capacity": 4, "available": True},
-        {"room_id": 5, "name": "회의실 5 (12인)", "capacity": 12, "available": True},
+        {"room_id": 2, "name": "회의실 2 (4인)", "capacity": 4, "available": True, "current": False, "unavailable_reason": None},
+        {"room_id": 5, "name": "회의실 5 (12인)", "capacity": 12, "available": True, "current": False, "unavailable_reason": None},
     ]
     # 물어본 시간은 **사옥 지역 시각**이다 — UTC 로 물으면 아홉 시간 어긋난 방 상태를 받는다.
     assert gateway.availability_calls == [("2026-09-14", "10:00", "11:00")]
 
 
 def test_asking_without_a_time_still_returns_the_whole_list(tmp_path) -> None:
-    """기존 호출은 그대로다 — 시간을 모르면 가능 여부도 말하지 않는다."""
+    """시간을 모르면 시간 조건을 걸지 않는다 — 예약 조회도 하지 않는다(정원 조건만 `people` 으로)."""
     client, _, gateway = _stack(tmp_path)
     gateway.busy = {3}
     rows = client.get("/api/meetings/rooms", headers=MINA).json()
     assert [row["room_id"] for row in rows] == [2, 3, 5]
-    assert all("available" not in row for row in rows)
+    assert all(row["available"] and row["unavailable_reason"] is None for row in rows)
     assert gateway.availability_calls == []
 
 
@@ -979,8 +1071,9 @@ def test_confirmed_time_change_receipt_includes_the_room_sync_failure_and_replay
     )
     item = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
     gateway.error = RoomGatewayUnavailable("예약 시스템에 닿지 못했습니다")
-    url = f"/api/action-items/{item['action_item_id'].upper()}/commands/approve"
-    body = {"expected_version": item["expected_version"]}
+    url = f"/api/action-items/{item['action_item_id'].upper()}/commands/confirm"
+    # AX 회의 수정은 이제 편집 카드다(SPEC-010 §2.4) — 제안 그대로 확정 = 빈 draft(바뀐 칸 없음 · WP3 계약 고정 1).
+    body = {"expected_version": item["expected_version"], "base_submission_version": item["submission_version"], "draft": {}}
 
     confirmed = client.post(url, headers=MINA, json=body)
     assert confirmed.status_code == 200, confirmed.text
@@ -1032,8 +1125,9 @@ def test_unknown_room_update_outcome_stays_for_verification_without_automatic_re
         },
     )
     item = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
-    url = f"/api/action-items/{item['action_item_id']}/commands/approve"
-    body = {"expected_version": item["expected_version"]}
+    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
+    # AX 회의 수정은 이제 편집 카드다(SPEC-010 §2.4) — 제안 그대로 확정 = 빈 draft(바뀐 칸 없음 · WP3 계약 고정 1).
+    body = {"expected_version": item["expected_version"], "base_submission_version": item["submission_version"], "draft": {}}
 
     approved = client.post(url, headers=MINA, json=body)
     replayed = client.post(url, headers=MINA, json=body)
@@ -1093,9 +1187,9 @@ def test_room_sync_patches_only_room_fields_into_the_frozen_action_receipt(tmp_p
     gateway.update = mutate_during_room_sync
     item = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
     approved = client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/approve",
+        f"/api/action-items/{item['action_item_id']}/commands/confirm",
         headers=MINA,
-        json={"expected_version": item["expected_version"]},
+        json={"expected_version": item["expected_version"], "base_submission_version": item["submission_version"], "draft": {}},
     )
     assert approved.status_code == 200, approved.text
     receipt = approved.json()["execution_result"]["meeting"]
@@ -1156,8 +1250,9 @@ def test_expired_replay_waits_for_the_live_room_sync_before_recovery(tmp_path) -
         },
     )
     item = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
-    url = f"/api/action-items/{item['action_item_id']}/commands/approve"
-    body = {"expected_version": item["expected_version"]}
+    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
+    # AX 회의 수정은 이제 편집 카드다(SPEC-010 §2.4) — 제안 그대로 확정 = 빈 draft(바뀐 칸 없음 · WP3 계약 고정 1).
+    body = {"expected_version": item["expected_version"], "base_submission_version": item["submission_version"], "draft": {}}
     responses: dict[str, object] = {}
     first_done = Event()
     replay_done = Event()
@@ -1239,8 +1334,9 @@ def test_replay_recovers_an_expired_room_receipt_lease(tmp_path) -> None:
         },
     )
     item = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
-    url = f"/api/action-items/{item['action_item_id']}/commands/approve"
-    body = {"expected_version": item["expected_version"]}
+    url = f"/api/action-items/{item['action_item_id']}/commands/confirm"
+    # AX 회의 수정은 이제 편집 카드다(SPEC-010 §2.4) — 제안 그대로 확정 = 빈 draft(바뀐 칸 없음 · WP3 계약 고정 1).
+    body = {"expected_version": item["expected_version"], "base_submission_version": item["submission_version"], "draft": {}}
     assert client.post(url, headers=MINA, json=body).status_code == 200
     with application._session_factory() as session:
         action = session.get(ActionItemRecord, UUID(item["action_item_id"]))
@@ -1322,9 +1418,9 @@ def test_attendee_removal_approval_returns_its_receipt_after_access_is_removed(t
     )
     item = client.get(f"/api/action-items/{proposal['action_id']}", headers=MINA).json()
     approved = client.post(
-        f"/api/action-items/{item['action_item_id']}/commands/approve",
+        f"/api/action-items/{item['action_item_id']}/commands/confirm",
         headers=MINA,
-        json={"expected_version": item["expected_version"]},
+        json={"expected_version": item["expected_version"], "base_submission_version": item["submission_version"], "draft": {}},
     )
     assert approved.status_code == 200, approved.text
     assert approved.json()["execution_result"]["meeting"]["meeting_id"] == created["meeting_id"]

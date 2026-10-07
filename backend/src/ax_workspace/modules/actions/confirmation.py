@@ -15,7 +15,7 @@ from ax_workspace.modules.actions.payloads import (
 from ax_workspace.modules.ax_execution.actions import action_payload_hash
 from ax_workspace.modules.ax_execution.command_contracts import COMMAND_CONTRACTS
 from ax_workspace.modules.actions.policy import RETIRED_ACTION_TYPES
-from ax_workspace.modules.meetings.commands import MeetingReservationInput
+from ax_workspace.modules.meetings.commands import MeetingInfoPatch, MeetingReservationInput
 from ax_workspace.modules.meetings.domain import MeetingError
 from ax_workspace.modules.work.errors import TaskError
 from ax_workspace.modules.work.drafts import (
@@ -32,8 +32,14 @@ SUPPORTED_ACTION_TYPES = frozenset(COMMAND_CONTRACTS) | frozenset(
         "task.assign",
         "work_request.create",
         "meeting.reservation.create",
+        # AX 회의 수정 카드 — 편집 계약 `editor="meeting_update"` (SPEC-010 §2.4 · §4.3 · WP3 계약 고정 1).
+        "meeting.info.update",
         "task.progress.batch",
     }
+)
+#: AX 회의 수정 카드에서 사람이 고칠 수 있는 칸 — 장소 글자 칸은 없다(OQ-1005 · W-r2-6). 회의실은 `room`.
+MEETING_UPDATE_DRAFT_FIELDS = frozenset(
+    {"title", "purpose", "starts_at", "ends_at", "attendee_ids", "external_attendees", "room"}
 )
 ATTACHABLE_ACTION_TYPES = frozenset(
     {"task.create_self", "task.assign", "meeting.reservation.create"}
@@ -153,6 +159,8 @@ def normalize_ax_draft(
             return normalize_task_progress_batch(dict(value) if isinstance(value, dict) else value)
         except (TaskError, TypeError, ValueError) as error:
             raise ActionError(str(error)) from error
+    if action_type == "meeting.info.update":
+        return normalize_meeting_update(value)
     if action_type == "work_request.create":
         try:
             return normalize_work_request_draft(value, requester_id=requester_id)
@@ -173,6 +181,49 @@ def normalize_ax_draft(
         return MeetingReservationInput.model_validate(fields).model_dump(mode="json")
     except (MeetingError, TypeError, ValueError) as error:
         raise ActionError(str(error)) from error
+
+
+def normalize_meeting_update(value: Any) -> dict[str, Any]:
+    """AX 회의 수정 제안의 정본 모양 — `{meeting_id, changes}`(장소 글자 없음 · 회의실은 `changes.room`).
+
+    `changes` 는 수정 API(`MeetingInfoPatch`)와 같은 검증을 지난다 — 시각 tz · 참석자 합치기 · `room: {room_id}`.
+    AX 가 사외 장소를 글자로 냈어도 **저장하지 않는다**(W-r2-6) — 여기서 떼어 낸다.
+    """
+    if not isinstance(value, dict) or not value.get("meeting_id"):
+        raise ActionError("meeting_id is required")
+    raw = dict(value.get("changes") or {})
+    raw.pop("location", None)
+    try:
+        patch = MeetingInfoPatch.model_validate(raw)
+    except (MeetingError, TypeError, ValueError) as error:
+        raise ActionError(str(error)) from error
+    changes = patch.model_dump(mode="json", exclude_unset=True, exclude={"room"})
+    choice = patch.room_choice()
+    if choice is not None:
+        changes["room"] = choice
+    return {"meeting_id": str(value["meeting_id"]), "changes": changes}
+
+
+def merge_meeting_update_draft(base: Mapping[str, Any], draft: Any) -> dict[str, Any]:
+    """화면이 보낸 확정 `draft` = **바뀐 칸만** + 회의실은 `room: {room_id}`(안 바꾸면 없음) — WP3 계약 고정 1 · 5.
+
+    제안(`base.changes`) 위에 겹친다: 사람이 고친 칸이 이기고, 안 고친 칸은 AX 가 제안한 그대로 남는다. 값 모양
+    (`meeting_id`·`room_id`·`room_name`·`proposed_room_*`)이 섞여 와도 읽지 않는다 — 회의는 제안의 회의다.
+
+    **회의실은 draft 의 사람 선택만 따른다**(계약 고정 5 · 검수 F-1): draft 에 `room` 이 없거나 `{keep: true}` 면
+    **바꾸지 않는다** — AX 가 제안한 방이 있어도 적용하지 않는다(카드가 그 방을 미리 골라 두므로, 사람이 그대로 두면
+    화면이 `room: {room_id: 제안}` 을 싣는다). 「변경 안 함」 을 보고 등록했는데 방이 옮겨지는 일이 없다.
+    """
+    if not isinstance(draft, dict):
+        raise ActionError("draft must be an object")
+    unknown = set(draft) - MEETING_UPDATE_DRAFT_FIELDS - {
+        "meeting_id", "room_id", "room_name", "proposed_room_id", "proposed_room_name", "room_proposed"
+    }
+    if unknown:
+        raise ActionError(f"unsupported meeting update fields: {sorted(unknown)}")
+    edited = {key: value for key, value in draft.items() if key in MEETING_UPDATE_DRAFT_FIELDS}
+    proposal = {key: value for key, value in dict(base.get("changes") or {}).items() if key != "room"}
+    return normalize_meeting_update({"meeting_id": base["meeting_id"], "changes": {**proposal, **edited}})
 
 
 def decide_ax_confirmation(
@@ -200,10 +251,16 @@ def decide_ax_confirmation(
         raw_base,
         requester_id=context.owner_id,
     )
-    canonical_final = normalize_ax_draft(
-        context.action_type,
-        payload.get("draft"),
-        requester_id=context.owner_id,
+    final_draft = payload.get("draft")
+    canonical_final = (
+        merge_meeting_update_draft(canonical_base, final_draft)
+        if context.action_type == "meeting.info.update"
+        and not (isinstance(final_draft, dict) and "changes" in final_draft)
+        else normalize_ax_draft(
+            context.action_type,
+            final_draft,
+            requester_id=context.owner_id,
+        )
     )
     if context.action_type in COMMAND_CONTRACTS:
         try:

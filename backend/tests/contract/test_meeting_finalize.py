@@ -271,9 +271,9 @@ def test_a_merge_that_succeeds_closes_the_meeting_with_its_notes_already_written
     assert todo["linked"] is None
     # 담당자는 후보에 없다 (SPEC §8.2).
     assert "assignee" not in todo and "assignee_candidate" not in todo
-    # 같은 세션을 이어 쓴다 — 회의를 처음부터 다시 읽히지 않는다 (§8-3).
+    # 같은 세션을 이어 쓴다 (§8-3) — 그래도 **재전사 전체 발화는 매번 싣는다** (SPEC-010 §4.7-1 · OQ-904).
     assert agent.runs[0]["session_ref"] is not None
-    assert "확정 발화 0" not in agent.runs[0]["prompt"]
+    assert "확정 발화 0" in agent.runs[0]["prompt"]
 
 
 def test_a_merge_that_fails_leaves_the_speech_and_memos_and_marks_the_meeting_failed(tmp_path) -> None:
@@ -1220,12 +1220,23 @@ def test_a_name_that_is_not_a_working_person_is_still_refused(tmp_path) -> None:
 
 
 def test_a_spoken_date_survives_as_the_due_candidate(tmp_path) -> None:
+    # 회의는 「지금」 열린다 — 말의 날짜는 회의일 뒤여야 하한(SPEC-010 §4.8)을 지난다.
     client, application, agent = _stack(tmp_path)
     meeting_id, memo = _finalized(
-        client, application, agent, todos=[_todo("초안을 낸다", due="2026-09-18")]
+        client, application, agent, todos=[_todo("초안을 낸다", due="2099-09-18")]
     )
     [todo] = _the_final(client, meeting_id)["todos"]
-    assert todo["due_candidate"] == "2026-09-18"
+    assert todo["due_candidate"] == "2099-09-18"
+
+
+def test_a_spoken_date_before_the_meeting_day_is_cleared(tmp_path) -> None:
+    """① 말의 날짜도 **회의일보다 이르면 비운다** (SPEC-010 §4.8 · BE §5.5 경로 (d)) — 모델이 옛 규칙으로 전날을 셈해도."""
+    client, application, agent = _stack(tmp_path)
+    meeting_id, memo = _finalized(
+        client, application, agent, todos=[_todo("초안을 낸다", due="2020-01-02")]
+    )
+    [todo] = _the_final(client, meeting_id)["todos"]
+    assert todo["due_candidate"] is None
 
 
 def test_the_evidence_a_screen_reads_is_named_the_way_the_contract_names_it(tmp_path) -> None:

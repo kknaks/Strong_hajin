@@ -621,6 +621,8 @@ def test_conversation_context_is_resolved_server_side_and_rejects_stale_or_unown
             "resource_version": task["version"],
             "summary": "업무: 서버가 읽어야 할 업무 (open)",
             "included": True,
+            # 말풍선 아래 참고 자료 한 줄은 메시지함 메시지(`inbox_message`)에만 찬다 — 업무는 null (WP4 계약 고정 1).
+            "label": None,
         }
     ]
 

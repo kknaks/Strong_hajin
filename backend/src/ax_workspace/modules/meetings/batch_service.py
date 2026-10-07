@@ -10,6 +10,10 @@ SCAX-SPEC-004 §7.1. 못박는 것 —
 5. **provider 호출 중에는 트랜잭션을 열어 두지 않는다** — 읽기 → 커밋 → 제출 → 새 세션에서 쓰기.
 6. 적재 커밋 **직후** push 한다. 모아 두지 않는다.
 7. 실패는 조용하다 — 화면에 내지 않고 회의를 막지 않는다.
+8. **timeout(또는 세션 유실)이면 새 세션으로 1회** (SPEC-010 §4.6) — 웜스타트 맥락 + AI 맥락 목록 + 지금까지의 AI 벌 +
+   그 배치의 미처리 구간을 한 turn 에 싣는다. 새 세션 참조는 **그 1회가 성공한 순간에만** 갈아 끼운다. 그것도 실패면 지금처럼
+   다음 배치에 합친다. 재시도도 회의당 락 안이라 배치가 겹쳐 돌지 않고, 그 사이 도착한 발화는 다음 배치로 간다.
+   웜스타트도 timeout 이면 새 세션으로 1회 다시 연다. 세션이 아예 없으면(웜스타트 실패) 배치가 새 세션으로 연다.
 
 이 모듈은 전송도 ORM 도 모른다. 원장은 `BatchGateway` 포트가, provider 는 `BatchAgent` 포트가 맡는다.
 """
@@ -21,6 +25,8 @@ import threading
 from typing import Any, Protocol
 
 from ax_workspace.modules.meetings.batch import (
+    AiCallTimedOut,
+    AiSessionLost,
     BATCH_CHARS,
     BATCH_MAX_WAIT_SECONDS,
     BATCH_SWITCH_MIN_CHARS,
@@ -33,6 +39,7 @@ from ax_workspace.modules.meetings.batch import (
     BatchTriggerContext,
     SchemaViolation,
     build_batch_prompt,
+    build_fresh_batch_prompt,
     build_warm_start_prompt,
     demote_line,
     parse_output,
@@ -47,7 +54,8 @@ class BatchInput:
     """한 회차가 읽는 것 — 세션 참조와 증분뿐이다. 앞 구간은 세션이 기억한다."""
 
     seq: int
-    session_ref: str
+    #: 이어 쓸 세션. 없으면(웜스타트가 끝내 못 열었다) 이 회차가 새 세션으로 연다.
+    session_ref: str | None
     persona_id: str
     blocks: list[dict[str, Any]]
     memos: list[dict[str, Any]]
@@ -64,7 +72,12 @@ class BatchAgent(Protocol):
         """새 세션을 열고 그 참조를 돌려준다. 응답 본문은 버린다."""
 
     def run_batch(self, *, persona_id: str, session_ref: str, prompt: str, tools: tuple[str, ...]) -> str:
-        """세션을 이어 쓰고(resume) 스키마로 강제한 출력 본문을 돌려준다."""
+        """세션을 이어 쓰고(resume) 스키마로 강제한 출력 본문을 돌려준다.
+
+        상한을 넘기면 `AiCallTimedOut`, 이어 쓸 세션이 이 자리에 없으면 `AiSessionLost` 를 던진다."""
+
+    def run_batch_in_new_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> tuple[str | None, str]:
+        """**새 세션**을 열어 한 turn 에 배치를 돈다 — `(새 세션 참조, 스키마로 강제한 본문)`."""
 
 
 class BatchGateway(Protocol):
@@ -73,7 +86,16 @@ class BatchGateway(Protocol):
     def warm_start_context(self, meeting_id: str) -> dict[str, Any] | None:
         """웜스타트 첫 turn 이 실을 맥락. 회의가 없거나 열 수 없으면 `None`."""
 
-    def record_session(self, meeting_id: str, *, session_ref: str, persona_id: str) -> None: ...
+    def record_session(
+        self, meeting_id: str, *, session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None:
+        """**기대한 참조일 때만** 기록한다(compare-and-set). 돌려주는 값 = 원장에 남은 참조 — 졌으면 상대의 참조다."""
+
+    def ai_context_catalog(self) -> str:
+        """AI 맥락 목록 한 덩어리 — 그 순간 DB 에서 조립한다(SPEC-010 §4.5). 세션을 새로 열 때마다 싣는다."""
+
+    def ai_track(self, meeting_id: str) -> list[dict[str, Any]]:
+        """지금까지의 AI 벌(안건 · 줄 · 근거) — **새 세션 배치만** 출발점으로 싣는다. 이어 쓰는 배치는 부르지 않는다."""
 
     def load_batch_input(self, meeting_id: str) -> BatchInput | None:
         """제출할 것이 있으면 입력, 없으면(세션 없음·미처리 없음·진행 중 아님) `None`."""
@@ -165,19 +187,40 @@ class MeetingBatchService:
         self._spawn(self.warm_start, (meeting_id,), "회의 웜스타트")
 
     def warm_start(self, meeting_id: str) -> None:
+        """**회의당 락 안에서** 돈다(WORK-012 WP2 수정 1 F-2) — 배치와 같은 줄이다.
+
+        웜스타트가 도는 동안(최대 웜스타트 상한 × 2) 온 배치 트리거는 새 세션을 따로 열지 않고 미뤄졌다가, 웜스타트가 끝난
+        자리에서 갚아진다. 그래서 「세션 없는 배치가 자기 세션을 열고 → 뒤늦은 웜스타트가 그것을 덮어쓰는」 경주가 없다.
+        기록도 CAS 다 — 그래도 누가 먼저 기록했으면 덮어쓰지 않는다.
+        """
+        lock = self._lock_for(meeting_id)
+        with lock:
+            self._warm_start_locked(meeting_id)
+        self._repay_deferred(meeting_id)
+
+    def _warm_start_locked(self, meeting_id: str) -> None:
         context = self._gateway.warm_start_context(meeting_id)
         if context is None:
             return
         persona_id = str(context.pop("persona_id"))
-        session_ref = self._agent.open_session(
-            persona_id=persona_id,
-            prompt=build_warm_start_prompt(context, self._tools),
-            tools=self._tools,
-        )
+        prompt = build_warm_start_prompt(context, self._tools, self._gateway.ai_context_catalog())
+        try:
+            session_ref = self._agent.open_session(persona_id=persona_id, prompt=prompt, tools=self._tools)
+        except AiCallTimedOut:
+            # 상한을 넘긴 웜스타트는 **새 세션으로 1회** 다시 연다 (SPEC-010 §4.6). 그것도 넘기면 세션 없이 둔다 —
+            # 다음 배치가 새 세션으로 연다.
+            logger.warning("회의 %s 웜스타트가 상한을 넘겼습니다 — 새 세션으로 한 번 다시 엽니다", meeting_id)
+            try:
+                session_ref = self._agent.open_session(persona_id=persona_id, prompt=prompt, tools=self._tools)
+            except AiCallTimedOut:
+                logger.warning("회의 %s 웜스타트 재시도도 상한을 넘겼습니다 — 다음 배치가 새 세션으로 엽니다", meeting_id)
+                return
         if not session_ref:
-            logger.info("회의 %s 의 AI 세션을 열지 못했습니다 — 배치는 제출되지 않습니다", meeting_id)
+            logger.info("회의 %s 의 AI 세션을 열지 못했습니다 — 다음 배치가 새 세션으로 엽니다", meeting_id)
             return
-        self._gateway.record_session(meeting_id, session_ref=session_ref, persona_id=persona_id)
+        current = self._gateway.record_session(meeting_id, session_ref=session_ref, persona_id=persona_id, expected=None)
+        if current != session_ref:
+            logger.warning("회의 %s 에 이미 세션이 있어 웜스타트 세션을 버립니다", meeting_id)
 
     # --- 트리거 -----------------------------------------------------------------
 
@@ -240,12 +283,21 @@ class MeetingBatchService:
         """회의당 락 아래에서 한 회차. **락이 잡혀 있으면 기다리지 않고 돌아간다** — 동시 실행 0."""
         lock = self._lock_for(meeting_id)
         if not lock.acquire(blocking=False):
+            # 판정과 잡기 사이에 다른 쪽(웜스타트·배치)이 락을 잡았다 — 트리거를 잊지 않는다. 잡은 쪽이 끝에서 갚고,
+            # 그 갚기와 엇갈렸어도 시간 트리거가 다시 본다.
+            with self._guard:
+                self._deferred[meeting_id] = cause
+            self._arm_timer(meeting_id)
             return
         try:
             self._run_once(meeting_id, cause)
         finally:
             lock.release()
         self._disarm_timer(meeting_id)
+        self._repay_deferred(meeting_id)
+
+    def _repay_deferred(self, meeting_id: str) -> None:
+        """락을 놓은 자리 — 도는 중(배치·웜스타트)에 온 트리거를 갚거나, 미처리가 남았으면 시간 트리거를 건다."""
         with self._guard:
             deferred = self._deferred.pop(meeting_id, None)
         if deferred is not None:
@@ -262,16 +314,25 @@ class MeetingBatchService:
             return
 
         # ② 제출 — 트랜잭션 밖. 설계한 실패는 여기서 `failed` 로 접힌다.
-        try:
-            body = self._agent.run_batch(
-                persona_id=batch.persona_id,
-                session_ref=batch.session_ref,
-                prompt=build_batch_prompt(batch.blocks, batch.memos),
-                tools=self._tools,
-            )
-        except Exception as error:  # noqa: BLE001 — provider 실패는 조용히 다음 배치로 합친다 (SPEC §7.1 실패)
-            self._record(meeting_id, batch, STATUS_FAILED, cause, str(error))
-            return
+        body: str | None = None
+        if batch.session_ref:
+            try:
+                body = self._agent.run_batch(
+                    persona_id=batch.persona_id,
+                    session_ref=batch.session_ref,
+                    prompt=build_batch_prompt(batch.blocks, batch.memos),
+                    tools=self._tools,
+                )
+            except (AiCallTimedOut, AiSessionLost) as error:
+                # 같은 세션을 다시 잇지 않는다 — 아래 새 세션 1회로 간다 (SPEC-010 §4.6).
+                logger.warning("회의 %s 배치가 세션을 이어 가지 못했습니다(%s) — 새 세션으로 한 번 다시 돕니다", meeting_id, type(error).__name__)
+            except Exception as error:  # noqa: BLE001 — provider 실패는 조용히 다음 배치로 합친다 (SPEC §7.1 실패)
+                self._record(meeting_id, batch, STATUS_FAILED, cause, str(error))
+                return
+        if body is None:
+            body = self._run_in_new_session(meeting_id, batch, cause)
+            if body is None:
+                return
 
         # ③ 검증 1단 — 스키마 위반이면 배치 전체 폐기. 직전 성공분이 그대로 남는다.
         try:
@@ -299,6 +360,35 @@ class MeetingBatchService:
             reason=None,
         )
         self._gateway.push(meeting_id, seq=batch.seq, agendas=tree)
+
+    def _run_in_new_session(self, meeting_id: str, batch: BatchInput, cause: str) -> str | None:
+        """**새 세션 1회** (SPEC-010 §4.6) — 성공하면 그 세션을 회의의 세션으로 갈아 끼우고 본문을 돌려준다.
+
+        실패하면 `failed` 로 적고 `None` — 옛 세션 참조는 그대로 두고, 구간은 커서가 전진하지 않아 다음 배치에 합쳐진다.
+        """
+        context = self._gateway.warm_start_context(meeting_id)
+        if context is None:
+            return None
+        context.pop("persona_id", None)
+        prompt = build_fresh_batch_prompt(
+            context, self._tools, self._gateway.ai_context_catalog(), batch.blocks, batch.memos,
+            self._gateway.ai_track(meeting_id),
+        )
+        try:
+            session_ref, body = self._agent.run_batch_in_new_session(
+                persona_id=batch.persona_id, prompt=prompt, tools=self._tools
+            )
+        except Exception as error:  # noqa: BLE001 — 새 세션도 실패면 지금처럼 다음 배치에 합친다
+            self._record(meeting_id, batch, STATUS_FAILED, cause, f"새 세션 재시도 실패: {error}")
+            return None
+        if session_ref:
+            current = self._gateway.record_session(
+                meeting_id, session_ref=session_ref, persona_id=batch.persona_id, expected=batch.session_ref
+            )
+            if current != session_ref:
+                # 그 사이 다른 쪽이 세션을 갈았다 — 그 세션을 쓴다. 이 출력은 지금까지의 AI 벌을 다 받아 쓴 것이라 적재해도 된다.
+                logger.warning("회의 %s 에 다른 세션이 먼저 기록돼 새 세션 참조를 버립니다", meeting_id)
+        return body
 
     def _record(self, meeting_id: str, batch: BatchInput, status: str, cause: str, reason: str) -> None:
         """실패·폐기 기록 — **커서는 전진하지 않는다**. 사용자에게 표시할 것이 없다."""

@@ -118,10 +118,15 @@ def _inbox_error(error: Exception) -> HTTPException:
     raise error
 
 
-def _download(download: Download, *, cache: str = "private, no-store") -> Response:
+def _download(download: Download, *, cache: str = "private, no-store", force_attachment: bool = False) -> Response:
+    """첨부 중계 응답. 미리보기(기본)는 허용 목록만 `inline`, 나머지 `attachment`(F-3).
+
+    `force_attachment` = **받기**(`?download=1`) — 형식과 무관하게 언제나 `attachment` 다(SPEC-008 §4.4 · DEC-009 D-22).
+    데스크톱 셸이 `attachment` 응답을 가로채 다운로드 폴더에 저장한다. 미리보기 규칙과 머리(nosniff·샌드박스 CSP·CORP)는 그대로다.
+    """
     declared = (download.content_type or "application/octet-stream").split(";")[0].strip().lower()
     inline = declared if declared in INLINE_IMAGE_TYPES else inline_media_type(download.name, declared)
-    disposition = "inline" if inline else "attachment"
+    disposition = "inline" if inline and not force_attachment else "attachment"
     return Response(
         content=download.data,
         media_type=inline or declared or "application/octet-stream",
@@ -129,6 +134,24 @@ def _download(download: Download, *, cache: str = "private, no-store") -> Respon
             **RELAY_HEADERS,
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(download.name or 'attachment')}",
             "Cache-Control": cache,
+        },
+    )
+
+
+def _remote_image(download: Download) -> Response:
+    """원격 이미지 프록시 응답 — 래스터·SVG 모두 **`inline`** 이다 (SPEC-008 §4.4 · §5 원격 이미지 프록시 · I-2 닫힘).
+
+    이 경로는 받기가 아니다 — `_download` 의 「허용 목록 밖은 `attachment`」 를 쓰지 않는다. type 은 상류가 **바이트로** 판정한
+    값(`image/svg+xml` 포함)이고, SVG 가 우리 origin 에서 스크립트가 되지 못하게 하는 것은 같은 머리(`RELAY_HEADERS` —
+    `sandbox; default-src 'none'` · nosniff · CORP)다. `<img>` 로 그린 SVG 는 스크립트가 돌지 않는다.
+    """
+    return Response(
+        content=download.data,
+        media_type=download.content_type,
+        headers={
+            **RELAY_HEADERS,
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(download.name or 'image')}",
+            "Cache-Control": "private, max-age=86400",
         },
     )
 
@@ -217,38 +240,46 @@ def register_inbox_routes(app: FastAPI) -> None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/inbox/mail/{message_id}/attachments/{aid}")
-    def inbox_mail_attachment(message_id: UUID, aid: str, principal: Principal = Depends(developer_principal)) -> Response:
-        """그 회원의 Gmail 토큰으로 **그때 받아 넘긴다** — 저장하지 않는다(D-29)."""
+    def inbox_mail_attachment(
+        message_id: UUID,
+        aid: str,
+        download: bool = Query(default=False, title="받기 — 1 이면 언제나 attachment"),
+        principal: Principal = Depends(developer_principal),
+    ) -> Response:
+        """그 회원의 Gmail 토큰으로 **그때 받아 넘긴다** — 저장하지 않는다(D-29). `download=1` = 받기(SPEC-008 §2.2)."""
         try:
-            download = app.state.workflow_application.inbox_mail_attachment(principal, message_id, aid)
+            relayed = app.state.workflow_application.inbox_mail_attachment(principal, message_id, aid)
         except Exception as error:
             raise _inbox_error(error) from error
-        return _download(download, cache=ATTACHMENT_CACHE)
+        return _download(relayed, cache=ATTACHMENT_CACHE, force_attachment=download)
 
     @app.get("/api/inbox/rooms/{room_id}/attachments/{aid}")
     def inbox_room_attachment(
         room_id: UUID,
         aid: str,
         variant: Literal["thumb"] | None = None,
+        download: bool = Query(default=False, title="받기 — 1 이면 언제나 attachment"),
         principal: Principal = Depends(developer_principal),
     ) -> Response:
-        """슬랙 = 그 회원 토큰으로 중계 · 카톡 = 저장본(만료 410). `variant=thumb` 이면 슬랙 이미지의 썸네일(대화 미리보기용)."""
+        """슬랙 = 그 회원 토큰으로 중계 · 카톡 = 저장본(만료 410). `variant=thumb` 이면 슬랙 이미지의 썸네일(대화 미리보기용).
+        `download=1` = 받기 — 형식과 무관하게 `attachment`(SPEC-008 §2.2 · §4.4)."""
         try:
-            download = app.state.workflow_application.inbox_room_attachment(principal, room_id, aid, variant)
+            relayed = app.state.workflow_application.inbox_room_attachment(principal, room_id, aid, variant)
         except Exception as error:
             raise _inbox_error(error) from error
-        return _download(download, cache=ATTACHMENT_CACHE)
+        return _download(relayed, cache=ATTACHMENT_CACHE, force_attachment=download)
 
     @app.get("/api/inbox/mail/{message_id}/remote-image")
     def inbox_remote_image(
         message_id: UUID, u: str = Query(min_length=1, max_length=4000), principal: Principal = Depends(developer_principal)
     ) -> Response:
-        """「이미지 보기」— 그 메일 안전본에 실제로 있는 주소만 서버가 받아 넘긴다(N-5 · SSRF 규칙)."""
+        """본문을 그릴 때 화면이 자동으로 부른다 — 그 메일 안전본에 실제로 있는 주소만 서버가 받아 넘긴다(N-5 · SSRF 규칙).
+        래스터·SVG 모두 `inline`(SPEC-008 §4.4 v0.6.0)."""
         try:
-            download = app.state.workflow_application.inbox_remote_image(principal, message_id, u)
+            relayed = app.state.workflow_application.inbox_remote_image(principal, message_id, u)
         except Exception as error:
             raise _inbox_error(error) from error
-        return _download(download, cache="private, max-age=86400")
+        return _remote_image(relayed)
 
     @app.post("/api/inbox/rooms/{room_id}/reply", status_code=status.HTTP_202_ACCEPTED)
     async def reply_inbox_room(

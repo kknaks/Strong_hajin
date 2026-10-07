@@ -631,6 +631,12 @@
    줄 하나 = caption1 크기 × 줄높이, 줄 사이 space-050 여섯, 위아래 패딩 space-200. */
 .ax-draft-card__body{position:relative;height:calc(24px + var(--scax-space-150) + 7 * var(--scax-text-caption1-size) * var(--scax-text-caption1-lh) + 6 * var(--scax-space-050) + 2 * var(--scax-space-200));overflow:hidden;padding:var(--scax-space-200) var(--scax-space-300);border-radius:var(--scax-radius-sm);background:var(--scax-color-surface)}
 .ax-draft-card__body:focus-visible{outline:0;box-shadow:var(--scax-focus-ring)}
+/* AX 회의 생성 카드의 「회의실·안건」 쪽(SPEC-010 §2.4) — 회의실 셀렉트가 서서 줄 수가 들쭉날쭉하다. 카드 높이는 그대로 두고 이 쪽만 안에서 굴린다 */
+.ax-draft-card[data-page="2"] .ax-draft-card__body:has(.ax-draft-card__meeting-room){overflow-y:auto}
+.ax-draft-card__meeting-room{display:grid;gap:var(--scax-space-200)}
+.ax-draft-card__room{display:grid;gap:var(--scax-space-100)}
+.ax-draft-card__room-label{font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink-assistive)}
+.ax-draft-card__room .meeting-room{padding:8px 10px}
 /* 본문은 블록이다 — 공용 `.scax-actioncard>div`(flex 가로) 를 받으면 dl 이 고정 높이로 늘어나 줄이 위아래로
    벌어졌다(E2E 1). 줄은 위에서부터 붙여 쌓는다(align-content:start). 라벨 · 값 두 열. */
 .ax-draft-card > .ax-draft-card__body{display:block;margin-top:0}
@@ -679,3 +685,5 @@
    흐린 머리(`.action-progress-batch-card[data-state="approved"] …`, 0,3,1)는 이 규칙(0,2,1)보다 높아 그대로 남는다. */
 .scax-drawer--chat .scax-preview>summary{color:var(--scax-color-ink-neutral)}
 .scax-drawer--chat .scax-preview>summary:hover{color:var(--scax-color-ink)}
+/* 말풍선 아래 참고 자료 한 줄(SPEC-008 §2.9 ③-2) — 서버가 조합한 «실제 실은 범위» 글자 그대로 */
+.scax-msg__references{display:grid;justify-items:end;gap:2px;margin:calc(-1 * var(--scax-space-400)) 0 var(--scax-space-500) auto;padding:0;list-style:none;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}

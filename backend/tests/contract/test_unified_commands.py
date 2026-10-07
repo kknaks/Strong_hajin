@@ -204,6 +204,15 @@ def test_confirmed_report_revision_registers_material_and_job_before_any_read(tm
 def _approval_request(client, headers, proposal, mode):
     """Exercise the current editor contract and retain an explicit legacy receipt case."""
     path = f"/api/action-items/{proposal['action_id']}"
+    item = client.get(path, headers=headers).json()
+    if (item.get('edit_contract') or {}).get('editor') == 'meeting_update':
+        # AX 회의 수정은 편집 카드다(SPEC-010 §2.4) — 제안 그대로 확정 = 바뀐 칸 없는 draft(WP3 계약 고정 1).
+        assert [command['id'] for command in item['allowed_commands']] == ['confirm', 'reject']
+        return path + '/commands/confirm', {
+            'expected_version': item['expected_version'],
+            'base_submission_version': item['submission_version'],
+            'draft': {},
+        }
     if mode != 'confirm':
         return path + '/commands/approve', {'expected_version': proposal['version']}
     response = client.get(path, headers=headers)

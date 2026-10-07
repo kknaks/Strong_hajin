@@ -18,7 +18,7 @@ import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversation
 import { DailyReportPage } from "./features/report/DailyReportPage";
 import { InboxPage } from "./features/inbox/InboxPage";
 import { SettingsPage, type SettingsTab } from "./features/settings/SettingsPage";
-import { axDraftCard, personName, shellDownload } from "./lib/labels";
+import { axDraftCard, inboxScreen, personName, shellDownload } from "./lib/labels";
 import { onShellDownload, openExternal } from "./lib/shell";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
@@ -29,7 +29,7 @@ import { ProjectPage } from "./features/project/ProjectPage";
 import { RelationGraphPage } from "./features/graph/RelationGraphPage";
 import { SideNav } from "./shell/SideNav";
 import { TodayPage } from "./features/today/TodayPage";
-import type { OrganizationProfile, Persona, ProductSurface } from "./lib/viewModels";
+import type { ConversationContextReference, OrganizationProfile, Persona, ProductSurface, TaskOriginMessage } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
 import { forgetScreenCache, scopeScreenCache } from "./lib/screenCache";
@@ -87,6 +87,8 @@ export default function App() {
   const [browserInteractionId, setBrowserInteractionId] = useState(() => new URLSearchParams(window.location.search).get('interaction'));
   const [session, setSession] = useState<OrganizationProfile | null | undefined>(undefined);
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
+  /** 업무 상세 「원래 메시지」 링크로 가는 중인 메시지 — 메시지함이 그 방·메일을 열고 짚은 뒤 비운다(SPEC-008 §2.9 ④). */
+  const [inboxFocus, setInboxFocus] = useState<TaskOriginMessage | null>(null);
   const [focusWorkRequestId, setFocusWorkRequestId] = useState<string | null>(null);
   const personaId = session?.member_id ?? "";
   /*
@@ -304,11 +306,25 @@ export default function App() {
    * 냈다 — 없는 기능 때문에 오류를 보였다. 보내는 말은 이제 참고 자료 없이 간다.
    */
 
-  async function askAx(text: string) {
+  /**
+   * 서랍을 열고 **새 대화로** 말풍선 하나를 보낸다 — 오늘 화면의 「AX 에게 묻기」 와 메시지함의 AX 업무 생성·AX 요약이 같은 입구다
+   * (SPEC-008 §2.9 ③-1 · OQ-815 — 누를 때마다 새 대화). 메시지함은 그 메시지를 참고 자료(`inbox_message`)로 함께 싣는다.
+   */
+  async function askAx(text: string, context: ConversationContextReference[] = []) {
     setIsAxOpen(true);
     await chat.start();
-    await chat.sendCurrent(text, []);
+    await chat.sendCurrent(text, context);
   }
+
+  /** 업무 상세의 「원래 메시지」 — 메시지함으로 가서 그 메시지를 짚는다(OQ-817). */
+  const openInboxMessage = useCallback(
+    (message: TaskOriginMessage) => {
+      if (!canNavigate("workspace")) return;
+      setInboxFocus(message);
+      changeSurface("inbox");
+    },
+    [canNavigate],
+  );
 
   async function sendMessage(bodyOverride?: string) {
     const body = bodyOverride ?? chat.draft;
@@ -386,6 +402,7 @@ export default function App() {
     canReadActions,
     onNotice: setToast,
     onDecided: refreshProjections,
+    onOpenInboxMessage: openInboxMessage,
   };
 
   if (session === undefined) {
@@ -552,8 +569,14 @@ export default function App() {
           {/* 메시지함·설정 (WORK-011) — 둘 다 «한 화면에 갇히는» 화면이다. 좌 레일은 셸 슬롯에 서고 본문이 자기 안에서 스크롤한다. */}
           {surface === "inbox" && (
             <InboxPage
+              focus={inboxFocus}
               meName={currentPersonaName}
+              onAskAx={(text, context) => void askAx(text, context)}
               onError={setError}
+              onFocusHandled={(found) => {
+                setInboxFocus(null);
+                if (!found) setError(inboxScreen.focusMissing);
+              }}
               onRegisterHeaderActions={registerSurfaceActions}
               onRegisterRails={registerSurfaceRails}
               onRegisterRefresh={registerSurfaceRefresh}

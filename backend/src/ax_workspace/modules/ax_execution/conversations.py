@@ -30,6 +30,19 @@ class ConversationNotFound(ConversationError, ResourceNotFound):
     pass
 
 
+class ContextMessageNotFound(ConversationNotFound):
+    """참고 자료로 고른 **메시지함 메시지**를 찾을 수 없다 — 남의 것 · 지운 방·연동 · 방을 나감 (SPEC-008 §4.8 ① · 검수 W-6).
+
+    404 로 존재를 가리되, 화면이 「대화가 사라졌다」 로 읽지 않게 메시지 쪽 문구와 코드를 함께 싣는다.
+    """
+
+    code = "INBOX_MESSAGE_NOT_FOUND"
+    message = "참고한 메시지를 찾을 수 없습니다 — 지워졌거나 방을 나갔습니다"
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
+
+
 class ConversationQueueOverflow(ConversationError):
     def __init__(self, queue_size: int, limit: int) -> None:
         super().__init__("conversation queue is full")

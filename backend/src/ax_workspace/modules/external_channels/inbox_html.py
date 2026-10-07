@@ -5,8 +5,9 @@
 
 1. `<script>`·`on*` 이벤트 속성·`<form>`·`<iframe>`·`<object>`·`<embed>`·`<style>`·`<link>`·`<meta>` 를 지운다 — 허용
    목록(nh3/ammonia)만 남긴다. 링크는 `http(s)`·`mailto`·`tel` 만, `data:` 는 `<img>` 의 이미지 MIME 만.
-2. **원격 이미지는 기본 차단**(추적 픽셀) — `src` 를 걷고 원래 주소를 `data-ax-remote-src` 에 남긴다. 「이미지 보기」를
-   누르면 프론트가 `GET /api/inbox/mail/{id}/remote-image?u=` (서버 프록시, SSRF 규칙) 로 바꿔 단다.
+2. **원격 이미지는 원래 주소로 직접 붙지 않는다**(추적 픽셀이 우리 사용자 IP·시각을 못 본다) — `src` 를 걷고 원래 주소를
+   `data-ax-remote-src` 에 남긴다. 화면이 본문을 그릴 때 **자동으로** `GET /api/inbox/mail/{id}/remote-image?u=`(서버 프록시 ·
+   SSRF 규칙 · 래스터와 SVG)로 바꿔 단다(SPEC-008 §4.4 v0.6.0 — 옛 「기본 차단 · 이미지 보기」 단추는 없다).
 3. 인라인 `cid:` 이미지는 첨부 중계 경로(`/api/inbox/mail/{id}/attachments/{aid}`)로 바꾼다.
 4. **인용은 `<details>` 로 감싼다** — 스크립트 없이 접힌다(N-4). Gmail `div.gmail_quote` · Outlook `#divRplyFwdMsg` 뒤 ·
    맨 바깥 `<blockquote>`.
@@ -358,3 +359,33 @@ def remote_image_urls(safe_html: str) -> set[str]:
         for value in (image.get(REMOTE_SRC_ATTRIBUTE) for image in root.iter("img"))
         if value
     }
+
+
+#: 맥락 조합(SPEC-008 §4.8 ②)이 싣는 메일 글자의 상한 — 긴 뉴스레터 한 통이 대화 프롬프트를 먹지 않게.
+SAFE_TEXT_LIMIT = 20_000
+
+
+def safe_html_text(safe_html: str, *, limit: int = SAFE_TEXT_LIMIT) -> str:
+    """**소독한 안전본에서 글자만** 뽑는다 — HTML 아님 · 인용 접기(`<details>`)는 뺀다 (SPEC-008 §4.8 ② · OQ-819).
+
+    `<style>` 은 글자가 아니라 버린다. 문단·줄바꿈 자리는 줄로 남기고 빈 줄은 하나로 줄인다.
+    """
+    body = (safe_html or "").removeprefix(SAFE_HTML_PREFIX)
+    if not body.strip():
+        return ""
+    try:
+        root = lxml_html.fragment_fromstring(body, create_parent="div")
+    except (etree.ParserError, ValueError):
+        return ""
+    for element in list(root.iter("details", "style", "script", "head", "title")):
+        if element.getparent() is not None:
+            # `drop_tree` 는 꼬리 글자(인용 뒤에 이어진 본문)를 남기고 요소만 걷는다.
+            element.drop_tree()
+    for element in root.iter("br"):
+        element.tail = "\n" + (element.tail or "")
+    for element in root.iter("p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote"):
+        element.tail = "\n" + (element.tail or "")
+    text = root.text_content()
+    lines = [re.sub(r"[ \t ]+", " ", line).strip() for line in text.splitlines()]
+    collapsed = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return collapsed[:limit]

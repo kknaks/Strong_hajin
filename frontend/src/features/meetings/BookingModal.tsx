@@ -1,18 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Badge } from "../../ds/Badge";
 import { Chip } from "../../ds/Chip";
 import { Button, IconButton } from "../../ds/Button";
-import { ApiError, bookMeeting, readMeeting, readMeetingRooms } from "../../lib/api";
+import { ApiError, bookMeeting, readMeeting } from "../../lib/api";
 import { createIdempotencyKey } from "../../lib/idempotency";
 import { DateField } from "../../ds/DateField";
 import { Icon } from "../../ds/icons/Icon";
 import { Select } from "../../ds/Select";
 import { TimeRangeField } from "../../ds/TimeField";
 import { useEscape } from "../../ds/Modal";
-import { addDays, datePickerLabel, emptyActionLabel, formatMonthLong, meetingAgendaSourceText, meetingClock, meetingDateInput, meetingIsoAt, meetingScreen, meetingTimeOptions, meetingWhen, selectLabel, seoulToday, timeFieldLabel, weekdayNames } from "../../lib/labels";
+import { addDays, axDraftCard, datePickerLabel, emptyActionLabel, formatMonthLong, meetingAgendaSourceText, meetingClock, meetingDateInput, meetingIsoAt, meetingScreen, meetingTimeOptions, meetingWhen, selectLabel, seoulToday, timeFieldLabel, weekdayNames } from "../../lib/labels";
 import type { MeetingRecord, MeetingRoom, MeetingRow } from "../../lib/viewModels";
 import { OrgDirectory, PersonSearch, PickedTags } from "./PeoplePicker";
+import { RoomSelect, roomChoiceId, type RoomChoice, type RoomSelectStatus } from "./RoomSelect";
 import { useRoster, type RosterPerson } from "./roster";
 
 /**
@@ -30,16 +31,72 @@ export function roomReservationNotice(record: MeetingRecord): string | null {
   return meetingScreen.roomFailed[reservation.reason ?? ""] ?? meetingScreen.roomFailed.room_reservation_failed;
 }
 
-/** 409 로 «회의가 서지 않은» 경우다. 그 밖의 오류면 `null`. */
-function roomRejectionOf(reason: unknown): { message: string; rooms: MeetingRoom[] } | null {
+/**
+ * 409 로 «회의실 때문에 서지 않은» 경우다(생성 `room_unavailable` 등 · 수정 `ROOM_BOOKING_REFUSED` — WP3 계약 고정 2).
+ * 코드가 아는 것이거나 `available_rooms` 배열이 실려 오면 거절로 본다. 그 밖의 오류면 `null`(겹침 409 는 `detail` 이 문자열이다).
+ * 수정 모달·AX 수정 카드도 같은 판정을 쓴다.
+ */
+/**
+ * 회의 저장(수정 모달 · AX 수정 카드)의 오류 문구 — **코드별 문구**가 있으면 그것(`meetingScreen.saveErrors` · 계약 고정 §7),
+ * 모르는 코드면 서버가 실은 `detail.message`, 그것도 없으면 오류 글자 · 기본 문구. 겹침 409 처럼 `detail` 이 문자열이면 그 문자열이 정본이다(K22).
+ */
+export function meetingErrorText(reason: unknown, fallback: string): string {
+  if (reason instanceof ApiError && reason.detail && typeof reason.detail === "object") {
+    const detail = reason.detail as { code?: string; message?: string };
+    const known = detail.code ? meetingScreen.saveErrors[detail.code] : undefined;
+    if (known) return known;
+    if (detail.message) return detail.message;
+  }
+  return reason instanceof Error && reason.message ? reason.message : fallback;
+}
+
+export function roomRejectionOf(reason: unknown): { message: string; rooms: MeetingRoom[] } | null {
   if (!(reason instanceof ApiError) || reason.status !== 409) return null;
-  const detail = reason.detail as { code?: string; available_rooms?: MeetingRoom[] } | undefined;
-  const message = detail?.code ? meetingScreen.roomRejected[detail.code] : undefined;
-  if (!message) return null;
-  return { message, rooms: detail?.available_rooms ?? [] };
+  const detail = reason.detail as { code?: string; message?: string; available_rooms?: MeetingRoom[] } | undefined;
+  if (!detail || typeof detail !== "object") return null;
+  const known = detail.code ? meetingScreen.roomRejected[detail.code] : undefined;
+  if (!known && !Array.isArray(detail.available_rooms)) return null;
+  return { message: known ?? detail.message ?? meetingScreen.roomRejected.ROOM_BOOKING_REFUSED, rooms: detail.available_rooms ?? [] };
 }
 
 type AgendaDraft = { title: string; source: "manual" | "carried" };
+
+/** 생성 입력 한 벌 — 생성(`bookMeeting`)과 AX 초안 저장(`draft.onSubmit`)이 같은 모양을 싣는다. */
+export type BookingInput = {
+  title: string;
+  purpose: string | null;
+  starts_at: string;
+  ends_at: string;
+  room_id: number | null;
+  attendee_ids: string[];
+  external_attendees: string[];
+  agendas: Array<{ title: string; source: "manual" | "carried" }>;
+  carried_from_meeting_id: string | null;
+};
+
+/**
+ * AX 회의 생성 카드의 [수정] = **이 모달을 편집 창으로** 연다(SPEC-010 §2.4 · OQ-1001). 값은 편집 계약(`values`)에서 채우고,
+ * 주 단추는 「저장」 — 회의를 만들지 않고 **초안의 새 회차**를 저장한다(`onSubmit`). 지난 회의 제안 카드는 서지 않는다.
+ */
+export type BookingDraft = {
+  values: Record<string, unknown>;
+  /** 참석자 이름 — 편집 계약의 선택지(`attendee_ids.options`). 명부를 기다리지 않고 바로 태그를 세운다. */
+  attendeeOptions: Array<{ value: string; label: string }>;
+  onSubmit: (input: BookingInput) => Promise<void>;
+  error?: string | null;
+  /** 첨부 초안 자리(D-05) — 카드가 만든 `TaskAttachmentGroup` 을 그대로 꽂는다. */
+  attachments?: ReactNode;
+};
+
+const draftText = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+const draftList = (value: unknown) => (Array.isArray(value) ? value.map(String).filter(Boolean) : []);
+function draftAgendas(value: unknown): AgendaDraft[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row): { title?: unknown; source?: unknown } => (row && typeof row === "object" ? (row as { title?: unknown; source?: unknown }) : { title: row }))
+    .map((row) => ({ title: draftText(row.title).trim(), source: row.source === "carried" ? ("carried" as const) : ("manual" as const) }))
+    .filter((row) => row.title.length > 0);
+}
 
 function addHour(time: string): string {
   const [hour, minute] = time.split(":").map(Number);
@@ -89,6 +146,7 @@ export function BookingModal({
   onCreated,
   onError,
   onNotice,
+  draft,
 }: {
   /** 제안 카드와 「최근」 칩이 딛는 지난 회의들. */
   pastRows: MeetingRow[];
@@ -100,64 +158,49 @@ export function BookingModal({
   onError: (message: string) => void;
   /** 회의실이 거절됐을 때 한 줄로 말한다 — 모달은 그대로 열려 있다. */
   onNotice: (message: string) => void;
+  /** AX 회의 생성 카드의 편집 창으로 연다 — 주 단추가 「저장」(초안 저장)이 된다. */
+  draft?: BookingDraft;
 }) {
   const today = seoulToday();
-  const [subject, setSubject] = useState(initialSubject ?? "");
-  const [date, setDate] = useState(today);
-  const [from, setFrom] = useState(nextSlot());
-  const [to, setTo] = useState(addHour(nextSlot()));
-  const [purpose, setPurpose] = useState("");
-  const [agendas, setAgendas] = useState<AgendaDraft[]>(initialAgendas ?? []);
+  const values = draft?.values ?? null;
+  const draftStart = values ? draftText(values.starts_at) : "";
+  const draftEnd = values ? draftText(values.ends_at) : "";
+  const [subject, setSubject] = useState(values ? draftText(values.title) : initialSubject ?? "");
+  const [date, setDate] = useState(draftStart ? meetingDateInput(draftStart) : today);
+  const [from, setFrom] = useState(draftStart ? meetingClock(draftStart) : nextSlot());
+  const [to, setTo] = useState(draftEnd ? meetingClock(draftEnd) : addHour(nextSlot()));
+  const [purpose, setPurpose] = useState(values ? draftText(values.purpose) : "");
+  const [agendas, setAgendas] = useState<AgendaDraft[]>(values ? draftAgendas(values.agendas) : initialAgendas ?? []);
   const [agendaDraft, setAgendaDraft] = useState("");
-  const [people, setPeople] = useState<RosterPerson[]>([]);
-  const [guests, setGuests] = useState<string[]>([]);
+  const [people, setPeople] = useState<RosterPerson[]>(() =>
+    values
+      ? draftList(values.attendee_ids).map((id) => ({
+          member_id: id,
+          name: draft?.attendeeOptions.find((option) => option.value === id)?.label ?? id,
+          unit_id: "",
+          unit: "",
+          rank: "",
+        }))
+      : [],
+  );
+  const [guests, setGuests] = useState<string[]>(values ? draftList(values.external_attendees) : []);
   const [query, setQuery] = useState("");
   const [unitId, setUnitId] = useState<string | null>(null);
-  /** 고른 회의실 번호. 빈 문자열이 「선택 안 함」이고 그것이 기본이다. */
-  const [room, setRoom] = useState<string>("");
-  const [rooms, setRooms] = useState<MeetingRoom[]>([]);
+  /** 고른 회의실 — `"none"`(회의실 예약 없음)이 기본이다. 고르는 자리는 공용 셀렉트(`RoomSelect` · SPEC-010 §2.2). */
+  const [room, setRoom] = useState<RoomChoice>(values && values.room_id !== null && values.room_id !== undefined && values.room_id !== "" ? (String(values.room_id) as RoomChoice) : "none");
+  /** 저장이 409 로 거절됐을 때 서버가 준 「지금 가능한 방」 — 셀렉트가 그 목록으로 다시 선다. */
+  const [refusedRooms, setRefusedRooms] = useState<MeetingRoom[] | null>(null);
+  /** 불러온 지난 회의의 방 이름 — 셀렉트가 그 방을 미리 고르고, 새 시간·인원에 못 쓰면 이유를 말한다(WP1 검수 W-3). */
+  const [requestedRoom, setRequestedRoom] = useState<string | null>(null);
+  const [roomStatus, setRoomStatus] = useState<RoomSelectStatus>({ state: "loading", blocked: false, reason: null });
   const [round, setRound] = useState(0);
   const [suggestClosed, setSuggestClosed] = useState(false);
-  const [carried, setCarried] = useState<string | null>(carriedFrom ?? null);
+  const [carried, setCarried] = useState<string | null>(values ? draftText(values.carried_from_meeting_id) || null : carriedFrom ?? null);
   const [suggestion, setSuggestion] = useState<MeetingRecord | null>(null);
   const [askClose, setAskClose] = useState(false);
   const [busy, setBusy] = useState(false);
   const submitAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const { roster } = useRoster(true);
-
-  /* 고를 수 있는 방은 예약 시스템이 정한다 — 닿지 않으면 빈 목록이고, 그때는 「선택 안 함」만 선다.
-     처음에는 전부 받고, **일시를 바꾸면 그 시간에 쓸 수 있는 방만** 다시 받는다: 못 잡을 방을 고르게 두지 않는다.
-     시각 눈금을 하나씩 옮길 때마다 부르지 않도록 잠깐 기다렸다 부른다 */
-  const firstLoad = useRef(true);
-  useEffect(() => {
-    let cancelled = false;
-    const load = (range?: { starts_at: string; ends_at: string }) =>
-      readMeetingRooms(range)
-        .then((next) => {
-          if (!cancelled) setRooms(next);
-        })
-        .catch(() => {
-          if (!cancelled) setRooms([]);
-        });
-
-    if (firstLoad.current) {
-      firstLoad.current = false;
-      void load();
-      return () => {
-        cancelled = true;
-      };
-    }
-    const timer = window.setTimeout(
-      /* 바퀴 13: 끝 날짜는 자정 넘김을 반영한다 — 안 그러면 「그 시간대에 빈 방」이 아니라
-         거꾸로 된 구간을 물어보게 된다 */
-      () => void load({ starts_at: meetingIsoAt(date, from), ends_at: meetingIsoAt(endDateOf(date, from, to), to) }),
-      300,
-    );
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [date, from, to]);
 
   const trimmed = subject.trim();
   /* E24 최근 회의 — 주제 칸이 비었을 때만 선다. 지난 목록에서 주제를 훑어 최신 둘을 낸다 */
@@ -176,15 +219,19 @@ export function BookingModal({
     [pastRows, trimmed],
   );
   const picked = rounds[Math.min(round, Math.max(rounds.length - 1, 0))] ?? null;
-  const showSuggest = Boolean(picked) && !suggestClosed;
+  /* AX 초안 편집 창에서는 지난 회의 제안을 세우지 않는다 — 그 초안은 AX 가 지은 것이다 */
+  const showSuggest = !draft && Boolean(picked) && !suggestClosed;
 
   const selectedIds = useMemo(() => new Set(people.map((person) => person.member_id)), [people]);
   const headcount = people.length + guests.length;
   /* 바퀴 13: 자정을 넘는 회의를 허용한다(사용자 결정). 끝이 시작보다 앞서 보이면 그것은
      「다음 날」이지 잘못된 값이 아니다. 다만 시작과 끝이 같은 시각인 것은 여전히 안 받는다. */
   const crossesMidnight = endsNextDay(from, to);
-  const ready = trimmed.length > 0 && headcount > 0 && from !== to;
-  const dirty = trimmed.length > 0 || headcount > 0 || agendas.length > 0 || purpose.trim().length > 0 || room.length > 0;
+  /* 회의실 셀렉트가 막았으면(고른 방이 새 조건 목록에서 빠짐 · 거절 뒤 아직 안 고름) 만들지 않는다 — 조용히 「예약 없음」 으로 가지 않는다 */
+  const ready = trimmed.length > 0 && headcount > 0 && from !== to && !roomStatus.blocked;
+  const dirty = trimmed.length > 0 || headcount > 0 || agendas.length > 0 || purpose.trim().length > 0 || room !== "none";
+  /* 셀렉트가 딛는 조건 — 날짜·시작·종료·참석 인원(사내+사외). 바뀌면 셀렉트가 300ms 뒤 다시 받는다 */
+  const roomQuery = { starts_at: meetingIsoAt(date, from), ends_at: meetingIsoAt(endDateOf(date, from, to), to), people: headcount };
 
   useEscape(() => (dirty ? setAskClose(true) : onClose()), !askClose);
 
@@ -196,18 +243,17 @@ export function BookingModal({
     );
   }
 
-  /* E21 [불러오기] — 일시 · 장소 · 참석자 · 목적을 넣고 **결론 안 난 안건만** 넘겨 담는다 (X-121) */
+  /* E21 [불러오기] — 장소 · 참석자 · 목적을 넣고 **결론 안 난 안건만** 넘겨 담는다 (X-121).
+     **날짜·시작·종료는 건드리지 않는다**(SPEC-010 §2.3 · D-10) — 새 회의에서 정한(또는 비어 있는) 시간을 그대로 둔다 */
   async function applySuggestion() {
     if (!picked) return;
     setBusy(true);
     try {
       const record = suggestion?.meeting.meeting_id === picked.meeting_id ? suggestion : await readMeeting(picked.meeting_id);
       setSuggestion(record);
-      setDate(meetingDateInput(record.meeting.starts_at));
-      setFrom(meetingClock(record.meeting.starts_at));
-      setTo(meetingClock(record.meeting.ends_at));
       setPurpose((current) => current || (record.meeting.purpose ?? ""));
-      setRoom(String(rooms.find((one) => one.name === record.meeting.location)?.room_id ?? ""));
+      /* 방은 이름으로 «요청»만 한다 — 셀렉트가 새 시간·인원의 가용 목록에서 찾아 고르고, 못 쓰면 이유를 한 줄로 말한다(W-3) */
+      setRequestedRoom(record.meeting.location ?? null);
       setPeople(
         record.meeting.attendees
           .map((attendee) => (roster?.people ?? []).find((person) => person.member_id === attendee.member_id))
@@ -238,19 +284,29 @@ export function BookingModal({
   async function submit() {
     if (!ready || busy) return;
     setBusy(true);
-    const input = {
+    const input: BookingInput = {
       title: trimmed,
       purpose: purpose.trim() || null,
       starts_at: meetingIsoAt(date, from),
       // 바퀴 13: 자정을 넘으면 끝은 다음 날이다 — 날짜 하나로 보내면 끝이 시작보다 앞선 값이 나간다
       ends_at: meetingIsoAt(endDateOf(date, from, to), to),
       // 「선택 안 함」이면 `null` 이 나가고 예약 시스템을 부르지 않는다
-      room_id: room === "" ? null : Number(room),
+      room_id: roomChoiceId(room),
       attendee_ids: people.map((person) => person.member_id),
       external_attendees: guests,
-      agendas: agendas.map((agenda) => ({ title: agenda.title })),
+      /* 출처는 **안건마다** 보낸다(SPEC-010 §2.3 · §4.2) — 불러온 미결 안건 = `carried` · 손으로 쓴 안건 = `manual` */
+      agendas: agendas.map((agenda) => ({ title: agenda.title, source: agenda.source })),
       carried_from_meeting_id: carried,
     };
+    if (draft) {
+      /* AX 초안 저장 — 회의를 만들지 않는다. 실패 문구는 부르는 쪽(카드)이 `draft.error` 로 돌려준다 */
+      try {
+        await draft.onSubmit(input);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const fingerprint = JSON.stringify(input);
     if (submitAttempt.current?.fingerprint !== fingerprint) {
       submitAttempt.current = { fingerprint, key: createIdempotencyKey() };
@@ -263,8 +319,8 @@ export function BookingModal({
       if (rejected) {
         /* 회의가 서지 않았다 — 쓴 것을 그대로 두고 **회의실 목록만** 다시 그린다.
            고른 방은 풀어 둔다: 방금 거절당한 자리를 고른 채로 두지 않는다 */
-        setRooms(rejected.rooms);
-        setRoom("");
+        setRefusedRooms(rejected.rooms);
+        setRoom("none");
         submitAttempt.current = null;
         onNotice(rejected.message);
       } else {
@@ -503,36 +559,32 @@ export function BookingModal({
                 </div>
               </div>
 
-              {/* E04 장소 — 이름·정원만 낸 정적 목록 */}
+              {/* E04 장소 — 공용 회의실 셀렉트(SPEC-010 §2.2). 「회의실 예약 없음」 이 기본이고, 그 시간·인원의 가용 방만 선다 */}
               <div className="scax-field">
                 <label className="scax-field__label">{meetingScreen.place}</label>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {/* 장소를 안 고르는 자리가 맨 위에 서고 그것이 기본이다 — 회의실을 잡지 않는 회의가 흔하다 */}
-                  <label className={room === "" ? "meeting-room none on" : "meeting-room none"}>
-                    <input checked={room === ""} name="meeting-room" onChange={() => setRoom("")} type="radio" />
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700 }}>{meetingScreen.noRoom}</span>
-                  </label>
-                  {rooms.map((one) => (
-                    <label className={String(one.room_id) === room ? "meeting-room on" : "meeting-room"} key={one.room_id}>
-                      <input
-                        checked={String(one.room_id) === room}
-                        name="meeting-room"
-                        onChange={() => setRoom(String(one.room_id))}
-                        type="radio"
-                      />
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700 }}>{one.name}</span>
-                    </label>
-                  ))}
-                </div>
+                <RoomSelect
+                  onChange={(next) => {
+                    setRoom(next);
+                    submitAttempt.current = null;
+                  }}
+                  onStatus={setRoomStatus}
+                  query={roomQuery}
+                  refused={refusedRooms}
+                  requestedName={requestedRoom ?? (values ? draftText(values.room_name) || null : null)}
+                  value={room}
+                />
               </div>
+              {draft?.attachments}
             </div>
           </div>
 
           <footer className="modal-foot">
             {/* 갈래를 두지 않는다 — 장소에 「선택 안 함」이 있으니 단추가 둘일 이유가 없다 */}
             {/* 예약 시스템이 20초까지 붙잡을 수 있다 — 무엇을 기다리는지 단추가 말한다. 다시 걸지 않는다 */}
+            {draft?.error && <span className="t-meta danger-text" role="alert">{draft.error}</span>}
+            {roomStatus.reason && <span className="t-meta danger-text">{roomStatus.reason}</span>}
             <Button variant="solid" tone="primary" disabled={!ready || busy} onClick={() => void submit()} type="button">
-              {busy && room !== "" ? meetingScreen.booking : meetingScreen.createMeeting}
+              {draft ? (busy ? axDraftCard.saving : axDraftCard.save) : busy && room !== "none" ? meetingScreen.booking : meetingScreen.createMeeting}
             </Button>
           </footer>
         </section>

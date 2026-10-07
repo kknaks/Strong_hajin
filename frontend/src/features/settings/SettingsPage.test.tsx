@@ -158,6 +158,46 @@ describe("메일 연동", () => {
   });
 });
 
+/*
+ * WORK-012 WP1-FE — SH-IMP-010(SPEC-008 §4.4). 설정 화면은 이미 `/api/inbox/stream` 을 구독하고 `integration.changed` 에
+ * 다시 읽는다 — 화면 코드는 그대로이고, 서버(WP1-BE)가 수집·백필 저장마다 그 사건을 내면 숫자가 새로고침 없이 는다.
+ * 이 잠금은 «화면 쪽 절반» 이다: 사건 하나에 목록을 다시 읽고 새 숫자를 그린다 · 다른 사건으로는 다시 읽지 않는다.
+ */
+describe("연동 숫자 — `integration.changed` 에 다시 읽는다 (SH-IMP-010)", () => {
+  class FakeSocket {
+    static all: FakeSocket[] = [];
+    onopen: (() => void) | null = null;
+    onmessage: ((message: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    constructor(public url: string) {
+      FakeSocket.all.push(this);
+    }
+    close() {}
+  }
+
+  it("사건이 오면 숫자가 새로고침 없이 바뀐다 · 메시지 도착 사건으로는 다시 읽지 않는다", async () => {
+    FakeSocket.all = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+    integrations = [integ({ id: "m1", display_name: "haram@company.example", status: "backfilling", backfill_count: 312 })];
+    render(<Harness />);
+    const card = await screen.findByRole("region", { name: "연결된 메일 계정" });
+    expect(within(card).getByText("과거 메일 채우는 중 · 312건")).toBeTruthy();
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0));
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/api/integrations").length;
+    const before = reads();
+
+    const emit = (event: unknown) => FakeSocket.all.at(-1)!.onmessage?.({ data: JSON.stringify(event) });
+    emit({ type: "inbox.message_arrived", source: "mail" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(reads()).toBe(before);
+
+    integrations = [integ({ id: "m1", display_name: "haram@company.example", status: "backfilling", backfill_count: 480 })];
+    emit({ type: "integration.changed", integration_id: "m1" });
+    await waitFor(() => expect(within(card).getByText("과거 메일 채우는 중 · 480건")).toBeTruthy());
+    expect(reads()).toBe(before + 1);
+  });
+});
+
 describe("슬랙 연동", () => {
   it("수집 방 · 방 고르기 창(그룹 DM 실명 · 봇 「앱」 · 추가됨) · 선택한 방 추가", async () => {
     integrations = [integ({ id: "i-slack", kind: "slack", display_name: "노을웍스" })];

@@ -1,10 +1,13 @@
 """Composition root for the local workflow application."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from ax_workspace.modules.ax_execution.browser_interactions import BrowserRecordingRequest, BrowserFileRequest, BrowserInteractionApplication, BrowserInteractionConflict, BrowserInteractionResult
 from ax_workspace.bootstrap.browser_interactions import SessionBrowserFileTargets
 from ax_workspace.platform.browser_interactions import SqlAlchemyBrowserInteractionRepository
 
+from ax_workspace.modules.ax_execution.context_catalog import render_ai_context_catalog
 from ax_workspace.modules.ax_execution.result_contracts import ActionMaterialDraftView
 from ax_workspace.modules.organization_access.commands import AssistantCharacterResult
 from ax_workspace.modules.ax_execution.conversation_commands import ConversationMessageResult
@@ -47,6 +50,8 @@ from pathlib import Path
 from datetime import UTC, date, datetime, time, timedelta
 from time import monotonic, sleep
 
+from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 import asyncio
 import hashlib
@@ -99,9 +104,11 @@ from ax_workspace.modules.ax_execution.ai import (
     AiProvider,
     ProviderFailure,
     ProviderSessionUnavailable,
+    ProviderTimedOut,
 )
 from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProfile, CodexCliProviderAdapter
-from ax_workspace.platform.claude_cli import ClaudeCliProviderAdapter
+from ax_workspace.platform.claude_cli import ClaudeCliProfile, ClaudeCliProviderAdapter
+from ax_workspace.platform.ai_context import SqlAlchemyAiContextCatalogSource
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
@@ -150,8 +157,10 @@ from ax_workspace.modules.meetings.commands import (
     MeetingTodoPromotionInput,
     MeetingUpdateCommand,
 )
-from ax_workspace.modules.meetings.domain import TRACK_MEMO, MeetingAccessDenied, MeetingError, MeetingVersionConflict
+from ax_workspace.modules.meetings.domain import TRACK_MEMO, MeetingAccessDenied, MeetingError, MeetingNotFound, MeetingStateConflict, MeetingVersionConflict
 from ax_workspace.modules.meetings.batch import (
+    AiCallTimedOut,
+    AiSessionLost,
     CAUSE_AGENDA_SWITCH,
     CAUSE_TRANSCRIPT,
     OUTPUT_SCHEMA as BATCH_OUTPUT_SCHEMA,
@@ -178,18 +187,25 @@ from ax_workspace.modules.meetings.rooms import (
     MeetingRoomGateway,
     RoomAuthFailed,
     RoomBookingRefused,
+    RoomChangeRefused,
     RoomCreationIdempotencyConflict,
     RoomCreationIdempotencyRequired,
     RoomGatewayUnavailable,
+    RoomNotFound,
+    RoomReservationGone,
+    RoomReservationUnconfirmed,
     RoomOutcomeUnknown,
     RoomReservation,
     RoomReservationError,
+    RoomServiceUnavailable,
     RoomUnavailable,
+    STATUS_FAILED,
     build_reservation,
     choose_replacement,
     failure_reason,
     local_slot,
     map_participants,
+    room_options,
 )
 from ax_workspace.modules.meetings.stream_service import MeetingStreamService
 from ax_workspace.modules.work.request_results import (
@@ -203,7 +219,12 @@ from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequ
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from ax_workspace.platform import user_events
+from ax_workspace.platform.external_channels_inbox_store import SqlAlchemyInboxStore
+from ax_workspace.modules.external_channels.events import USER_EVENTS_CHANNEL, UserEvent, UserEventType
 from ax_workspace.platform.persistence import (
+    ExternalIntegrationRecord,
+    ExternalMessageRecord,
     ActionItemRecord,
     AppointmentRecord,
     AttachmentRecord,
@@ -469,6 +490,9 @@ class _SessionFinalizeGateway:
         with self._application._session_factory() as session:
             return self._application._meetings(session).finalize_input(UUID(meeting_id))
 
+    def ai_context_catalog(self) -> str:
+        return self._application.ai_context_catalog()
+
     def existing_task_titles(self, persona_id: str) -> set[str]:
         """이미 있는 업무의 제목 — 후보 중복을 막는 근거다. **검사 시점에** 읽는다 (SCAX-SPEC-004 §8.1)."""
         principal = self._application.authenticated_principal(persona_id)
@@ -507,6 +531,66 @@ class _SessionFinalizeGateway:
             session.commit()
 
 
+def _holds_seat(reservation: RoomReservation | None) -> bool:
+    """그 회의가 예약 시스템에 **자리를 쥐고 있는가** — 외부 번호가 있고 잡힌(또는 동기화가 실패한 채 남은) 예약이다.
+
+    동기화 실패(`failed` + 외부 번호)도 자리를 쥔 것으로 본다 — 아니면 다음 수정이 새 예약을 하나 더 잡아 이중 예약이 된다.
+    결과를 모르는 이동(`needs_verification` + 외부 번호)도 같다 — 그 외부 예약을 다시 맞추면(PUT·DELETE) 결과가 확정된다(검수 W-1).
+    """
+    return (
+        reservation is not None
+        and bool(reservation.external_id)
+        and reservation.status in {STATUS_BOOKED, STATUS_FAILED, STATUS_NEEDS_VERIFICATION}
+    )
+
+
+def _unconfirmed_seat(reservation: RoomReservation | None) -> bool:
+    """결과를 모르는 **새 예약**(`needs_verification` · 외부 번호 없음) — 잡혔는지 모르니 쥔 자리로도 빈 자리로도 다룰 수 없다."""
+    return (
+        reservation is not None
+        and not reservation.external_id
+        and reservation.status == STATUS_NEEDS_VERIFICATION
+    )
+
+
+@dataclass
+class _RoomPlan:
+    """회의 수정 한 번의 회의실 계획 — 재확인을 지난 뒤 회의 정보가 커밋되면 실행한다."""
+
+    action: str  # none · keep · move · create · cancel · clear
+    meeting_id: UUID
+    source: dict[str, Any]
+    current: RoomReservation | None = None
+    target_room_id: int | None = None
+    room_name: str | None = None
+    request_key: str | None = None
+
+    def recheck_key(self) -> tuple[object, ...]:
+        """재확인 결과가 기대는 값 — 이 중 하나라도 달라졌으면 앞선 재확인은 쓸 수 없다."""
+        return (
+            str(self.meeting_id),
+            self.action,
+            self.target_room_id,
+            self.current.external_id if self.current else None,
+            self.source["starts_at"],
+            self.source["ends_at"],
+            self.source["people"],
+        )
+
+
+class _RoomRecheckNeeded(Exception):
+    """액션 트랜잭션 **안**에서 예약 시스템 재확인이 필요해졌다 — 트랜잭션을 되돌리고 밖에서 재확인한 뒤 다시 돈다 (검수 W-2)."""
+
+    def __init__(self, principal: Principal, plan: "_RoomPlan") -> None:
+        super().__init__("room recheck needed outside the action transaction")
+        self.principal = principal
+        self.plan = plan
+
+
+#: 이번 호출에서 트랜잭션 밖에서 끝낸 재확인 — `recheck_key` → 방 이름(모르면 None). `_run_with_room_recheck` 만 채운다.
+_ROOM_RECHECKS: ContextVar[dict[tuple[object, ...], str | None] | None] = ContextVar("room_rechecks", default=None)
+
+
 class _CodexFinalizeAgent:
     """합성은 회의 중 배치와 **같은 세션**으로 돈다. 세션이 없으면 새로 열어 한 번에 돈다(콜드 스타트)."""
 
@@ -514,7 +598,10 @@ class _CodexFinalizeAgent:
         self._application = application
 
     def run_final(self, *, persona_id: str, session_ref: str | None, prompt: str) -> str:
-        provider = self._application.meeting_batch_provider(self._application._settings.meeting_ai_tool_registry)
+        settings = self._application._settings
+        provider = self._application.meeting_batch_provider(
+            settings.meeting_ai_tool_registry, timeout_seconds=settings.ai_timeout_final_seconds
+        )
         request = AiConversationRequest(
             prompt=prompt,
             provider_session_ref=session_ref,
@@ -527,6 +614,9 @@ class _CodexFinalizeAgent:
         )
         try:
             return provider.converse(request).body
+        except ProviderTimedOut as error:
+            # 상한을 넘겼다 — 합성은 같은 세션을 다시 잇지 않고 새 세션으로 1회 간다 (SPEC-010 §4.6).
+            raise AiCallTimedOut(str(error)) from error
         except ProviderSessionUnavailable as error:
             # 세션은 회의 중 API 프로세스가 열었고 합성은 워커가 돈다 — 그 세션이 여기 없을 수 있다.
             raise FinalizeSessionLost(str(error)) from error
@@ -542,12 +632,15 @@ class _SessionBatchGateway:
         with self._application._session_factory() as session:
             return self._application._meetings(session).warm_start_context(UUID(meeting_id))
 
-    def record_session(self, meeting_id: str, *, session_ref: str, persona_id: str) -> None:
+    def record_session(
+        self, meeting_id: str, *, session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None:
         with self._application._session_factory() as session:
-            self._application._meetings(session).record_ai_session(
-                UUID(meeting_id), session_ref=session_ref, persona_id=persona_id
+            current = self._application._meetings(session).record_ai_session(
+                UUID(meeting_id), session_ref=session_ref, persona_id=persona_id, expected=expected
             )
             session.commit()
+            return current
 
     def pending_chars(self, meeting_id: str) -> int:
         with self._application._session_factory() as session:
@@ -576,6 +669,13 @@ class _SessionBatchGateway:
             covered_ms=raw["covered_ms"],
             allowed_task_ids=allowed,
         )
+
+    def ai_context_catalog(self) -> str:
+        return self._application.ai_context_catalog()
+
+    def ai_track(self, meeting_id: str) -> list[dict[str, Any]]:
+        with self._application._session_factory() as session:
+            return self._application._meetings(session).ai_track_material(UUID(meeting_id))
 
     def record_run(
         self, meeting_id: str, *, seq: int, status: str, cause: str, from_seq: int, to_seq: int, reason: str | None
@@ -612,31 +712,58 @@ class _CodexBatchAgent:
         self._application = application
 
     def open_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> str | None:
-        # 웜스타트는 형식을 예고만 한다 — 「준비됨」 한 마디에 스키마를 걸지 않는다.
-        result = self._converse(persona_id, prompt, tools, session_ref=None, schema=None)
+        # 웜스타트는 형식을 예고만 한다 — 「준비됨」 한 마디에 스키마를 걸지 않는다. 상한은 웜스타트 값이다.
+        result = self._converse(
+            persona_id, prompt, tools, session_ref=None, schema=None,
+            timeout_seconds=self._application._settings.ai_timeout_warmstart_seconds,
+        )
         return result.provider_session_ref
 
     def run_batch(self, *, persona_id: str, session_ref: str, prompt: str, tools: tuple[str, ...]) -> str:
         return self._converse(
-            persona_id, prompt, tools, session_ref=session_ref, schema=BATCH_OUTPUT_SCHEMA
+            persona_id, prompt, tools, session_ref=session_ref, schema=BATCH_OUTPUT_SCHEMA,
+            timeout_seconds=self._application._settings.ai_timeout_batch_seconds,
         ).body
 
-    def _converse(
-        self, persona_id: str, prompt: str, tools: tuple[str, ...], *, session_ref: str | None, schema: dict | None
-    ) -> Any:
-        provider = self._application.meeting_batch_provider(tools)
-        return provider.converse(
-            AiConversationRequest(
-                prompt=prompt,
-                provider_session_ref=session_ref,
-                context_references=[],
-                delegated_tool_context=AiDelegatedToolContext(
-                    principal_id=persona_id, causation_id=f"meeting-batch:{persona_id}"
-                ),
-                # 대화로 돌아도 출력은 스키마 안에서만 나온다 (SCAX-SPEC-004 §7.2-6).
-                output_schema=schema,
-            )
+    def run_batch_in_new_session(
+        self, *, persona_id: str, prompt: str, tools: tuple[str, ...]
+    ) -> tuple[str | None, str]:
+        """새 세션 1회 배치 (SPEC-010 §4.6) — 웜스타트 맥락과 그 배치를 한 turn 에. 상한은 배치 값이다."""
+        result = self._converse(
+            persona_id, prompt, tools, session_ref=None, schema=BATCH_OUTPUT_SCHEMA,
+            timeout_seconds=self._application._settings.ai_timeout_batch_seconds,
         )
+        return result.provider_session_ref, result.body
+
+    def _converse(
+        self,
+        persona_id: str,
+        prompt: str,
+        tools: tuple[str, ...],
+        *,
+        session_ref: str | None,
+        schema: dict | None,
+        timeout_seconds: int,
+    ) -> Any:
+        provider = self._application.meeting_batch_provider(tools, timeout_seconds=timeout_seconds)
+        try:
+            return provider.converse(
+                AiConversationRequest(
+                    prompt=prompt,
+                    provider_session_ref=session_ref,
+                    context_references=[],
+                    delegated_tool_context=AiDelegatedToolContext(
+                        principal_id=persona_id, causation_id=f"meeting-batch:{persona_id}"
+                    ),
+                    # 대화로 돌아도 출력은 스키마 안에서만 나온다 (SCAX-SPEC-004 §7.2-6).
+                    output_schema=schema,
+                )
+            )
+        except ProviderTimedOut as error:
+            # 그 단계의 상한을 넘겼다 — 배치 서비스가 같은 세션 대신 새 세션으로 1회 다시 건다 (SPEC-010 §4.6).
+            raise AiCallTimedOut(str(error)) from error
+        except ProviderSessionUnavailable as error:
+            raise AiSessionLost(str(error)) from error
 
 
 class _SessionStreamGateway:
@@ -1000,11 +1127,15 @@ class WorkflowApplication(ExternalInboxOperations):
         )
         # One in-process job store per application when the memory backend is selected (tests); postgres joins each session.
         self.memory_job_queue: MemoryDurableJobQueue | None = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
-        self._report_provider = report_provider or create_conversation_provider(settings)
+        self._report_provider = report_provider or create_conversation_provider(
+            settings, timeout_seconds=settings.ai_timeout_conversation_seconds
+        )
         # 회의실 예약 시스템. **시험이 대역을 끼우는 자리**이고, 비어 있으면 계정이 갖춰졌을 때만 실물을 만든다.
         self._room_gateway: MeetingRoomGateway | None = None
         self._room_sync_locks: dict[UUID, threading.RLock] = {}
         self._room_sync_locks_guard = threading.Lock()
+        #: PostgreSQL 이 아닐 때(시험) 낸 사용자 사건 — NOTIFY 가 없으니 여기에 남는다(메시지함 저장소의 `local_events` 와 같은 자리).
+        self.local_user_events: list[str] = []
         self._room_creation_locks: dict[tuple[str, str], threading.RLock] = {}
         self._room_creation_locks_guard = threading.Lock()
         # 외부 채널 OAuth 어댑터. **시험이 대역을 끼우는 자리**이고, 비어 있으면 client 값이 갖춰진 종류만 실물을 만든다.
@@ -1041,30 +1172,346 @@ class WorkflowApplication(ExternalInboxOperations):
         return self._room_gateway
 
     def meeting_rooms(
-        self, *, starts_at: datetime | None = None, ends_at: datetime | None = None
+        self,
+        principal: Principal | None = None,
+        *,
+        starts_at: datetime | None = None,
+        ends_at: datetime | None = None,
+        people: int | None = None,
+        meeting_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
-        """고를 수 있는 회의실. 예약 시스템이 없거나 닿지 않으면 **빈 목록**이다 —
-        화면은 「회의실 선택 안 함」만 보이고, 없는 방을 지어내지 않는다.
+        """회의실 셀렉트의 선택지 (SPEC-010 §4.1 · 계약 고정 4) — `{room_id, name, capacity, available, current, unavailable_reason}`.
 
-        시간을 주면 **그 시간에 비어 있는 방만** 내고 `available: true` 를 붙인다 (D36-3) —
-        예약이 거절된 뒤 모달이 회의실 칸만 다시 그리는 자리다. 시간이 없으면 전체 목록 그대로다.
+        - 시간을 주면 그 시간에 비어 있는 방만, `people` 을 주면 정원이 되는 방만 낸다(정원 모르는 방은 빼지 않는다)
+        - `meeting_id` = 수정 중인 회의 — **그 회의 자신의 예약을 점유에서 빼고**, 그 방을 `current` 로 쓸 수 없어도 낸다.
+          수정할 수 있는 회의여야 한다(아니면 404 — 인자를 무시하지 않는다)
+        - **예약 시스템에 닿지 않으면 `RoomServiceUnavailable`(503)** — 「가용 없음」 과 가른다. 계정 미설정은 지금처럼 `[]`
         """
+        current: RoomReservation | None = None
+        if meeting_id is not None:
+            if principal is None:
+                raise MeetingNotFound("meeting was not found")
+            with self._session_factory() as session:
+                current = self._meetings(session).room_context(principal, meeting_id)
         # Resolve the lazy adapter, then keep the concrete outbound owner visible to
         # the operation inventory just as the other composition-root methods do.
         _ = self.room_gateway
         gateway = self._room_gateway
         if gateway is None:
             return []
+        holding = current if _holds_seat(current) else None
         try:
-            if starts_at is None or ends_at is None:
-                return [room.view() for room in gateway.rooms()]
-            slot = local_slot(starts_at, ends_at)
-            return [{**room.view(), "available": True} for room in gateway.available(*slot)]
+            rooms = gateway.rooms()
+            free: set[int] | None = None
+            if starts_at is not None and ends_at is not None:
+                free = {
+                    room.room_id
+                    for room in gateway.available(
+                        *local_slot(starts_at, ends_at), ignoring=holding.external_id if holding else None
+                    )
+                }
         except RoomReservationError as error:
             logger.warning("회의실 목록을 읽지 못했습니다: %s", failure_reason(error))
-            return []
+            raise RoomServiceUnavailable("회의실 정보를 불러오지 못했습니다") from error
+        return room_options(
+            rooms,
+            free_room_ids=free,
+            people=people,
+            current_room_id=holding.room_id if holding else None,
+        )
 
-    def _reserve_room(self, source: dict[str, Any], room_id: int) -> RoomReservation:
+    # ---- 회의 수정의 회의실 (SPEC-010 §4.3 · 계약 고정 1~3) — PATCH · AX 수정 확정 · 옛 meeting.update 가 같이 탄다 ----
+
+    def _room_plan_intent(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        changes: dict[str, Any],
+        room: dict[str, Any] | None,
+        *,
+        request_key: str | None = None,
+    ) -> "_RoomPlan":
+        """회의실 계획(DB 만 읽는다 — 예약 시스템을 부르지 않는다). 재확인은 `_recheck_room_plan`.
+
+        **저장 직전 재확인** — 회의 정보를 바꾸기 전에 고른 방(또는 유지하는 기존 방)을 새 시간·새 인원으로 다시 본다.
+
+        `room` 없음 = 방 유지(시각·인원이 바뀌었으면 재확인) · `{"room_id": None}` = 「회의실 예약 없음」(예약 취소 · 장소 비움) ·
+        `{"room_id": n}` = 그 방으로(기존 예약이 있으면 Connect PUT `room_id`, 없으면 새 예약 — `Idempotency-Key` 필수).
+        쓸 수 없으면 회의를 바꾸지 않고 `409 ROOM_BOOKING_REFUSED` + 가능한 방 — **자동 대체하지 않는다**(OQ-1004).
+        예약 시스템에 닿지 않으면 막지 않는다(OQ-1008 — 지금 수정 동작 유지): 계획은 서고, 실행이 실패를 기록한다.
+        """
+        with self._session_factory() as session:
+            source = self._meetings(session).room_change_input(principal, meeting_id, changes)
+        current: RoomReservation | None = source["reservation"]
+        holding = current if _holds_seat(current) else None
+        if _unconfirmed_seat(current) and (room is not None or source["times_changed"] or source["people_changed"]):
+            # 앞 예약의 결과를 모른다(검수 W-1) — 새 예약은 이중 예약일 수 있고, 시각 이동은 Connect 쪽을 옛 시각에 남긴다.
+            raise RoomReservationUnconfirmed(
+                "앞 회의실 예약의 결과를 아직 확인하지 못했습니다 — 확인된 뒤 시간·인원·회의실을 바꿔 주세요"
+            )
+        if room is None:
+            if holding is None or not (source["times_changed"] or source["people_changed"]):
+                return _RoomPlan("none", meeting_id, source)
+            target = int(holding.room_id or 0)
+            action = "move" if source["times_changed"] else "keep"
+        elif room.get("room_id") is None:
+            return _RoomPlan("cancel" if holding else "clear", meeting_id, source, current=holding)
+        else:
+            target = int(room["room_id"])
+            action = "move" if holding else "create"
+            if action == "create":
+                request_key = self._room_creation_request_key(request_key)
+        return _RoomPlan(action, meeting_id, source, current=holding, target_room_id=target, request_key=request_key)
+
+    def _plan_room_change(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        changes: dict[str, Any],
+        room: dict[str, Any] | None,
+        *,
+        request_key: str | None = None,
+    ) -> "_RoomPlan":
+        """계획(DB) + 저장 직전 재확인(예약 시스템). **트랜잭션 밖에서만** 부른다 — PATCH 입구."""
+        plan = self._room_plan_intent(principal, meeting_id, changes, room, request_key=request_key)
+        if plan.action in {"move", "keep", "create"}:
+            self._recheck_room_plan(plan)
+        return plan
+
+    def _plan_room_change_in_action(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        changes: dict[str, Any],
+        room: dict[str, Any] | None,
+        *,
+        request_key: str | None = None,
+    ) -> "_RoomPlan":
+        """액션 트랜잭션 안의 계획 — 예약 시스템을 **부르지 않는다**(검수 W-2). 밖에서 끝낸 재확인이 없으면 되돌려 달라고 한다."""
+        plan = self._room_plan_intent(principal, meeting_id, changes, room, request_key=request_key)
+        if plan.action not in {"move", "keep", "create"}:
+            return plan
+        done = _ROOM_RECHECKS.get()
+        if done is None:
+            # 재확인 고리 밖(직접 부른 실행) — 지금까지처럼 이 자리에서 재확인한다.
+            self._recheck_room_plan(plan)
+            return plan
+        if plan.recheck_key() not in done:
+            raise _RoomRecheckNeeded(principal, plan)
+        plan.room_name = done[plan.recheck_key()]
+        return plan
+
+    def _run_with_room_recheck(self, run: Callable[[], Any]) -> Any:
+        """액션 실행을 돌리되, 회의실 재확인(예약 시스템 HTTP)은 **트랜잭션 밖**에서 한다 (검수 W-2 · 저장소 원칙).
+
+        첫 실행이 재확인을 요구하면 그 트랜잭션은 이미 되돌려졌다 — 밖에서 재확인(거절이면 409 가 그대로 올라간다)하고,
+        결과를 들고 짧은 트랜잭션으로 다시 돈다. 그 사이 회의가 바뀌었으면 열쇠가 달라 한 번 더 재확인한다.
+        """
+        if _ROOM_RECHECKS.get() is not None:
+            return run()
+        done: dict[tuple[object, ...], str | None] = {}
+        token = _ROOM_RECHECKS.set(done)
+        try:
+            for _ in range(3):
+                try:
+                    return run()
+                except _RoomRecheckNeeded as needed:
+                    self._recheck_room_plan(needed.plan)
+                    done[needed.plan.recheck_key()] = needed.plan.room_name
+            raise MeetingStateConflict("회의가 계속 바뀌어 회의실을 다시 확인하지 못했습니다 — 다시 시도해 주세요")
+        finally:
+            _ROOM_RECHECKS.reset(token)
+
+    def _recheck_room_plan(self, plan: "_RoomPlan") -> None:
+        """**저장 직전 재확인** — 바뀐 뒤 시각·인원으로 그 방을 다시 본다. 못 쓰면 409, 목록 밖이면 422, 닿지 않으면 막지 않는다."""
+        gateway = self.room_gateway
+        if gateway is None:
+            return
+        meeting_id, source, holding, target = plan.meeting_id, plan.source, plan.current, int(plan.target_room_id or 0)
+        try:
+            rooms = gateway.rooms()
+            if all(one.room_id != target for one in rooms):
+                raise RoomNotFound("그 회의실은 고를 수 있는 회의실이 아닙니다")
+            free = gateway.available(
+                *local_slot(source["starts_at"], source["ends_at"]),
+                ignoring=holding.external_id if holding else None,
+            )
+        except RoomNotFound:
+            raise
+        except RoomReservationError as error:
+            logger.warning("회의 %s 회의실 재확인이 예약 시스템에 닿지 않았습니다: %s", meeting_id, failure_reason(error))
+            return
+        options = room_options(rooms, free_room_ids={one.room_id for one in free}, people=source["people"])
+        usable = {int(option["room_id"]) for option in options}
+        if target not in usable:
+            available_rooms = [room_.view() for room_ in rooms if room_.room_id in usable]
+            raise RoomBookingRefused(
+                RoomChangeRefused("고른 회의실을 새 시간·인원에 쓸 수 없습니다"), available_rooms
+            )
+        plan.room_name = next((one.name for one in rooms if one.room_id == target), None)
+
+    def _execute_room_plan(self, principal: Principal, plan: "_RoomPlan") -> dict[str, Any] | None:
+        """회의 정보가 커밋된 **뒤** 예약 시스템에 반영한다. 실패해도 회의 수정은 남는다(OQ-1008) — 실패를 회의에 붙인다.
+
+        돌려주는 값은 영수증 갱신용 `{location, room_reservation}`(바뀐 것이 없으면 `None`).
+        """
+        if plan.action in {"none", "keep"}:
+            return None
+        with self._room_sync_lock(plan.meeting_id):
+            return self._execute_room_plan_locked(principal, plan)
+
+    def _reconcile_room_plan(self, plan: "_RoomPlan") -> "_RoomPlan | None":
+        """**실행 직전 대조** — 계획(락 밖) 뒤에 예약 상태가 바뀌었는지(영수증 복구 등) 회의실 락 안에서 본다 (W-r2-3).
+
+        같으면 그대로. 달라졌으면 지금 상태로 계획을 고친다:
+        — 그 사이 자리를 쥐게 됐다(복구가 예약을 확정) → 새로 잡지 않고 그 예약을 옮긴다(`create` → `move`) · 이동·취소는 지금 예약으로
+        — 자리가 사라졌다(취소·비움) → 옮길 것이 없다: `move` 는 하지 않고(다음 수정이 방을 고르면 새로 잡는다) `cancel` 은 `clear`
+        — 결과를 모르는 새 예약이 됐다 → 아무것도 하지 않는다(새로 잡으면 이중 예약일 수 있다 — W-1 과 같은 이유)
+        """
+        with self._session_factory() as session:
+            fresh: RoomReservation | None = self._meetings(session).reservation_input(plan.meeting_id)["reservation"]
+        before = plan.current
+        if (fresh.external_id if fresh and _holds_seat(fresh) else None) == (before.external_id if before else None):
+            if before is not None and fresh is not None:
+                plan.current = fresh
+            return plan
+        logger.warning("회의 %s 의 예약 상태가 계획 뒤에 바뀌었습니다 — 지금 상태로 계획을 고칩니다", plan.meeting_id)
+        if _unconfirmed_seat(fresh):
+            return None
+        if _holds_seat(fresh):
+            plan.current = fresh
+            if plan.action == "create":
+                plan.action = "move"
+            elif plan.action == "clear":
+                plan.action = "cancel"
+            return plan
+        plan.current = None
+        if plan.action == "cancel":
+            plan.action = "clear"
+            return plan
+        if plan.action == "move":
+            return None
+        return plan
+
+    def _execute_room_plan_locked(self, principal: Principal, plan: "_RoomPlan") -> dict[str, Any] | None:
+        gateway = self.room_gateway
+        plan = self._reconcile_room_plan(plan)
+        if plan is None:
+            return None
+        source = plan.source
+        holding = plan.current
+        if plan.action == "clear":
+            settled: RoomReservation | None = None
+            location: str | None = None
+        else:
+            try:
+                if gateway is None:
+                    raise RoomAuthFailed("예약 시스템 계정이 설정되어 있지 않습니다")
+                if plan.action == "cancel":
+                    assert holding is not None and holding.external_id
+                    try:
+                        gateway.cancel(holding.external_id)
+                    except RoomReservationGone:
+                        # 이미 없다 — 앞서 결과를 모르던 취소가 반영됐던 것이다. 거둔 것으로 확정한다(W-r2-2).
+                        pass
+                    settled = RoomReservation(status=STATUS_CANCELLED, room_id=holding.room_id, room_name=holding.room_name)
+                    location = None
+                elif plan.action == "move":
+                    assert holding is not None and holding.external_id
+                    moved = build_reservation(
+                        room_id=plan.target_room_id or 0,
+                        starts_at=source["starts_at"],
+                        ends_at=source["ends_at"],
+                        title=source["title"],
+                        booker_name=source["owner_name"],
+                        participant_emails=(),
+                        outside_names=(),
+                    )
+                    gateway.update(
+                        holding.external_id, date=moved.date, start=moved.start, end=moved.end, room_id=plan.target_room_id
+                    )
+                    if plan.target_room_id == holding.room_id and holding.status == STATUS_BOOKED:
+                        # 같은 방으로 시간만 옮겼다 — 예약도 장소 글자도 그대로다(그 사이 사람이 바꾼 장소를 덮지 않는다).
+                        return {}
+                    name = plan.room_name or (holding.room_name if plan.target_room_id == holding.room_id else None)
+                    settled = RoomReservation(
+                        status=STATUS_BOOKED, room_id=plan.target_room_id, room_name=name, external_id=holding.external_id
+                    )
+                    location = name
+                else:  # create — 생성과 같은 이중 예약 울타리(`meeting_room_creation_attempts`)를 지난다
+                    request = MeetingReservationInput.model_validate(
+                        {
+                            "title": source["title"],
+                            "starts_at": source["starts_at"],
+                            "ends_at": source["ends_at"],
+                            "attendee_ids": source["attendee_ids"],
+                            "external_attendees": source["outside"],
+                            "room_id": plan.target_room_id,
+                        }
+                    )
+                    settled = self._resolve_room_creation_attempt(
+                        principal,
+                        f"meeting-update:{plan.meeting_id}:{plan.request_key}",
+                        request,
+                        {**source, "people": source["people"]},
+                        allow_replacement=False,
+                    )
+                    location = settled.room_name if settled.status == STATUS_BOOKED else None
+            except RoomReservationGone as error:
+                # 옮길 예약이 예약 시스템에 없다(앞서 결과를 모르던 취소가 반영됐다) — **자리를 비운 것으로 확정**한다.
+                # 외부 번호를 버리므로 다음 수정은 없는 예약에 PUT 을 되풀이하지 않고, 방을 고르면 새로 잡는다(W-r2-2).
+                logger.warning("회의 %s 의 예약이 예약 시스템에 없습니다 — 자리를 비운 것으로 확정합니다", plan.meeting_id)
+                settled = RoomReservation(
+                    status=STATUS_FAILED,
+                    room_id=plan.target_room_id,
+                    room_name=plan.room_name,
+                    reason=failure_reason(error),
+                )
+                location = None
+            except RoomOutcomeUnknown as error:
+                logger.warning("회의 %s 회의실 반영 결과를 확인해야 합니다", plan.meeting_id)
+                settled = RoomReservation(
+                    status=STATUS_NEEDS_VERIFICATION,
+                    room_id=plan.target_room_id or (holding.room_id if holding else None),
+                    room_name=plan.room_name or (holding.room_name if holding else None),
+                    external_id=holding.external_id if holding else None,
+                    reason=failure_reason(error),
+                )
+                location = settled.room_name
+            except (RoomBookingRefused, RoomUnavailable) as refused:
+                # 재확인과 반영 사이에 그 방이 찼다(새 예약 · PUT 직전 확인 — W-5) — 회의는 이미 바뀌었다. 자리 없음을
+                # 사실로 남긴다. 이동이 거절되면 **옛 예약은 옛 시각·옛 방에 그대로** 있다 — 외부 번호를 지켜 다음 수정이
+                # 같은 예약을 다시 맞추게 한다(새 예약을 또 잡지 않는다).
+                settled = RoomReservation(
+                    status=STATUS_FAILED,
+                    room_id=holding.room_id if holding else plan.target_room_id,
+                    room_name=holding.room_name if holding else None,
+                    external_id=holding.external_id if holding else None,
+                    reason=RoomChangeRefused.reason if holding else refused.reason,
+                )
+                location = holding.room_name if holding else None
+            except RoomReservationError as error:
+                # 예약 시스템에 닿지 않았다(OQ-1008) — 회의 수정은 그대로, 응답이 실패를 싣는다(계약 고정 3).
+                # 잡고 있던 자리는 외부 번호를 지켜 다음 수정이 다시 맞출 수 있게 한다.
+                logger.warning("회의 %s 회의실 반영 실패: %s", plan.meeting_id, failure_reason(error))
+                settled = RoomReservation(
+                    status=STATUS_FAILED,
+                    room_id=holding.room_id if holding else plan.target_room_id,
+                    room_name=holding.room_name if holding else None,
+                    external_id=holding.external_id if holding else None,
+                    reason=failure_reason(error),
+                )
+                location = holding.room_name if holding else None
+        with self._session_factory() as session:
+            meetings = self._meetings(session)
+            if settled is None:
+                meetings.clear_reservation(plan.meeting_id)
+            else:
+                meetings.attach_reservation(plan.meeting_id, settled, location=location)
+            session.commit()
+        return {"location": location, "room_reservation": None if settled is None else settled.view()}
+
+    def _reserve_room(self, source: dict[str, Any], room_id: int, *, allow_replacement: bool = True) -> RoomReservation:
         """**회의를 세우기 전에** 자리를 잡는다. 잡지 못하면 `RoomReservationError` 가 올라간다 (D36-2).
 
         고른 방이 찼으면 곧장 거절하지 않는다 — 그 시간에 가능한 방 중 **정원을 감당하는 가장 작은
@@ -1096,6 +1543,9 @@ class WorkflowApplication(ExternalInboxOperations):
                 str(error), room_id=room_id, room_name=self._room_name(gateway, room_id)
             ) from error
         except RoomUnavailable as refused:
+            if not allow_replacement:
+                # 수정의 새 예약은 대체하지 않는다(OQ-1004) — 가능한 방을 이고 거절로 올라간다.
+                raise RoomUnavailable(str(refused), available=refused.available) from refused
             requested = self._room_name(gateway, room_id)
             replacement = choose_replacement(
                 list(refused.available), people=source["people"], exclude_room_id=room_id
@@ -1197,6 +1647,7 @@ class WorkflowApplication(ExternalInboxOperations):
         *,
         payload_fingerprint: str | None = None,
         request_payload: dict[str, Any] | None = None,
+        allow_replacement: bool = True,
     ) -> RoomReservation:
         """Call the provider at most once for one durable owner/key/payload tuple."""
         owner_id = str(principal.id)
@@ -1293,7 +1744,7 @@ class WorkflowApplication(ExternalInboxOperations):
                     return reservation
 
                 try:
-                    reservation = self._reserve_room(source, request.room_id)
+                    reservation = self._reserve_room(source, request.room_id, allow_replacement=allow_replacement)
                 except RoomOutcomeUnknown as error:
                     reservation = self._unknown_creation_reservation(error, request.room_id)
                     attempt.status = STATUS_NEEDS_VERIFICATION
@@ -1316,6 +1767,41 @@ class WorkflowApplication(ExternalInboxOperations):
                 attempt.updated_at = datetime.now(UTC)
                 session.commit()
                 return reservation
+
+    def _announce_message_updated(self, session: Any, principal: Principal, message_id: UUID) -> None:
+        """그 메시지의 「업무 만듦」 수가 바뀌었다 — **업무 확정 커밋 뒤** `inbox.message_updated` 를 낸다 (S8 §4.4 · H-5 · W-r2-7).
+
+        커밋 전에 내면 화면이 다시 읽어도 수가 안 바뀐다. 그래서 확정 세션의 커밋 뒤 훅으로 미루고, 새 세션에서 NOTIFY 한다.
+        받는 사람은 그 메시지의 연동 주인이다(남의 메시지는 참고 자료가 될 수 없다 — 접수·실행 때 소유를 확인했다).
+        """
+
+        def publish() -> None:
+            with self._session_factory() as fresh:
+                row = fresh.execute(
+                    select(ExternalMessageRecord.room_id, ExternalIntegrationRecord.member_id)
+                    .join(ExternalIntegrationRecord, ExternalIntegrationRecord.id == ExternalMessageRecord.integration_id)
+                    .where(ExternalMessageRecord.id == message_id)
+                ).first()
+                if row is None:
+                    return
+                event = UserEvent(
+                    type=UserEventType.MESSAGE_UPDATED,
+                    member_id=str(row.member_id),
+                    message_id=str(message_id),
+                    room_id=str(row.room_id) if row.room_id is not None else None,
+                )
+                if fresh.get_bind().dialect.name == "postgresql":
+                    user_events.publish(fresh, USER_EVENTS_CHANNEL, event.to_payload())
+                    fresh.commit()
+                else:
+                    self.local_user_events.append(event.to_payload())
+
+        self._after_session_commit(session, publish)
+
+    def _room_name_or_none(self, room_id: int) -> str | None:
+        """예약 시스템 목록에서 그 방의 이름 — 시스템이 없거나 닿지 않으면 `None`(카드가 번호로 보인다)."""
+        gateway = self.room_gateway
+        return None if gateway is None else self._room_name(gateway, room_id)
 
     @staticmethod
     def _room_name(gateway: MeetingRoomGateway, room_id: int) -> str | None:
@@ -1364,13 +1850,17 @@ class WorkflowApplication(ExternalInboxOperations):
                 return None
             source = self._meetings(session).reservation_input(meeting_id)
             reservation: RoomReservation | None = source["reservation"]
-            if reservation is None or reservation.status != STATUS_BOOKED or not reservation.external_id:
+            # 자리를 쥔 예약이면 맞춘다 — 앞선 동기화가 실패해 `failed`(외부 번호 남음)인 예약도 다시 맞출 대상이다(WP3).
+            if not _holds_seat(reservation):
                 return None
             try:
                 if gateway is None:
                     raise RoomAuthFailed("예약 시스템 계정이 설정되어 있지 않습니다")
                 if cancelled:
-                    gateway.cancel(reservation.external_id)
+                    try:
+                        gateway.cancel(reservation.external_id)
+                    except RoomReservationGone:
+                        pass  # 이미 없다 — 거둔 것으로 확정한다(W-r2-2)
                     settled = RoomReservation(
                         status=STATUS_CANCELLED,
                         room_id=reservation.room_id,
@@ -1397,6 +1887,15 @@ class WorkflowApplication(ExternalInboxOperations):
                     )
                     session.commit()
                     return {}
+            except RoomReservationGone as error:
+                # 옮길 예약이 없다 — 자리를 비운 것으로 확정한다(외부 번호를 버린다 · 없는 예약에 PUT 을 되풀이하지 않는다 — W-r2-2).
+                logger.warning("회의 %s 의 예약이 예약 시스템에 없습니다", meeting_id)
+                settled = RoomReservation(
+                    status=STATUS_FAILED,
+                    room_id=reservation.room_id,
+                    room_name=reservation.room_name,
+                    reason=failure_reason(error),
+                )
             except RoomOutcomeUnknown as error:
                 # PUT/DELETE가 provider에 반영된 뒤 응답만 끊겼을 수 있다. 확인 API가 없으므로
                 # 미실행으로 단정하거나 자동 재호출하지 않고 사람이 대조할 상태로 고정한다 (D11).
@@ -1409,10 +1908,11 @@ class WorkflowApplication(ExternalInboxOperations):
                     reason=failure_reason(error),
                 )
             except RoomReservationError as error:
-                # 회의는 이미 옮겨졌거나 취소됐다. 자리만 어긋난 채로 **사실을 남긴다**.
+                # 회의는 이미 옮겨졌거나 취소됐다. 자리만 어긋난 채로 **사실을 남긴다** — `failed` + 외부 번호(계약 고정 3).
                 logger.warning("회의 %s 예약 동기화 실패: %s", meeting_id, failure_reason(error))
                 settled = RoomReservation(
-                    status=reservation.status,
+                    # 취소의 반납 실패는 자리를 그대로 쥔 것이다(지금 취소 규칙) — 시각 동기화 실패만 `failed` 다.
+                    status=reservation.status if cancelled else STATUS_FAILED,
                     room_id=reservation.room_id,
                     room_name=reservation.room_name,
                     external_id=reservation.external_id,
@@ -1625,6 +2125,8 @@ class WorkflowApplication(ExternalInboxOperations):
             return
         try:
             gateway.cancel(reservation.external_id)
+        except RoomReservationGone:
+            return  # 이미 없다 — 거둘 것이 없다
         except RoomReservationError as error:
             # 거두지도 못했다. 회의는 어차피 서지 않으므로 사실만 남긴다 — 사람이 예약 시스템에서 지운다.
             logger.warning("주인 없는 회의실 예약을 거두지 못했습니다: %s", failure_reason(error))
@@ -1734,14 +2236,28 @@ class WorkflowApplication(ExternalInboxOperations):
         self._meeting_batch.launch_warm_start(result["meeting"]["meeting_id"])
         return result
 
-    def update_meeting(self, principal: Principal, meeting_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
-        """정보를 고치고, 잡아 둔 자리가 있으면 시간을 따라 옮긴다 — **옮기다 실패해도 편집은 남는다.**"""
+    def update_meeting(
+        self,
+        principal: Principal,
+        meeting_id: UUID,
+        changes: dict[str, Any],
+        *,
+        room: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """정보를 고치고 회의실을 따라 맞춘다 (SPEC-010 §4.3) — **저장 직전 재확인 → 정보 커밋 → 예약 시스템 반영**.
+
+        쓸 수 없는 방이면 아무것도 바꾸지 않고 `409 ROOM_BOOKING_REFUSED`. 반영이 실패해도 편집은 남고 응답이 실패를 싣는다.
+        AX 수정 확정·옛 `meeting.update` 도 같은 계획·실행을 탄다(`_execute_action` 의 두 갈래).
+        """
+        plan = self._plan_room_change(principal, meeting_id, changes, room, request_key=idempotency_key)
+        if plan.action in {"cancel", "clear"}:
+            changes = {**changes, "location": None}
         with self._session_factory() as session:
             result = self._meetings(session).update_info(principal, meeting_id, changes)
             session.commit()
-        if not {"starts_at", "ends_at"} & set(changes):
+        if self._execute_room_plan(principal, plan) is None:
             return result
-        self._sync_room_reservation(meeting_id, cancelled=False)
         with self._session_factory() as session:
             return self._meetings(session).get(principal, meeting_id)
 
@@ -2090,14 +2606,29 @@ class WorkflowApplication(ExternalInboxOperations):
         """회의당 하나의 배치를 지키는 자리 — 프로세스 하나에 하나다."""
         return self._meeting_batch
 
-    def meeting_batch_provider(self, tools: tuple[str, ...]) -> AiProvider:
-        """배치가 쓰는 provider — 레지스트리가 준 도구만 여는 어댑터다.
+    def ai_context_catalog(self) -> str:
+        """AI 맥락 목록 한 덩어리 — **조직 전체를 그 순간 DB 에서** 읽어 조립한다 (SPEC-010 §4.5).
+
+        회의 웜스타트 · 새 세션 재시도 · 최종 합성이 이 하나를 부르고, AX 대화(WP3)도 같은 것을 쓴다. 상한이 없으므로
+        크기를 로그로 남긴다(WORK-012 I-6 — 실측 뒤 재검토).
+        """
+        with self._session_factory() as session:
+            catalog = SqlAlchemyAiContextCatalogSource(session).load()
+        text = render_ai_context_catalog(catalog)
+        logger.info(
+            "AI 맥락 목록: 프로젝트 %d · 업무 %d · 구성원 %d · %d자",
+            len(catalog.projects), len(catalog.tasks), len(catalog.members), len(text),
+        )
+        return text
+
+    def meeting_batch_provider(self, tools: tuple[str, ...], *, timeout_seconds: int) -> AiProvider:
+        """회의 AI(웜스타트·배치·최종)가 쓰는 provider — 레지스트리가 준 도구만 열고, **그 단계의 상한**으로 선다.
 
         시험이 `_report_provider` 를 대역으로 갈아 끼우면 그 대역이 그대로 온다: 경계는 하나다.
         """
         if not isinstance(self._report_provider, (CodexCliProviderAdapter, ClaudeCliProviderAdapter)):
             return self._report_provider
-        return create_conversation_provider(self._settings, enabled_tools=tools)
+        return create_conversation_provider(self._settings, enabled_tools=tools, timeout_seconds=timeout_seconds)
 
     def schedule_push_ai_batch(self, meeting_id: str, *, seq: int, agendas: list[dict[str, Any]]) -> None:
         """적재 커밋 직후 push. 스트림이 다른 event loop 에 살아 있어도 그 루프에서 깨운다."""
@@ -3441,6 +3972,13 @@ class WorkflowApplication(ExternalInboxOperations):
             return self._action_center(session).normalize(principal, action_item_id, command, payload)
 
     def run_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> ActionEnvelopeResult:
+        return self._run_with_room_recheck(
+            lambda: self._run_action_command_once(principal, action_item_id, command, payload)
+        )
+
+    def _run_action_command_once(
+        self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]
+    ) -> ActionEnvelopeResult:
         with self._session_factory() as session:
             try:
                 result = self._action_center(session).execute(principal, action_item_id, command, payload)
@@ -3733,12 +4271,19 @@ class WorkflowApplication(ExternalInboxOperations):
             return result
         if operation == "meeting.info.update":
             meeting_id = identifier()
-            changes = MeetingInfoPatch.model_validate(payload.get("changes") or {}).changes()
+            patch = MeetingInfoPatch.model_validate(payload.get("changes") or {})
+            changes = patch.changes()
+            # PATCH 와 **같은 수정 규칙** — 재확인 · 409 · 참석자 합치기 · 방 변경/새 예약/취소 (SPEC-010 §4.3 · §2.4).
+            plan = self._plan_room_change_in_action(
+                principal, meeting_id, changes, patch.room_choice(), request_key=payload.get("_room_request_key")
+            )
+            if plan.action in {"cancel", "clear"}:
+                changes = {**changes, "location": None}
             result = meetings.update_info(principal, meeting_id, changes)
-            if {"starts_at", "ends_at"} & set(changes):
+            if plan.action not in {"none", "keep"}:
                 self._after_session_commit(
                     session,
-                    lambda meeting_id=meeting_id: self._sync_room_reservation(meeting_id, cancelled=False),
+                    lambda plan=plan: self._execute_room_plan(principal, plan),
                     refresh_meeting_receipt=True,
                 )
             return result
@@ -3748,18 +4293,18 @@ class WorkflowApplication(ExternalInboxOperations):
             if "description" in changes:
                 changes["purpose"] = changes.pop("description")
             visibility = changes.pop("visibility", None)
+            # 옛 계약도 **같은 수정 검증 경로**를 탄다 — 저장 직전 재확인 · 409 를 비켜 가지 않는다 (SPEC-010 §2.4 · §4.3).
+            plan = self._plan_room_change_in_action(principal, request.meeting_id, changes, None)
             result = meetings.update_info(
                 principal,
                 request.meeting_id,
                 changes,
                 expected_version=request.expected_version,
             )
-            if {"starts_at", "ends_at"} & set(changes):
+            if plan.action not in {"none", "keep"}:
                 self._after_session_commit(
                     session,
-                    lambda meeting_id=request.meeting_id: self._sync_room_reservation(
-                        meeting_id, cancelled=False
-                    ),
+                    lambda plan=plan: self._execute_room_plan(principal, plan),
                     refresh_meeting_receipt=True,
                 )
             if visibility is not None:
@@ -3970,6 +4515,10 @@ class WorkflowApplication(ExternalInboxOperations):
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """Persist the room-create fence before an Action transaction calls the provider."""
+        if operation == "meeting.info.update":
+            # AX 수정 카드가 예약 없던 회의에 방을 고르면 새 예약이다 — 그 승인 하나에 고정된 재시도 키를 싣는다
+            # (PATCH 의 `Idempotency-Key` 자리 · 이중 예약 울타리가 이 키로 provider 를 한 번만 부른다).
+            return {**payload, "_room_request_key": f"action:{action_id}:meeting-update"}
         if operation != "meeting.reservation.create" or payload.get("_room_creation_reservation"):
             return payload
         request = MeetingReservationInput.model_validate(
@@ -4306,6 +4855,17 @@ class WorkflowApplication(ExternalInboxOperations):
         expected_version: int,
         decision: str,
     ) -> ActionProposalResult:
+        return self._run_with_room_recheck(
+            lambda: self._decide_action_once(principal, action_id, expected_version, decision)
+        )
+
+    def _decide_action_once(
+        self,
+        principal: Principal,
+        action_id: UUID,
+        expected_version: int,
+        decision: str,
+    ) -> ActionProposalResult:
         with self._session_factory() as session:
             try:
                 action = self._action_repository(session).action(action_id, str(principal.id))
@@ -4357,6 +4917,10 @@ class WorkflowApplication(ExternalInboxOperations):
     def _action_services(self, session: Any) -> ActionServices:
         """Every delayed dependency remains bound to this transaction's session."""
         return ActionServices(
+            meeting_room_name=self._room_name_or_none,
+            message_origin_recorded=lambda principal, message_id: self._announce_message_updated(
+                session, principal, message_id
+            ),
             tasks=lambda: self._tasks(session),
             assignments=lambda: self._assignments(session),
             task_creation=lambda: self._task_creation(session),
@@ -4405,6 +4969,8 @@ class WorkflowApplication(ExternalInboxOperations):
             schedules=SqlAlchemyTaskScheduleRepository(session),
             # 겹침을 읽는 **문 하나** — 같은 session 이라 **검사와 저장이 한 트랜잭션**에 있다 (증보 K22).
             time_blocks=SqlAlchemyTimeBlockRepository(session),
+            # 메시지함 메시지에서 온 업무의 「원래 메시지」(SPEC-008 §4.8 ③) — 메시지함 저장소가 답한다.
+            message_origins=SqlAlchemyInboxStore(session),
         )
 
     def _projects(self, session: Any) -> ProjectApplication:
@@ -4740,21 +5306,25 @@ def create_scax_mcp_server(
 
 
 def create_codex_cli_provider(
-    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+    settings: Settings, *, enabled_tools: tuple[str, ...] = (), timeout_seconds: int | None = None
 ) -> CodexCliProviderAdapter:
-    """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP."""
+    """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP — under that stage's limit (대화 값 기본)."""
     return CodexCliProviderAdapter(
-        CodexCliProfile(runtime_home=Path(settings.codex_runtime_home)),
+        CodexCliProfile(
+            runtime_home=Path(settings.codex_runtime_home),
+            timeout_seconds=timeout_seconds or settings.ai_timeout_conversation_seconds,
+        ),
         scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools),
     )
 
 
 def create_claude_cli_provider(
-    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+    settings: Settings, *, enabled_tools: tuple[str, ...] = (), timeout_seconds: int | None = None
 ) -> ClaudeCliProviderAdapter:
-    """Compose the Claude Code CLI adapter with the same server-bound SCAX MCP binding as Codex."""
+    """Compose the Claude Code CLI adapter with the same server-bound SCAX MCP binding as Codex — same stage limit."""
     return ClaudeCliProviderAdapter(
-        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools)
+        profile=ClaudeCliProfile(timeout_seconds=timeout_seconds or settings.ai_timeout_conversation_seconds),
+        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools),
     )
 
 
@@ -4766,7 +5336,13 @@ _AI_PROVIDER_FACTORIES = {
 
 
 def create_conversation_provider(
-    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+    settings: Settings, *, enabled_tools: tuple[str, ...] = (), timeout_seconds: int | None = None
 ) -> AiProvider:
-    """The one place a caller picks a provider — by `Settings.ai_provider`, never by importing an adapter."""
-    return _AI_PROVIDER_FACTORIES[settings.ai_provider](settings, enabled_tools=enabled_tools)
+    """The one place a caller picks a provider — by `Settings.ai_provider`, never by importing an adapter.
+
+    **단계 timeout 이 여기서 프로필이 된다** (SPEC-010 §4.6 · WORK-012 WP2-BE). 부르는 자리가 자기 단계 값을 넘긴다 —
+    회의 배치 · 웜스타트 · 최종 합성 · 대화(보고서 생성 포함). 안 넘기면 대화 값이다. 요청 필드
+    `AiProviderProfileRequest.timeout_seconds` 는 쓰지 않는다(두 길을 섞지 않는다).
+    """
+    limit = settings.ai_timeout_conversation_seconds if timeout_seconds is None else timeout_seconds
+    return _AI_PROVIDER_FACTORIES[settings.ai_provider](settings, enabled_tools=enabled_tools, timeout_seconds=limit)

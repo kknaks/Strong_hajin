@@ -59,6 +59,10 @@ class AiConversationRequest:
     #: 사실이며, 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다.
     asked_at: datetime | None = None
     timezone_name: str = "Asia/Seoul"
+    #: AI 맥락 목록 한 덩어리(조직 전체 프로젝트·열린 업무·구성원) — AX 대화는 **매 턴** 싣는다 (SPEC-010 §4.5 · OQ-1002 ②).
+    #: 조립층이 **새 provider 세션을 여는 턴에만** `WorkflowApplication.ai_context_catalog()` 로 채운다(검수 W-3). 비어 있으면
+    #: 싣지 않는다 — 이어 쓰는 턴은 세션이 이미 갖고 있다(회의 배치·합성은 자기 프롬프트에 싣는다).
+    context_catalog: str | None = None
     #: 이 turn 의 답을 강제하는 스키마. 대화로 돌아도 정해진 모양으로만 나오게 한다
     #: (SCAX-SPEC-004 §7.2-6). 없으면 자유 문장이다 — 사람이 읽는 대화가 그렇다.
     output_schema: dict[str, Any] | None = None
@@ -171,6 +175,15 @@ class ProviderRequestFailed(ProviderFailure):
 
 class ProviderResponseInvalid(ProviderRequestFailed):
     """Invalid final output is terminal; repeating the agent could repeat domain effects."""
+
+
+class ProviderTimedOut(ProviderRequestFailed):
+    """The call did not finish within its stage's limit (SPEC-010 §4.6).
+
+    A subclass of `ProviderRequestFailed` so every existing handler still treats it as a failed call; callers that
+    can rebuild the context (meeting batch · warm start · final synthesis) tell it apart and retry once in a NEW
+    session instead of resuming the same one — resuming a session that just timed out tends to time out again.
+    """
 
 
 class ProviderSessionUnavailable(ProviderRequestFailed):

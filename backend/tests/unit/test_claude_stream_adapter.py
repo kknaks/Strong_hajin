@@ -111,7 +111,7 @@ def test_adapter_streams_lines_to_the_sink_before_the_process_ends() -> None:
     sink = RecordingSink()
     seen_during_run: list[int] = []
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         for line in claude_lines():
             on_line(line + "\n")
             seen_during_run.append(len(sink.events))
@@ -136,7 +136,7 @@ def test_adapter_stops_when_the_cancel_token_is_set() -> None:
     token = Token()
     stopped = {"asked": False}
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         on_line(json.dumps({"type": "system", "session_id": "sess_1"}) + "\n")
         token.flag = True
         stopped["asked"] = should_cancel()
@@ -148,7 +148,7 @@ def test_adapter_stops_when_the_cancel_token_is_set() -> None:
 
 
 def test_a_usage_limit_error_fails_the_turn_instead_of_returning_a_stale_answer() -> None:
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         for line in claude_lines(is_error=True):
             on_line(line + "\n")
         return ProcessResult("", "", 0)

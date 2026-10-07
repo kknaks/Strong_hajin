@@ -523,3 +523,34 @@ describe("읽기 전용 입구 (SPEC-007 §2.10.7)", () => {
     });
   }
 });
+
+/* WORK-012 WP4-FE — 출처 행의 원래 메시지 링크(SPEC-008 §2.9 ④ · §4.8 ③). 「판단 보기」 와 **함께** 선다 */
+describe("출처 행 — 원래 메시지 (SPEC-008 §2.9 ④)", () => {
+  const axFromMessage = (message: { message_id: string; source_kind: string; room_id: string | null; label: string }) =>
+    detail({ origin: { kind: "self_created", actor_role: null, actor: null, source: { type: "action_item", id: "ai-1", title: "분기 보고서" }, message } });
+
+  it("「AX 제안 · 판단 보기 · 원래 메시지 · 슬랙 #채널명」 — 누르면 그 메시지로", async () => {
+    const onOpenSource = vi.fn();
+    const onOpenInboxMessage = vi.fn();
+    const message = { message_id: "msg-7", source_kind: "slack", room_id: "r1", label: "슬랙 #pilot-launch" };
+    renderDrawer(axFromMessage(message), { onOpenSource, onOpenInboxMessage });
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(within(chip).getByRole("button", { name: "판단 보기" })).toBeTruthy();
+    fireEvent.click(within(chip).getByRole("button", { name: "원래 메시지 · 슬랙 #pilot-launch" }));
+    expect(onOpenInboxMessage).toHaveBeenCalledWith(message);
+    expect(onOpenSource).not.toHaveBeenCalled();
+  });
+
+  it("메일이면 「원래 메일 · {제목}」", async () => {
+    renderDrawer(axFromMessage({ message_id: "mail-1", source_kind: "mail", room_id: null, label: "메일 2차 파일럿 일정표" }), { onOpenInboxMessage: vi.fn() });
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(within(chip).getByRole("button", { name: "원래 메일 · 메일 2차 파일럿 일정표" })).toBeTruthy();
+  });
+
+  it("메시지함으로 갈 통로가 없는 화면은 글자만", async () => {
+    renderDrawer(axFromMessage({ message_id: "msg-7", source_kind: "kakao", room_id: "k1", label: "카톡 박지윤" }));
+    const chip = await screen.findByLabelText("업무 출처");
+    expect(chip.textContent).toContain("원래 메시지 · 카톡 박지윤");
+    expect(within(chip).queryByRole("button", { name: /원래 메시지/ })).toBeNull();
+  });
+});

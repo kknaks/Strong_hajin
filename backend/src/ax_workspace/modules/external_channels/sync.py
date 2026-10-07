@@ -127,6 +127,8 @@ class RoomState:
     verified: bool = False
     #: 접근을 잃은 사유(`channel_not_found`·`not_in_channel` …). 있으면 `paused` 이고 팬아웃·수집에서 빠진다.
     access_lost: str | None = None
+    #: 그 방을 고른 연동의 슬랙 사용자 id(사용자 토큰의 주인) — 나간 방 이벤트가 「그 회원의 방」 을 고른다.
+    slack_user_id: str | None = None
 
 
 SaveMode = Literal["backfill", "live"]
@@ -138,6 +140,7 @@ class SyncStore(Protocol):
     def mail_integrations_for_address(self, address: str) -> list[IntegrationState]: ...
     def slack_rooms(self) -> list[RoomState]: ...
     def slack_fanout_targets(self, team_id: str, channel: str) -> list[RoomState]: ...
+    def slack_channel_rooms(self, team_id: str, channel: str) -> list[RoomState]: ...
     def save_messages(
         self, integration_id: str, source_kind: str, room_id: str | None, messages: list[NormalizedMessage], *, mode: SaveMode
     ) -> int: ...
@@ -176,6 +179,25 @@ class GmailApi(Protocol):
 class TokenCipher(Protocol):
     def encrypt(self, plaintext: str) -> str: ...
     def decrypt(self, ciphertext: str) -> str: ...
+
+
+#: 나간 방 계열 이벤트(S8 §5 · DEC-009 D-27 · SH-012) — **그 회원(사용자 토큰의 주인)의 방만** 접근 잃음으로.
+#: `member_left_channel` 은 나간 사람이 `event.user`, `channel_left`·`group_left` 는 그 토큰의 주인에게만 온다(`authorizations`).
+SLACK_LEFT_EVENTS = {
+    "member_left_channel": "left_channel",
+    "channel_left": "left_channel",
+    "group_left": "left_channel",
+}
+#: 방 자체가 닫힌 이벤트 — 그 방을 고른 **모든** 회원의 방을 접근 잃음으로.
+SLACK_CLOSED_EVENTS = {
+    "channel_archive": "channel_archived",
+    "group_archive": "channel_archived",
+    "channel_deleted": "channel_deleted",
+    "group_deleted": "channel_deleted",
+}
+#: 운영 슬랙 앱의 이벤트 구독(매니페스트 `settings.event_subscriptions.user_events`)에 **더해야 하는** 이벤트 — 레포에
+#: 매니페스트가 없어 반영 단계가 운영 앱 설정에 손으로 더한다(WORK-012 WP4-BE 리포트).
+SLACK_ROOM_CLOSURE_SUBSCRIPTIONS = tuple(sorted({*SLACK_LEFT_EVENTS, *SLACK_CLOSED_EVENTS}))
 
 
 _MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
@@ -230,6 +252,9 @@ class ExternalSync:
         if event.get("type") in {"tokens_revoked", "app_uninstalled"}:
             self._slack_revocation(str(payload.get("team_id") or event.get("team") or ""), event)
             return 0
+        if event.get("type") in SLACK_LEFT_EVENTS or event.get("type") in SLACK_CLOSED_EVENTS:
+            self._slack_room_closed(payload, event)
+            return 0
         if event.get("type") != "message" or not event.get("channel"):
             return 0
         team_id = str(payload.get("team_id") or event.get("team") or "")
@@ -257,6 +282,43 @@ class ExternalSync:
                 message = {key: value for key, value in event.items() if key not in {"channel_type", "event_ts"}}
                 saved += self._save_slack(token, room, [message], mode="live")
         return saved
+
+    def _slack_room_closed(self, payload: dict[str, Any], event: dict[str, Any]) -> None:
+        """나간 방 · 보관 · 삭제 — **즉시** 그 방을 접근 잃음(`paused`)으로 내려 다음 이벤트부터 분배하지 않는다 (S8 §5 · D-27).
+
+        지금까지는 접근 재확인이 워커 실행마다 방당 1회뿐이라, 회원이 방을 나간 뒤에도 같은 방을 고른 다른 회원의 토큰으로 온
+        이벤트가 그 회원에게 계속 복제되는 창이 있었다. 나간 방은 **그 회원의 방만**, 보관·삭제는 그 방을 고른 **모든** 회원의 방이다.
+        상태가 바뀌면 `set_room_access` 가 `integration.changed` 를 낸다(설정 방 줄이 바뀐다). 되살림은 만들지 않는다 —
+        사람이 설정에서 그 방을 다시 고르면 지금 경로(D-46)로 되살아난다.
+        """
+        kind = str(event.get("type") or "")
+        team_id = str(payload.get("team_id") or event.get("team") or "")
+        channel = event.get("channel")
+        if isinstance(channel, dict):  # `channel_created` 류처럼 객체로 오는 모양도 받는다
+            channel = channel.get("id")
+        if not team_id or not channel:
+            return
+        rooms = self._store.slack_channel_rooms(team_id, str(channel))
+        if kind in SLACK_LEFT_EVENTS:
+            leaver = event.get("user") if kind == "member_left_channel" else None
+            if not leaver:
+                # `channel_left`·`group_left` 는 나간 사람이 그 토큰의 주인이다 — 슬랙이 담아 보낸 한 사람(W-8).
+                authorizations = payload.get("authorizations") or []
+                leaver = (authorizations[0] or {}).get("user_id") if authorizations else None
+            if not leaver:
+                logger.warning("slack %s for %s without a user — ignored", kind, channel)
+                return
+            rooms = [room for room in rooms if room.slack_user_id == str(leaver)]
+            reason = SLACK_LEFT_EVENTS[kind]
+        else:
+            reason = SLACK_CLOSED_EVENTS[kind]
+        for room in rooms:
+            if room.access_lost == reason:
+                continue
+            logger.info("slack %s — room %s of integration %s paused", kind, room.id, room.integration_id)
+            self._store.set_room_access(room.id, ok=False, reason=reason)
+            # 이번 실행에서 다시 확인하지 않게 둔다 — 확인이 「보인다」 로 되살리지 않도록(나간 직후 슬랙 응답이 늦을 수 있다).
+            self._verified_this_run.add(room.id)
 
     def _slack_revocation(self, team_id: str, event: dict[str, Any]) -> None:
         """슬랙이 알린 토큰 폐기·앱 삭제. **그 이벤트가 가리키는 사용자의 연동만** 끊는다 — 같은 워크스페이스의 남의 토큰
@@ -449,6 +511,10 @@ class ExternalSync:
         except UpstreamUnavailable:
             self._verified_this_run.discard(room.id)
             raise
+        if info.get("is_archived"):
+            # 보관된 방은 더 쌓일 것도 답장할 곳도 없다 — 보관 이벤트를 놓쳤어도 실행마다의 확인이 같은 상태로 내린다(S8 §5).
+            self._store.set_room_access(room.id, ok=False, reason="channel_archived")
+            return False
         is_channel = not (info.get("is_im") or info.get("is_mpim") or info.get("is_private") or info.get("is_group"))
         if is_channel and not info.get("is_member"):
             # 공개 채널에서 나갔다 — 사용자 토큰 이벤트가 더는 오지 않고, 그 방의 대화를 이 사람 앞으로 쌓을 근거도 없다.

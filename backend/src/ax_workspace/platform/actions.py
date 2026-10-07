@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ax_workspace.modules.actions.domain import ActionCenterApplication
 from ax_workspace.modules.errors import ResourceNotFound
 from ax_workspace.modules.actions.payloads import normalize_task_progress_batch as _normalize_task_progress_batch
-from ax_workspace.modules.actions.confirmation import SUPPORTED_ACTION_TYPES
+from ax_workspace.modules.actions.confirmation import SUPPORTED_ACTION_TYPES, normalize_meeting_update
 from ax_workspace.modules.actions.policy import (
     CONFIRM_LABELS,
     DRAFT_SAVE_ACTION_TYPES,
@@ -28,7 +28,7 @@ from ax_workspace.modules.actions.policy import (
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, DAILY_REPORT_SUBMIT, PROJECT_READ, TASK_ASSIGN, Principal
 from ax_workspace.modules.meetings.application import MeetingApplication
-from ax_workspace.modules.meetings.domain import MeetingError
+from ax_workspace.modules.meetings.domain import MeetingError, ensure_reservation_agenda_sources
 from ax_workspace.modules.meetings.commands import (
     MeetingFollowupCommand,
     MeetingMaterialDetachCommand,
@@ -88,6 +88,7 @@ from ax_workspace.platform.persistence import (
     ActionItemRecord,
     ActionMaterialDraftRecord,
     ConversationRecord,
+    ContextReferenceRecord,
     ConversationTurnRecord,
     DecisionItemRecord,
     EvidenceRecord,
@@ -99,6 +100,7 @@ from ax_workspace.platform.persistence import (
     SubmissionRecord,
     TaskAssignmentRecord,
     TaskRecord,
+    WorkRequestRecord,
     TaskVersionRecord,
 )
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
@@ -201,6 +203,10 @@ class ActionServices:
     work_requests: Callable[[], WorkRequestApplication]
     conversations: Callable[[], ConversationApplication]
     action_materials: Callable[[], ActionMaterialDraftApplication]
+    #: 확정된 업무가 메시지함 메시지를 출처로 남겼다 — 조립층이 커밋 뒤 `inbox.message_updated` 를 낸다(S8 §4.4).
+    message_origin_recorded: Callable[[Principal, UUID], None]
+    #: 회의실 번호 → 이름(예약 시스템 목록 · 캐시). 모르면 `None` — AX 수정 카드의 「AX 제안」 방 이름(WP3 계약 고정 5).
+    meeting_room_name: Callable[[int], str | None]
 
     def __post_init__(self) -> None:
         for dependency in fields(self):
@@ -301,6 +307,9 @@ class SqlAlchemyActionRepository:
         """The stored form of a proposal, so the same judgement always hashes the same way."""
         if action_type == "meeting.reservation.create":
             return self._freeze_meeting_proposal(owner_id, turn, payload)
+        if action_type == "meeting.info.update":
+            # 수정 제안도 수정 API 와 같은 모양으로 고정한다 — AX 가 낸 장소 글자는 저장하지 않는다(W-r2-6).
+            return normalize_meeting_update(payload)
         if action_type == "task.progress.batch":
             return _normalize_task_progress_batch(payload)
         return payload
@@ -314,9 +323,18 @@ class SqlAlchemyActionRepository:
         """Freeze the current reservation contract before a person reviews it."""
         del owner_id, turn
         try:
-            return MeetingReservationInput.model_validate(payload).model_dump(mode="json")
+            request = MeetingReservationInput.model_validate(payload)
         except (TypeError, ValueError) as error:
             raise MeetingError(str(error)) from error
+        # 출처 규칙은 확정 때도 다시 걸리지만, 이어온 회의 없는 `carried` 는 제안부터 세우지 않는다 (SPEC-010 §4.2).
+        ensure_reservation_agenda_sources(
+            [row.source for row in request.agendas], carried_from=request.carried_from_meeting_id
+        )
+        frozen = request.model_dump(mode="json")
+        # 장소는 회의실 셀렉트(`room_id`)뿐이다 — AX 가 사외 장소를 글자로 냈어도 저장·미리보기에 남기지 않는다
+        # (SPEC-010 §2.4 · 코디 판정 W-r2-6). 사람이 생성 모달에서 직접 쓰는 장소 칸(HTTP)은 그대로다.
+        frozen["location"] = None
+        return frozen
 
     def _meeting_source_label(self, owner_id: str, source_type: str, source_id: str) -> str | None:
         """Re-authorize a previously observed resource before freezing it into a MeetingNote."""
@@ -656,6 +674,10 @@ class SqlAlchemyActionRepository:
         return action.action_type
 
 
+#: 확정되면 원래 메시지를 남기는 생성 제안(SPEC-008 §4.8 ③).
+MESSAGE_ORIGIN_ACTION_TYPES = frozenset({"task.create_self", "task.assign", "work_request.create"})
+
+
 class SqlAlchemyActionExecutor:
     """Invokes existing public application commands inside the Action transaction."""
 
@@ -692,7 +714,7 @@ class SqlAlchemyActionExecutor:
         )
         # Everything this approval causes says which confirmation carried it; the actor stays the approver.
         with caused_by(f"action_item:{action.id}"):
-            return self._execute(
+            result = self._execute(
                 principal,
                 action,
                 payload=confirmed_payload,
@@ -700,6 +722,67 @@ class SqlAlchemyActionExecutor:
                 source_submission_id=source_submission_id,
                 source_review_decision_id=source_review_decision_id,
             )
+        if action.action_type in MESSAGE_ORIGIN_ACTION_TYPES:
+            self._record_message_origin(principal, action)
+        return result
+
+    def _record_message_origin(self, principal: Principal, action: ActionItemRecord) -> None:
+        """메시지함 메시지를 참고 자료로 받은 대화에서 확정된 업무·요청에 **원래 메시지**를 남긴다 (SPEC-008 §4.8 ③ · OQ-907).
+
+        「그 턴의 참고 자료」 는 **참고 자료를 실은 턴 이후 같은 「업무 생성」 흐름**으로 읽는다(코디 판정 ① · 검수 W-1):
+        제안을 낸 턴까지 그 대화에 실린 가장 최근 메시지 참고 자료이되, **그 참고 자료 턴부터 지금까지 다른 업무 생성 제안이
+        확정된 적이 없을 때만** 붙는다. AX 업무 생성은 단계 카드로 몇 턴에 걸칠 수 있다(「이 메시지 읽고 업무 생성해 줘」 →
+        질문·답 → 제안). 한 번 확정되면 그 참고 자료의 흐름은 끝났다 — 같은 대화의 나중 무관한 업무에 새지 않는다(H-1).
+        다른 메시지를 새로 실으면 그것이 이긴다(새 흐름). 같은 확정 안에서 만들어진 업무(요청이면 그 요청과 함께 선 업무)에
+        같은 메시지를 적고, 커밋 뒤 `inbox.message_updated` 를 내게 한다(S8 §4.4 · H-5 — 사건은 조립층이 커밋 뒤에 낸다).
+        """
+        proposing = self._session.get(ConversationTurnRecord, action.turn_id)
+        if proposing is None:
+            return
+        reference = self._session.scalar(
+            select(ContextReferenceRecord)
+            .join(ConversationTurnRecord, ConversationTurnRecord.id == ContextReferenceRecord.turn_id)
+            .where(
+                ContextReferenceRecord.conversation_id == proposing.conversation_id,
+                ContextReferenceRecord.resource_type == "inbox_message",
+                ContextReferenceRecord.included.is_(True),
+                ConversationTurnRecord.started_at <= proposing.started_at,
+            )
+            .order_by(ConversationTurnRecord.started_at.desc(), ContextReferenceRecord.id.desc())
+            .limit(1)
+        )
+        if reference is None:
+            return
+        reference_turn = self._session.get(ConversationTurnRecord, reference.turn_id)
+        flow_closed = reference_turn is not None and self._session.scalar(
+            select(ActionItemRecord.id)
+            .join(ConversationTurnRecord, ConversationTurnRecord.id == ActionItemRecord.turn_id)
+            .where(
+                ConversationTurnRecord.conversation_id == proposing.conversation_id,
+                ConversationTurnRecord.started_at >= reference_turn.started_at,
+                ActionItemRecord.id != action.id,
+                ActionItemRecord.action_type.in_(MESSAGE_ORIGIN_ACTION_TYPES),
+                ActionItemRecord.state == "approved",
+            )
+            .limit(1)
+        )
+        if flow_closed:
+            # 그 참고 자료로 이미 업무가 확정됐다 — 이번 업무는 그 흐름이 아니다(W-1).
+            return
+        try:
+            message_id = UUID(reference.resource_id)
+        except ValueError:
+            return
+        self._session.flush()
+        tasks = list(self._session.scalars(select(TaskRecord).where(TaskRecord.source_action_item_id == action.id)))
+        for task in tasks:
+            task.source_inbox_message_id = message_id
+            if task.source_work_request_id is not None:
+                request = self._session.get(WorkRequestRecord, task.source_work_request_id)
+                if request is not None:
+                    request.source_inbox_message_id = message_id
+        if tasks:
+            self._services.message_origin_recorded(principal, message_id)
 
     def _execute(
         self,
@@ -1311,7 +1394,9 @@ class ActionPresenter:
             self._text(fields, "purpose", "목적", payload.get("purpose"))
             self._date_time(fields, "starts_at", "시작", payload.get("starts_at"))
             self._date_time(fields, "ends_at", "종료", payload.get("ends_at"))
-            self._text(fields, "location", "장소", payload.get("location"))
+            # 장소 글자는 미리보기에 남기지 않는다 — 장소는 회의실(`room_id`)뿐이다 (W-r2-6).
+            if payload.get("room_id") is not None:
+                self._text(fields, "room", "회의실", f"회의실 {payload.get('room_id')}")
             self._person(fields, "host", "주최자", action.owner_id, principal)
             attendee_ids = [str(item) for item in payload.get("attendee_ids") or []]
             if attendee_ids:
@@ -1347,13 +1432,19 @@ class ActionPresenter:
                     ("purpose", "목적"),
                     ("starts_at", "시작"),
                     ("ends_at", "종료"),
-                    ("location", "장소"),
                 ):
                     if key in changes:
                         if key in {"starts_at", "ends_at"} and changes[key]:
                             self._date_time(fields, key, label, changes[key])
                         else:
                             self._text(fields, key, label, changes[key] or "삭제")
+                room = changes.get("room") if isinstance(changes.get("room"), dict) else None
+                if room is not None:
+                    # 회의실은 셀렉트로만 바뀐다 — 장소 글자는 미리보기에 남기지 않는다 (SPEC-010 §2.4 · W-r2-6).
+                    self._text(
+                        fields, "room", "회의실",
+                        "회의실 예약 없음" if room.get("room_id") is None else f"회의실 {room.get('room_id')}",
+                    )
                 if payload.get("title"):
                     self._text(fields, "title", "안건", payload.get("title"))
                 if payload.get("text"):
@@ -1702,6 +1793,11 @@ class ActionPresenter:
             }
         if action.action_type == "meeting.reservation.create":
             return self._meeting_edit_contract(principal, payload, submission)
+        if action.action_type == "meeting.info.update":
+            # 고칠 수 있는 동안만 계약을 낸다 — 확정 뒤에는 결과 영수증이 말한다(참석자에서 빠진 사람은 회의를 못 읽는다).
+            if action.state != "pending":
+                return None
+            return self._meeting_update_edit_contract(principal, payload, submission)
         if action.action_type == "work_request.create":
             return self._work_request_edit_contract(principal, payload, submission)
         try:
@@ -2084,7 +2180,6 @@ class ActionPresenter:
             {"id": "purpose", "label": "목적", "type": "textarea", "required": False, "editable": True},
             {"id": "starts_at", "label": "시작", "type": "datetime", "required": True, "editable": True},
             {"id": "ends_at", "label": "종료", "type": "datetime", "required": True, "editable": True},
-            {"id": "location", "label": "장소", "type": "text", "required": False, "editable": True},
             {"id": "attendee_ids", "label": "참석자", "type": "multi_select", "required": False,
              "editable": True, "options": attendee_options},
             {"id": "external_attendees", "label": "외부 참석자", "type": "string_list",
@@ -2092,10 +2187,94 @@ class ActionPresenter:
             {"id": "agendas", "label": "안건", "type": "object_list", "required": False, "editable": True},
             {"id": "carried_from_meeting_id", "label": "이어온 회의", "type": "text",
              "required": False, "editable": True},
-            {"id": "room_id", "label": "회의실 번호", "type": "number", "required": False, "editable": True},
+            {"id": "room_id", "label": "회의실", "type": "room", "required": False, "editable": True},
         ]
+        # 장소 글자 칸은 없다 — 장소는 회의실 셀렉트(`room_id`)뿐이다(SPEC-010 §2.4 · §4.4 · OQ-1005).
+        values.pop("location", None)
         return {
             "editor": "meeting",
+            "base_submission_version": int(submission.submission_version),
+            "values": values,
+            "fields": fields,
+            "warnings": [],
+            # 회의 생성도 「수정 → 저장」 이 초안 저장(회차+1)이다 (SPEC-010 §4.4 · OQ-1001).
+            "save_command": SAVE_DRAFT_COMMAND,
+        }
+
+    def _meeting_update_edit_contract(
+        self,
+        principal: Principal,
+        payload: dict[str, Any],
+        submission: SubmissionRecord,
+    ) -> dict[str, Any] | None:
+        """AX 회의 수정 카드의 편집 계약 (SPEC-010 §2.4 · §4.3 · WP3 계약 고정 1) — `editor="meeting_update"`.
+
+        `values` = 지금 회의 위에 AX 가 제안한 변경을 겹친 모양 —
+        `{meeting_id, title, purpose, starts_at, ends_at, attendee_ids, external_attendees, room_id, room_name}`.
+        `room_id`·`room_name` 은 **지금 방**이다(수정 셀렉트의 맨 위 「기존」 줄 · 없으면 null) — AX 가 방을 바꾸자고 했으면
+        `room_proposed`(제안했는가 · 「예약 없음」 제안도 true) · `proposed_room_id`·`proposed_room_name`(null = 예약 없음
+        또는 제안 없음) 으로 따로 싣는다(계약 고정 5 · 6). 확정 `draft` 는 **바뀐 칸만** +
+        방은 `room: {room_id}` 또는 `room: {keep: true}` — `room` 이 없으면 방은 그대로다(AX 제안을 적용하지 않는다).
+        장소 글자 칸은 없다(OQ-1005). 회의 수정은 초안 저장·회차를 두지 않는다(§2.4).
+        """
+        canonical = normalize_meeting_update(payload)
+        meeting_id = canonical["meeting_id"]
+        try:
+            detail = self._services.meetings().get(principal, UUID(meeting_id))["meeting"]
+        except (MeetingError, ValueError):
+            # 읽을 수 없는 회의 — 고칠 칸을 내지 않는다(그 사실은 미리보기의 「볼 수 없는 회의」 가 말한다).
+            return None
+        changes = dict(canonical["changes"])
+        # 지금 방 — 응답의 `room_reservation` 은 방 번호를 내지 않으므로 회의 모듈에서 읽는다(쥔 자리만 · 수정할 수 있어야).
+        try:
+            current = self._services.meetings().room_context(principal, UUID(meeting_id))
+        except MeetingError:
+            current = None
+        holds = current is not None and bool(current.external_id) and current.status in {"booked", "failed", "needs_verification"}
+        reservation = {"room_id": current.room_id, "room_name": current.room_name} if holds and current else {}
+        values = {
+            "meeting_id": meeting_id,
+            "title": changes.get("title", detail.get("title")),
+            "purpose": changes.get("purpose", detail.get("purpose")),
+            "starts_at": changes.get("starts_at", detail.get("starts_at")),
+            "ends_at": changes.get("ends_at", detail.get("ends_at")),
+            "attendee_ids": changes.get(
+                "attendee_ids", [person["member_id"] for person in detail.get("attendees") or []]
+            ),
+            "external_attendees": changes.get("external_attendees", list(detail.get("external_attendees") or [])),
+            "room_id": reservation.get("room_id") if holds else None,
+            "room_name": reservation.get("room_name") if holds else None,
+        }
+        # AX 가 방을 제안했으면 따로 싣는다 — 카드가 그 방을 미리 골라 두고 「AX 제안」 표지를 단다(계약 고정 5).
+        # 확정은 **draft 의 사람 선택**만 따른다: draft 에 `room` 이 없으면 방을 바꾸지 않는다(`merge_meeting_update_draft`).
+        proposed = changes.get("room") if isinstance(changes.get("room"), dict) else None
+        # 「AX 가 방을 바꾸자고 했는가」 — `proposed_room_id: null` 만으로는 「예약 없음 제안」 과 「제안 없음」 을 못 가른다(계약 고정 6).
+        values["room_proposed"] = proposed is not None
+        values["proposed_room_id"] = None if proposed is None else proposed.get("room_id")
+        values["proposed_room_name"] = (
+            self._services.meeting_room_name(int(values["proposed_room_id"]))
+            if values["proposed_room_id"] is not None
+            else None
+        )
+        organizations = SqlAlchemyOrganizationRepository(self._session)
+        attendee_options = [
+            {"value": str(row["id"]), "label": str(row["display_name"])}
+            for row in organizations.member_directory()
+            if organizations.principal_for(str(row["id"])) is not None
+        ]
+        fields: list[dict[str, Any]] = [
+            {"id": "title", "label": "회의 명", "type": "text", "required": False, "editable": True},
+            {"id": "purpose", "label": "목적", "type": "textarea", "required": False, "editable": True},
+            {"id": "starts_at", "label": "시작", "type": "datetime", "required": True, "editable": True},
+            {"id": "ends_at", "label": "종료", "type": "datetime", "required": True, "editable": True},
+            {"id": "attendee_ids", "label": "참석자", "type": "multi_select", "required": False,
+             "editable": True, "options": attendee_options},
+            {"id": "external_attendees", "label": "외부 참석자", "type": "string_list",
+             "required": False, "editable": True},
+            {"id": "room", "label": "회의실", "type": "room", "required": False, "editable": True},
+        ]
+        return {
+            "editor": "meeting_update",
             "base_submission_version": int(submission.submission_version),
             "values": values,
             "fields": fields,

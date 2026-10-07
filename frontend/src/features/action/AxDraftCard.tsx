@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type WheelEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type WheelEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { Badge } from "../../ds/Badge";
 import { Button, IconButton } from "../../ds/Button";
 import { CheckboxBox, FieldMessage } from "../../ds/FormControls";
 import { Modal } from "../../ds/Modal";
-import { getActionItems, isStaleActionError, runActionCommand } from "../../lib/api";
+import { discardActionMaterialDraft, getActionItems, isStaleActionError, runActionCommand, stageActionMaterialFile, stageActionMaterialLink } from "../../lib/api";
 import { Icon } from "../../ds/icons/Icon";
-import { axDraftCard, dayDifference, formatDate, isoDateInSeoul, personName, seoulToday } from "../../lib/labels";
+import { axDraftCard, dayDifference, formatDate, isoDateInSeoul, meetingAgendaSourceText, meetingClock, meetingDateInput, personName, seoulToday } from "../../lib/labels";
 import type {
   ActionCommand,
   ActionEditContract,
@@ -19,11 +19,16 @@ import type {
   Project,
 } from "../../lib/viewModels";
 import { CreateWorkModal, ReasonPrompt } from "../work/WorkModals";
+import { BookingModal, type BookingInput } from "../meetings/BookingModal";
+import { RoomSelect, roomChoiceId, type RoomChoice, type RoomSelectStatus } from "../meetings/RoomSelect";
+import { TaskAttachmentGroup, type LocalMaterialTransfer } from "./ActionTaskCard";
 
 /**
  * AX 업무 초안 요약 카드 (SPEC-002 §2.9 · WORK-008 D-02 · A-01).
  *
- * 대상은 두 kind 뿐이다 — `ax.task.create_self`(업무 생성) · `ax.work_request.create`(업무 요청).
+ * 대상은 세 kind 다 — `ax.task.create_self`(업무 생성) · `ax.work_request.create`(업무 요청) · `ax.meeting.reservation.create`(회의 생성).
+ * 회의 생성은 **흐름·디자인만 같고 내용은 회의 고유 필드**다(SPEC-010 §2.4 · OQ-901): 쪽 = 기본 정보 · 참석자 · 회의실·안건 · 자료(OQ-1001),
+ * [수정]은 생성 모달(`BookingModal`)을 편집 창으로 연다 — 「저장」 = 초안 저장(회차+1). 셋째 쪽의 회의실은 공용 셀렉트로 그 자리에서 고른다.
  * 카드는 **읽기 전용 요약**이고 고치는 일은 「새 업무 추가」 창(`CreateWorkModal`)이 한다(P-1). 채팅·홈 판단 대기·
  * 내 업무의 「AX 제안」 칩 세 자리가 **같은 카드**를 쓴다 — 어디서 답해도 같은 항목이 바뀐다(§2.4).
  *
@@ -31,21 +36,33 @@ import { CreateWorkModal, ReasonPrompt } from "../work/WorkModals";
  * 계약의 선택지(`options`)에서 찾는다 — 클라이언트가 추론하지 않는다(S-7 2).
  */
 
-/** 이 카드가 맡는 kind 둘. 채팅의 `action_type` 은 `ax.` 접두사가 없다(서버: `kind = f"ax.{action_type}"`). */
-const AX_DRAFT_KINDS = new Set(["ax.task.create_self", "ax.work_request.create"]);
+/** 이 카드가 맡는 kind 셋. 채팅의 `action_type` 은 `ax.` 접두사가 없다(서버: `kind = f"ax.{action_type}"`). */
+const AX_DRAFT_KINDS = new Set(["ax.task.create_self", "ax.work_request.create", "ax.meeting.reservation.create"]);
+const MEETING_KIND = "ax.meeting.reservation.create";
+
+/** kind 와 편집기가 맞는가 — 업무 둘은 `task` 편집기, 회의 생성은 `meeting` 편집기(SPEC-010 §4.4). */
+function editorMatches(kind: string, editor: string | undefined): boolean {
+  return kind === MEETING_KIND ? editor === "meeting" : editor === "task";
+}
 
 export function isAxDraftKind(kind: string): boolean {
   return AX_DRAFT_KINDS.has(kind);
 }
 
+/** 업무 초안 두 kind 만 — 내 업무의 「AX 제안」 칩처럼 «업무» 자리에서만 쓰는 판별(회의 생성 초안은 그 자리에 서지 않는다). */
+export function isAxTaskDraftKind(kind: string): boolean {
+  return isAxDraftKind(kind) && kind !== MEETING_KIND;
+}
+
 export function isAxDraftAction(action: ActionItem): boolean {
-  return action.edit_contract?.editor === "task" && isAxDraftKind(`ax.${action.action_type}`);
+  const kind = `ax.${action.action_type}`;
+  return isAxDraftKind(kind) && editorMatches(kind, action.edit_contract?.editor);
 }
 
 /** 카드가 읽는 한 벌 — 채팅의 Action 과 판단 대기의 봉투를 같은 모양으로 맞춘다. */
 export type AxDraftSource = {
   actionId: string;
-  kind: "task" | "request";
+  kind: "task" | "request" | "meeting";
   title: string;
   round: number;
   state: "pending" | "approved" | "rejected";
@@ -54,10 +71,24 @@ export type AxDraftSource = {
   commands: ActionCommand[];
   createdAt?: string | null;
   resultTaskId?: string | null;
+  /** 회의 생성 — 확정 뒤 만들어진 회의(「회의 열기」). */
+  resultMeetingId?: string | null;
+  /** 회의 생성 — 주최자 이름(미리보기 `host` 줄). 편집 계약엔 주최자 칸이 없다. */
+  host?: string | null;
 };
 
-function kindOf(type: string): "task" | "request" {
+function kindOf(type: string): "task" | "request" | "meeting" {
+  if (type.endsWith("meeting.reservation.create")) return "meeting";
   return type.endsWith("work_request.create") ? "request" : "task";
+}
+
+function resultMeetingIdOf(result: Record<string, unknown> | null | undefined): string | null {
+  if (!result) return null;
+  if (typeof result.meeting_id === "string") return result.meeting_id;
+  const nested = result.meeting;
+  return nested && typeof nested === "object" && "meeting_id" in nested && typeof (nested as { meeting_id?: unknown }).meeting_id === "string"
+    ? (nested as { meeting_id: string }).meeting_id
+    : null;
 }
 
 /** 채팅 카드 자리의 Action → 카드. */
@@ -78,12 +109,14 @@ export function axDraftFromAction(action: ActionItem): AxDraftSource | null {
     /* 채팅 뷰도 만든 시각을 싣는다(3b fix1) — 없으면 「만든 지 며칠」을 세우지 않는다. */
     createdAt: action.created_at ?? null,
     resultTaskId,
+    resultMeetingId: resultMeetingIdOf(action.result as Record<string, unknown> | null | undefined),
+    host: (action.preview ?? []).find((row) => row.id === "host")?.value ?? null,
   };
 }
 
 /** 판단 대기 봉투(`GET /api/action-items`) → 카드. 봉투가 초안 필드 전체와 만든 시각을 싣는다(3a). */
 export function axDraftFromEnvelope(item: ActionItemEnvelope): AxDraftSource | null {
-  if (!isAxDraftKind(item.kind) || item.edit_contract?.editor !== "task") return null;
+  if (!isAxDraftKind(item.kind) || !item.edit_contract || !editorMatches(item.kind, item.edit_contract.editor)) return null;
   return {
     actionId: item.action_item_id,
     kind: kindOf(item.kind),
@@ -123,6 +156,10 @@ function people(contract: ActionEditContract, fieldId: string): Persona[] {
   return (field(contract, fieldId)?.options ?? []).map((option) => ({ id: option.value, display_name: option.label }) as Persona);
 }
 
+/** 쪽 이름 — 회의 생성은 회의 고유 쪽(OQ-1001), 업무 둘은 기존 넷. 쪽 수는 같다. */
+function pagesOf(kind: AxDraftSource["kind"]): readonly string[] {
+  return kind === "meeting" ? axDraftCard.meetingPages : axDraftCard.pages;
+}
 const PAGE_COUNT = axDraftCard.pages.length;
 
 /**
@@ -173,6 +210,73 @@ function periodText(start: string, due: string): string | null {
   return null;
 }
 
+/** 회의 생성 카드의 쪽 — 회의 고유 필드만(OQ-901). 셋째 쪽의 회의실은 부르는 쪽이 셀렉트를 꽂는다(`roomSlot`). */
+function MeetingPageBody({ source, page, roomSlot }: { source: AxDraftSource; page: number; roomSlot: ReactNode }) {
+  const { contract } = source;
+  const values = contract.values;
+  if (page === 0) {
+    const start = text(values.starts_at);
+    const end = text(values.ends_at);
+    return (
+      <Lines
+        lines={[
+          { label: axDraftCard.meetingTitle, value: text(values.title) || null },
+          { label: axDraftCard.meetingDate, value: start ? formatDate(meetingDateInput(start)) : null },
+          { label: axDraftCard.meetingTime, value: start && end ? `${meetingClock(start)} – ${meetingClock(end)}` : null },
+          { label: axDraftCard.meetingHost, value: source.host ? personName(source.host) : null },
+          { label: axDraftCard.meetingPurpose, value: text(values.purpose) || null, clamp: true },
+        ]}
+      />
+    );
+  }
+  if (page === 1) {
+    return (
+      <Lines
+        lines={[
+          ...group(axDraftCard.meetingAttendees, list(values.attendee_ids).map((id) => nameOf(contract, "attendee_ids", id))),
+          ...group(axDraftCard.meetingGuests, list(values.external_attendees)),
+        ]}
+      />
+    );
+  }
+  if (page === 2) {
+    const agendas = Array.isArray(values.agendas) ? values.agendas : [];
+    const names = agendas
+      .map((row) => (row && typeof row === "object" ? (row as { title?: unknown; source?: unknown }) : { title: row, source: null }))
+      .map((row) => {
+        const title = text(row.title);
+        const origin = row.source === "carried" ? meetingAgendaSourceText("carried") : "";
+        return origin ? `${title} · ${origin}` : title;
+      })
+      .filter(Boolean);
+    return (
+      <div className="ax-draft-card__meeting-room">
+        <div className="ax-draft-card__room">
+          <span className="ax-draft-card__room-label">{axDraftCard.meetingRoom}</span>
+          {roomSlot}
+        </div>
+        <Lines lines={group(axDraftCard.meetingAgendas, names)} />
+      </div>
+    );
+  }
+  return (
+    <Lines
+      lines={[
+        ...group(axDraftCard.filesLabel, source.materials.filter((item) => item.source_kind === "file").map((item) => item.name)),
+        ...group(axDraftCard.linksLabel, source.materials.filter((item) => item.source_kind !== "file").map((item) => item.name)),
+      ]}
+    />
+  );
+}
+
+/** 회의 생성 초안의 회의실 조회 조건 — 시작·종료·참석 인원(사내+사외). 시각이 없으면 부르지 않는다. */
+function meetingRoomQuery(values: Record<string, unknown>) {
+  const startsAt = text(values.starts_at);
+  const endsAt = text(values.ends_at);
+  if (!startsAt || !endsAt) return null;
+  return { starts_at: startsAt, ends_at: endsAt, people: list(values.attendee_ids).length + list(values.external_attendees).length };
+}
+
 function PageBody({ source, page }: { source: AxDraftSource; page: number }) {
   const { contract, kind } = source;
   const values = contract.values;
@@ -184,7 +288,7 @@ function PageBody({ source, page }: { source: AxDraftSource; page: number }) {
     return (
       <Lines
         lines={[
-          { label: axDraftCard.branchLabel, value: axDraftCard.branch[kind] },
+          { label: axDraftCard.branchLabel, value: kind === "meeting" ? null : axDraftCard.branch[kind] },
           { label: axDraftCard.period, value: periodText(text(values.start_date), text(values.due_date)) },
           ...(kind === "request" ? [{ label: axDraftCard.assignee, value: assignee ? nameOf(contract, "assignee_id", assignee) : null }] : []),
           { label: axDraftCard.cc, value: cc.length > 0 ? cc.join(", ") : null },
@@ -229,12 +333,15 @@ export function AxDraftCard({
   source,
   onCommand,
   onOpenTask,
+  onOpenMeeting,
   locked = false,
 }: {
   source: AxDraftSource;
   /** 명령을 보낸다. 확인(`confirm`)은 `base_submission_version`·`draft`·`attachment_draft_ids` 를 싣는다. */
   onCommand: (commandId: string, payload?: Record<string, unknown>) => Promise<void>;
   onOpenTask?: (taskId: string) => void;
+  /** 회의 생성 카드의 접힌 한 줄 「회의 열기」. */
+  onOpenMeeting?: (meetingId: string) => void;
   /** 기억한 봉투로 그린 카드 — 그 화면의 갱신 응답 전에는 명령을 열지 않는다 (WORK-008 Phase 2). */
   locked?: boolean;
 }) {
@@ -253,6 +360,17 @@ export function AxDraftCard({
   const [materials, setMaterials] = useState<ActionMaterialDraft[]>(source.materials);
   useEffect(() => setMaterials(source.materials), [source.materials]);
   const view: AxDraftSource = { ...source, materials };
+  const meetingKind = kind === "meeting";
+  const pages = pagesOf(kind);
+  /* 회의 생성 — 셋째 쪽의 회의실 셀렉트(SPEC-010 §2.2 · §2.4). AX 가 제안한 방이 있으면 미리 골라져 있다.
+     새 회차가 오면(초안 저장) 그 회차의 값으로 다시 선다 */
+  const proposedRoom: RoomChoice =
+    contract.values.room_id !== null && contract.values.room_id !== undefined && contract.values.room_id !== "" ? (String(contract.values.room_id) as RoomChoice) : "none";
+  const [room, setRoom] = useState<RoomChoice>(proposedRoom);
+  useEffect(() => setRoom(proposedRoom), [proposedRoom, contract.base_submission_version]);
+  const [roomStatus, setRoomStatus] = useState<RoomSelectStatus>({ state: "loading", blocked: false, reason: null });
+  const roomChanged = meetingKind && roomChoiceId(room) !== roomChoiceId(proposedRoom);
+  const [transfers, setTransfers] = useState<LocalMaterialTransfer[]>([]);
   const confirm = source.commands.find((command) => command.id === "confirm");
   const reject = source.commands.find((command) => command.id === "reject");
   /* 「수정」 창의 「저장」이 부르는 명령 — 편집 계약이 이름을 대고(`save_command`) 봉투가 지금 열어 둔 것이어야 한다
@@ -285,9 +403,11 @@ export function AxDraftCard({
      실어야 회차를 다시 올리지 않는다(add1). 수정 창의 목록과 카드의 목록(다시 읽은 봉투)은 순서가 다를 수 있다. */
   const confirmPayload = (draft?: Record<string, unknown>, attachmentIds: string[] = staged) => {
     const ids = [...new Set(attachmentIds)].sort();
+    /* 회의 생성 — 카드에서 회의실만 바꿨으면 그 값을 초안으로 싣는다(나머지 칸은 이 회차 값 그대로) */
+    const effective = draft ?? (roomChanged ? { ...contract.values, room_id: roomChoiceId(room) } : undefined);
     return {
       base_submission_version: contract.base_submission_version,
-      ...(draft ? { draft } : {}),
+      ...(effective ? { draft: effective } : {}),
       ...(ids.length > 0 ? { attachment_draft_ids: ids } : {}),
     };
   };
@@ -313,6 +433,25 @@ export function AxDraftCard({
     const direction = swipe.current.distance > 0 ? 1 : -1;
     swipe.current.distance = 0;
     go(page + direction);
+  }
+
+  if (source.state === "approved" && meetingKind) {
+    /* 회의 생성 등록 뒤 — 한 줄(제목 · 날짜 시간)과 [회의 열기](SPEC-010 §2.4) */
+    const start = text(contract.values.starts_at);
+    return (
+      <section className="scax-actioncard ax-draft-card ax-draft-card--done" data-action-id={source.actionId} data-state="approved">
+        <p className="ax-draft-card__line">
+          <Badge tone="neutral">{axDraftCard.registered}</Badge>
+          <b>{source.title}</b>
+          <span>{start ? `${formatDate(meetingDateInput(start))} ${meetingClock(start)}` : "—"}</span>
+        </p>
+        {source.resultMeetingId && onOpenMeeting && (
+          <Button onClick={() => onOpenMeeting(source.resultMeetingId!)} size="sm" type="button">
+            {axDraftCard.openMeeting}
+          </Button>
+        )}
+      </section>
+    );
   }
 
   if (source.state === "approved") {
@@ -352,7 +491,7 @@ export function AxDraftCard({
         </div>
         <b className="ax-draft-card__title">{source.title}</b>
         <div aria-label="초안 페이지" className="ax-draft-card__bar" role="tablist">
-          {axDraftCard.pages.map((name, index) => (
+          {pages.map((name, index) => (
             <button
               aria-label={name}
               aria-selected={index === page}
@@ -367,7 +506,7 @@ export function AxDraftCard({
         </div>
       </header>
       <div
-        aria-label={axDraftCard.pages[page]}
+        aria-label={pages[page]}
         className="ax-draft-card__body"
         onKeyDown={onKeyDown}
         onWheel={onWheel}
@@ -376,15 +515,33 @@ export function AxDraftCard({
       >
         {/* 제목 줄 — 왼쪽 지금 페이지 이름(진하게, 한 단계 큰 글씨), 오른쪽 ‹ › (늘 보이고 첫/끝에서 비활성) (E2E 8 · 9). */}
         <div className="ax-draft-card__pagehead">
-          <b className="ax-draft-card__pagetitle">{axDraftCard.pages[page]}</b>
+          <b className="ax-draft-card__pagetitle">{pages[page]}</b>
           <span className="ax-draft-card__arrows">
             <IconButton disabled={page === 0} label={axDraftCard.previous} name="chevron-left" onClick={() => go(page - 1)} size={16} />
             <IconButton disabled={page === PAGE_COUNT - 1} label={axDraftCard.next} name="chevron-right" onClick={() => go(page + 1)} size={16} />
           </span>
         </div>
-        <PageBody page={page} source={view} />
+        {meetingKind ? (
+          <MeetingPageBody
+            page={page}
+            roomSlot={
+              <RoomSelect
+                disabled={source.state !== "pending" || busy || saving || locked}
+                name={`ax-room-${source.actionId}`}
+                onChange={setRoom}
+                onStatus={setRoomStatus}
+                query={meetingRoomQuery(contract.values)}
+                value={room}
+              />
+            }
+            source={view}
+          />
+        ) : (
+          <PageBody page={page} source={view} />
+        )}
       </div>
       {error && <FieldMessage error={error} />}
+      {meetingKind && source.state === "pending" && roomStatus.reason && <FieldMessage error={roomStatus.reason} />}
       {source.state === "pending" && (
         <footer className="ax-draft-card__foot">
           {ageDays !== null && <span className="t-meta">{axDraftCard.age(ageDays)}</span>}
@@ -413,7 +570,14 @@ export function AxDraftCard({
             </Button>
           )}
           {confirm && (
-            <Button disabled={busy || saving || locked} onClick={() => void send(confirm.id, confirmPayload())} size="sm" tone="primary" type="button" variant="solid">
+            <Button
+              disabled={busy || saving || locked || (meetingKind && roomStatus.blocked)}
+              onClick={() => void send(confirm.id, confirmPayload())}
+              size="sm"
+              tone="primary"
+              type="button"
+              variant="solid"
+            >
               {busy ? axDraftCard.confirming : axDraftCard.confirm}
             </Button>
           )}
@@ -421,6 +585,70 @@ export function AxDraftCard({
       )}
       {editing &&
         save &&
+        meetingKind &&
+        createPortal(
+          /* [수정] = 생성 모달을 편집 창으로(SPEC-010 §2.4 · OQ-1001). 「저장」 = 초안의 새 회차 — 회의를 만들지 않는다.
+             첨부 초안은 업무 카드와 같은 길(D-05) — 붙이고 빼면 서버에 바로 남고, 저장·등록이 그 목록을 싣는다 */
+          <BookingModal
+            draft={{
+              values: { ...contract.values, room_id: roomChoiceId(room) },
+              attendeeOptions: field(contract, "attendee_ids")?.options ?? [],
+              error: editError,
+              onSubmit: async (input: BookingInput) => {
+                setSaving(true);
+                setEditError(null);
+                try {
+                  await onCommand(save.id, confirmPayload({ ...contract.values, ...input }));
+                  setEditing(false);
+                } catch (reason) {
+                  setEditError(reason instanceof Error ? reason.message : axDraftCard.saveFailed);
+                } finally {
+                  setSaving(false);
+                }
+              },
+              attachments: (
+                <TaskAttachmentGroup
+                  contract={contract}
+                  draft={{} as { reference_task_ids?: string[] }}
+                  editable
+                  materials={materials}
+                  onAddFile={async (file) => {
+                    const localId = `upload-${Date.now()}-${file.name}`;
+                    setTransfers((current) => [...current, { id: localId, name: file.name, state: "uploading" }]);
+                    try {
+                      const staged = await stageActionMaterialFile(source.actionId, file);
+                      setTransfers((current) => current.filter((item) => item.id !== localId));
+                      setMaterials((current) => [...current.filter((item) => item.material_draft_id !== staged.material_draft_id), staged]);
+                    } catch (reason) {
+                      const message = reason instanceof Error ? reason.message : "파일을 업로드하지 못했습니다.";
+                      setTransfers((current) => current.map((item) => (item.id === localId ? { ...item, state: "failed", error: message } : item)));
+                    }
+                  }}
+                  onAddLink={async (url, label) => {
+                    const staged = await stageActionMaterialLink(source.actionId, { url, label });
+                    setMaterials((current) => [...current.filter((item) => item.material_draft_id !== staged.material_draft_id), staged]);
+                  }}
+                  onChangeDraft={() => undefined}
+                  onRemoveMaterial={async (id) => {
+                    await discardActionMaterialDraft(source.actionId, id);
+                    setMaterials((current) => current.filter((item) => item.material_draft_id !== id));
+                  }}
+                  onRemoveTransfer={(id) => setTransfers((current) => current.filter((item) => item.id !== id))}
+                  transfers={transfers}
+                />
+              ),
+            }}
+            onClose={() => setEditing(false)}
+            onCreated={() => undefined}
+            onError={setEditError}
+            onNotice={() => undefined}
+            pastRows={[]}
+          />,
+          document.body,
+        )}
+      {editing &&
+        save &&
+        kind !== "meeting" &&
         createPortal(
           /* [수정] = AI 초안이 채워진 「새 업무 추가」 창 그대로(§2.9). 「저장」은 확정이 아니라 초안의 새 회차다(WORK-009 2a-1) —
              성공하면 창을 닫고, 카드는 부르는 쪽이 다시 읽어 온 새 회차 값으로 다시 그려진다. 닫으면 고친 것을 버린다. */

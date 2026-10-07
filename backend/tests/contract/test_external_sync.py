@@ -574,3 +574,76 @@ def test_slack_token_revocation_events_only_disconnect_the_named_user(tmp_path, 
     sync.handle_slack_event({"team_id": TEAM, "event": {"type": "app_uninstalled"}})
     assert client.get("/api/integrations", headers=MINA).json()[0]["status"] == "disconnected"
     del mina, jiho
+
+
+# ── WORK-012 WP4-BE · SH-012 — 나간 방은 바로 끊는다 (SPEC-008 §5 · DEC-009 D-27 · Case Matrix) ─────────────────
+
+
+def _room_status(client, integration_id: str, headers) -> str:
+    [room] = client.get(f"/api/integrations/{integration_id}/rooms", headers=headers).json()
+    return room["status"]
+
+
+def test_a_member_who_leaves_the_channel_stops_receiving_it_at_once(tmp_path) -> None:
+    """두 회원이 같은 채널을 골랐다 — 한 사람이 나가면 **그 사람 방만** 즉시 `paused`, 다음 이벤트는 남은 사람에게만."""
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    jiho = _slack_member(settings, client, "jiho", JIHO, [{"room_id": "C1", "type": "channel"}])
+    sync = ExternalSync(store, cipher=cipher, slack=FakeSlack(), gmail=None, gmail_topic=None)
+    assert sync.handle_slack_event(_event("C1", 1)) == 2
+    sync.handle_slack_event({"team_id": TEAM, "event": {"type": "member_left_channel", "user": "U-jiho", "channel": "C1",
+                                                         "channel_type": "C", "team": TEAM}})
+    assert _room_status(client, jiho, JIHO) == "paused" and _room_status(client, mina, MINA) != "paused"
+    assert sync.handle_slack_event(_event("C1", 2)) == 1  # 재확인을 기다리지 않는다
+    assert [m.external_key for m in _messages(sessions, jiho)] == [ts(1)]
+    assert [m.external_key for m in _messages(sessions, mina)] == [ts(1), ts(2)]
+    with sessions() as session:
+        room = session.scalar(select(ExternalRoomRecord).where(ExternalRoomRecord.integration_id == UUID(jiho)))
+        assert room.room_meta["access_lost"] == "left_channel"
+    # 같은 실행의 다음 바퀴가 「보인다」 로 되살리지 않는다.
+    sync.tick()
+    assert _room_status(client, jiho, JIHO) == "paused"
+
+
+@pytest.mark.parametrize("kind", ["channel_left", "group_left"])
+def test_channel_left_names_the_token_owner_through_authorizations(tmp_path, kind) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    jiho = _slack_member(settings, client, "jiho", JIHO, [{"room_id": "C1", "type": "channel"}])
+    sync = ExternalSync(store, cipher=cipher, slack=FakeSlack(), gmail=None, gmail_topic=None)
+    sync.handle_slack_event({"team_id": TEAM, "authorizations": [{"user_id": "U-mina", "team_id": TEAM}],
+                             "event": {"type": kind, "channel": "C1", "actor_id": "U-mina"}})
+    assert _room_status(client, mina, MINA) == "paused" and _room_status(client, jiho, JIHO) != "paused"
+    # 누가 나갔는지 모르는 이벤트는 아무 방도 내리지 않는다.
+    sync.handle_slack_event({"team_id": TEAM, "event": {"type": kind, "channel": "C1"}})
+    assert _room_status(client, jiho, JIHO) != "paused"
+
+
+@pytest.mark.parametrize("kind", ["channel_archive", "group_archive", "channel_deleted", "group_deleted"])
+def test_an_archived_or_deleted_channel_pauses_every_member_who_picked_it(tmp_path, kind) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    jiho = _slack_member(settings, client, "jiho", JIHO, [{"room_id": "C1", "type": "channel"}])
+    sync = ExternalSync(store, cipher=cipher, slack=FakeSlack(), gmail=None, gmail_topic=None)
+    sync.handle_slack_event({"team_id": "T-OTHER", "event": {"type": kind, "channel": "C1"}})  # 다른 워크스페이스
+    assert _room_status(client, mina, MINA) != "paused"
+    sync.handle_slack_event({"team_id": TEAM, "event": {"type": kind, "channel": "C1", "user": "U-admin"}})
+    assert _room_status(client, mina, MINA) == "paused" and _room_status(client, jiho, JIHO) == "paused"
+    assert sync.handle_slack_event(_event("C1", 1)) == 0
+
+
+def test_the_periodic_check_also_pauses_an_archived_channel(tmp_path) -> None:
+    settings, client, _, store, sessions, cipher = _stack(tmp_path)
+    mina = _slack_member(settings, client, "mina", MINA, [{"room_id": "C1", "type": "channel"}])
+    slack = FakeSlack()
+    slack.info["C1"] = {"id": "C1", "name": "general", "is_channel": True, "is_member": True, "is_archived": True}
+    ExternalSync(store, cipher=cipher, slack=slack, gmail=None, gmail_topic=None).tick()
+    assert _room_status(client, mina, MINA) == "paused"
+
+
+def test_the_subscription_list_for_the_slack_app_names_every_closure_event() -> None:
+    from ax_workspace.modules.external_channels.sync import SLACK_ROOM_CLOSURE_SUBSCRIPTIONS
+
+    assert set(SLACK_ROOM_CLOSURE_SUBSCRIPTIONS) == {
+        "member_left_channel", "channel_left", "group_left", "channel_archive", "group_archive", "channel_deleted", "group_deleted",
+    }

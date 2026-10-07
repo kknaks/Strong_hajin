@@ -400,6 +400,8 @@ export const taskDetail = {
   /** AX 제안에서 생긴 업무의 출처 — 링크 글자가 업무 제목이 아니라 「판단 보기」다 (§2.10.8 · 결정 e). */
   originAx: "AX 제안",
   originOpenDecision: "판단 보기",
+  /** 원래 메시지로 가는 링크(SPEC-008 §2.9 ④) — 「원래 메시지 · 슬랙 #채널명」 / 「원래 메일 · {제목}」 */
+  originMessage: (sourceKind: string, label: string) => `${sourceKind === "mail" ? "원래 메일" : "원래 메시지"} · ${label}`,
 
   /* 인라인 즉시 저장 (SPEC-007 §2.10.4 · WORK-010 2a-3) — 편집 모드·「변경 저장」이 없다 */
   /** 머리 제목을 그 자리에서 고치는 칸의 읽어 주는 이름. */
@@ -747,7 +749,7 @@ export const meetingCardBadgeTone: Record<MeetingStatus, "accent" | "neutral" | 
  * (`agenda.track === "ai"`), 그 벌의 안건은 `source` 가 `null` 로 온다. 출처는 사람 벌만 갖는다.
  */
 const agendaSourceLabel: Record<string, string> = {
-  manual: "직접 입력",
+  manual: "새로 추가된 안건",
   set: "세트",
   carried: "지난 회의에서 넘어옴",
   derived: "다른 회의에서 파생",
@@ -773,7 +775,10 @@ export const shellNav = {
 export const meetingScreen = {
   /* 목록 (SCR-105) */
   title: "회의 목록",
+  /** 상세 머리 — 예정 회의를 지금 시작한다(`MeetingDetailPage`). */
   start: "회의 시작",
+  /** 목록 머리의 주 단추 — 값을 묻지 않고 지금 회의를 하나 연다(`quickStartMeeting`). SH-IMP-020: 옛 「회의 시작」 */
+  quickStart: "빠른 회의",
   book: "회의 생성",
   upcoming: "예정",
   past: "지난",
@@ -857,7 +862,27 @@ export const meetingScreen = {
   /** 갈래를 두지 않는다 — 위에서 다 고르고 아래는 단추 하나다. */
   createMeeting: "회의 생성",
   /** 장소를 안 고르는 자리. 목록 맨 위에 서고 기본값이다 — 이걸 고르면 회의실을 잡지 않는다. */
-  noRoom: "회의실 선택 안 함",
+  /** 회의실 셀렉트의 「예약 없음」 줄(SPEC-010 §2.2 — 옛 「회의실 선택 안 함」). 생성 때 기본값 */
+  noRoom: "회의실 예약 없음",
+  /* 회의실 셀렉트(SPEC-010 §2.2 · 네 자리가 같이 쓴다) — 문구는 OQ-1017 코디 기본값 */
+  roomKeep: (name: string) => `기존 — ${name} (변경 안 함)`,
+  roomKeepUnchecked: (name: string) => `기존 — ${name} (확인 못 함)`,
+  roomUnavailableReason: { time_conflict: "새 시간에 예약 불가", capacity: "새 인원보다 작은 방" } as Record<string, string>,
+  roomUnavailableFallback: "새 조건에 예약 불가",
+  roomsEmpty: "이 시간·인원에 예약 가능한 회의실이 없습니다",
+  roomsFailed: "회의실 정보를 불러오지 못했습니다 — 다시 시도",
+  roomsRetry: "다시 시도",
+  roomsLoading: "회의실을 확인하는 중",
+  /** 기존 방을 새 조건에 쓸 수 없어 [저장]이 막혔다(H-2 · OQ-1016) — [저장] 옆 한 줄 */
+  roomPickAgain: "회의실을 다시 골라 주세요 — 기존 회의실을 새 시간·인원에 쓸 수 없습니다",
+  /** 고른 방이 새 조건 목록에서 빠졌다 — 조용히 「예약 없음」 으로 옮기지 않는다 */
+  roomPickedGone: (name: string) => `고른 회의실 「${name}」 은 이 시간·인원에 예약할 수 없습니다 — 다시 골라 주세요`,
+  /** 불러오기 뒤 지난 회의의 방을 새 시간·인원에 못 쓴다(WP1 검수 W-3) */
+  roomCarriedGone: (name: string) => `지난 회의의 회의실 「${name}」 은 이 시간·인원에 예약할 수 없습니다`,
+  /** 조회 실패 중 「기존 (확인 못 함)」 으로 저장했다(H-1) */
+  roomSyncUnchecked: "회의는 바뀌었습니다 — 회의실 예약은 확인하지 못했습니다. The Connect 에서 확인해 주세요",
+  /** 저장 때 Connect 에 닿지 못했다(WP3 계약 고정 3 — `room_reservation {status: failed, reason: reservation_unavailable}`) */
+  roomSyncFailed: "회의실 예약 시스템에 닿지 못했습니다",
   /** 회의실을 잡는 동안 — 예약 시스템이 20초까지 붙잡을 수 있다. 다시 걸지 않는다. */
   booking: "예약 중",
   peopleSearchPlaceholder: "조직도 내 이름 검색 / 사외 참석자 추가",
@@ -883,10 +908,17 @@ export const meetingScreen = {
   /** 고른 방이 안 돼 다른 방으로 잡혔을 때 — **임시 문구다** (보고 미결). */
   roomReplaced: (roomName: string) => `${roomName}(으)로 예약됐습니다`,
 
+  /** 그 밖의 저장 오류 — 코드별 문구(WP3 계약 고정 §7). 모르는 코드는 서버 `detail.message` 를 낸다 */
+  saveErrors: {
+    ROOM_RESERVATION_UNCONFIRMED: "회의실 예약을 아직 확인 중입니다 — 잠시 뒤 다시 시도해 주세요",
+  } as Record<string, string>,
+
   /* 회의실을 못 잡아 **회의가 만들어지지 않았을 때** 내는 한 줄. 셋 다 **임시 문구다** (보고 미결).
      모달은 닫히지 않는다 — 쓴 것을 그대로 두고 방만 다시 고르면 된다. */
   roomRejected: {
     room_unavailable: "회의실이 이미 예약되어 있습니다",
+    /** 수정 저장 직전 그새 방이 찼다(SPEC-010 §4.3 · WP3 계약 고정 2) */
+    ROOM_BOOKING_REFUSED: "그새 회의실이 찼습니다 — 지금 가능한 회의실에서 다시 골라 주세요",
     reservation_auth_failed: "회의실 예약 계정을 쓸 수 없습니다",
     reservation_unavailable: "회의실 예약 시스템에 닿지 못했습니다",
   } as Record<string, string>,
@@ -916,6 +948,15 @@ export const meetingScreen = {
    * 그쪽은 아직 회의가 돌고 AI 가 중간 요약을 채우는 중이고, 이쪽은 회의가 닫혀 최종 한 벌을 짓는 중이다.
    */
   finalNoteGenerating: "최종 회의록 생성 중입니다.",
+  /* 「용어 보정」 표 — 최종 회의록 끝(SPEC-010 §2.5 · D-18). 읽기 전용 */
+  termCorrectionsTitle: "용어 보정",
+  termCorrectionsHeard: "들린 말",
+  termCorrectionsCorrected: "바로잡은 말",
+  termCorrectionsGrade: "처리",
+  /** 정정이 돌았고 바꿀 것이 없었다(`[]`) — H-3. 돌지 않은 회의(`null`)는 표 자리 자체가 없다 */
+  termCorrectionsEmpty: "바로잡은 용어 없음",
+  /** `auto` = 본문에 바로잡은 말로 썼다 · `presumed` = 본문은 들린 말 그대로, 표에만 남겼다 */
+  termCorrectionGrade: { auto: "바꿈", presumed: "표에만" } as Record<string, string>,
   lastSaved: (at: string) => `마지막 저장 ${at}`,
   edit: "수정",
   saved: "저장했습니다.",
@@ -1355,9 +1396,27 @@ export const calendarDow = ["일", "월", "화", "수", "목", "금", "토"] as 
 export const axDraftCard = {
   badge: "AX",
   round: (round: number) => `초안 · ${round}회차`,
-  kind: { task: "업무 생성", request: "업무 요청" } as const,
+  kind: { task: "업무 생성", request: "업무 요청", meeting: "회의 생성" } as const,
   branch: { task: "내 업무", request: "요청 업무" } as const,
   pages: ["기본 정보", "체크리스트", "업무 연결", "자료"] as const,
+  /** AX 회의 생성 카드의 쪽(SPEC-010 §2.4 · OQ-1001) — 업무 카드와 같은 넷이지만 내용은 회의 고유 필드 */
+  meetingPages: ["기본 정보", "참석자", "회의실·안건", "자료"] as const,
+  meetingTitle: "회의명",
+  meetingPurpose: "목적",
+  meetingDate: "날짜",
+  meetingTime: "시간",
+  meetingHost: "주최자",
+  meetingAttendees: "참석자",
+  meetingGuests: "사외 참석자",
+  meetingRoom: "회의실",
+  meetingAgendas: "안건",
+  openMeeting: "회의 열기",
+  /* AX 회의 수정 카드(SPEC-010 §2.4) — 고칠 수 있는 카드 · 초안 저장·회차 없음 */
+  updateKind: "회의 수정",
+  /** AX 가 제안한 방을 미리 골라 둔 표지(WP3 계약 고정 §5). 이름을 모르면 「AX 제안」 만 */
+  proposedRoom: (name: string | null) => (name ? `AX 제안 · ${name}` : "AX 제안"),
+  noRoomProposal: "회의실 예약 없음",
+  updateGuestsHint: "쉼표로 구분",
   none: "없음",
   branchLabel: "갈래",
   referencesLabel: "참고",
@@ -1443,6 +1502,17 @@ export const inboxScreen = {
   /* 메일 */
   reply: "답장",
   replyAll: "전체 답장",
+  /* 메시지함 → AX(SPEC-008 §2.9 · OQ-908) — 막대 아이콘의 툴팁 · 메일 머리 단추 · 말풍선 본문 넷 · 「업무 만듦」 */
+  axTask: "AX 업무 생성",
+  axSummary: "AX 요약",
+  threadReply: "스레드에 답글",
+  messageBar: "메시지 행동",
+  askTaskMessage: "이 메시지 읽고 업무를 생성해 줘",
+  askSummaryMessage: "이 메시지 요약해 줘",
+  askTaskMail: "이 메일 읽고 업무를 생성해 줘",
+  askSummaryMail: "이 메일 요약해 줘",
+  madeTask: "업무 만듦",
+  focusMissing: "메시지를 찾을 수 없습니다",
   from: "보낸 사람",
   to: "받는 사람",
   cc: "참조",

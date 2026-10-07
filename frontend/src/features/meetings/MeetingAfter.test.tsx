@@ -137,8 +137,8 @@ function meeting(over: Partial<MeetingInfo> = {}): MeetingInfo {
   };
 }
 
-function renderAfter(over: Partial<MeetingInfo> = {}, agendas: MeetingAgenda[] = [agenda]) {
-  const value: MeetingRecord = { meeting: meeting(over), agendas };
+function renderAfter(over: Partial<MeetingInfo> = {}, agendas: MeetingAgenda[] = [agenda], extra: Partial<MeetingRecord> = {}) {
+  const value: MeetingRecord = { meeting: meeting(over), agendas, ...extra };
   vi.mocked(api.readMeeting).mockResolvedValue(value);
   const onNotice = vi.fn();
   render(
@@ -233,7 +233,9 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     await screen.findByText("DB ax 전략");
     // 완료된 회의에서도 출처는 사라지지 않는다 (E21 「상태와 무관하게 늘 낸다」)
     expect(screen.queryByText("AI 정리")).toBeNull();
-    for (const label of ["직접 입력", "세트", "지난 회의에서 넘어옴", "다른 회의에서 파생"]) {
+    // `manual` 문구는 「새로 추가된 안건」 이다(SPEC-010 §2.3 — 옛 「직접 입력」)
+    expect(screen.queryByText("직접 입력")).toBeNull();
+    for (const label of ["새로 추가된 안건", "세트", "지난 회의에서 넘어옴", "다른 회의에서 파생"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     expect(screen.queryByText("sideways")).toBeNull();
@@ -473,6 +475,32 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     expect(within(modal).queryByText("AI 가 세운 안건")).toBeNull();
     // 결론 난 최종 안건도 안 넘어간다 (끝난 일이다)
     expect(within(modal).queryByText("토큰 수요 전망")).toBeNull();
+  });
+
+  it("[다음 회의 예약]도 안건마다 출처를 보낸다 — 넘어온 안건 = carried · 손으로 더한 안건 = manual (SPEC-010 §2.3 · AC-10)", async () => {
+    const carryable: MeetingAgenda = { ...agenda, agenda_id: "f-2", title: "이어서 볼 최종 안건", concluded: false, lines: [], todos: [] };
+    renderAfter({}, [agenda, carryable]);
+    await screen.findByText("DB ax 전략");
+
+    fireEvent.click(screen.getByRole("button", { name: "다음 회의 예약" }));
+    const modal = await screen.findByRole("dialog", { name: /회의 예약/ });
+    expect(within(modal).getByText("지난 회의에서 넘어옴")).toBeTruthy();
+
+    fireEvent.change(within(modal).getByPlaceholderText("안건을 적으세요"), { target: { value: "새로 쓴 안건" } });
+    fireEvent.click(within(modal).getByRole("button", { name: "안건 추가" }));
+    expect(within(modal).getByText("새로 추가된 안건")).toBeTruthy();
+    fireEvent.change(within(modal).getByRole("combobox"), { target: { value: "한서린" } });
+    fireEvent.click(within(modal).getByRole("button", { name: "한서린 사외 참석자로 추가" }));
+
+    vi.mocked(api.bookMeeting).mockResolvedValue({ meeting: meeting(), agendas: [] });
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalled());
+    const input = vi.mocked(api.bookMeeting).mock.calls[0][0];
+    expect(input.agendas).toEqual([
+      { title: "이어서 볼 최종 안건", source: "carried" },
+      { title: "새로 쓴 안건", source: "manual" },
+    ]);
+    expect(input.carried_from_meeting_id).toBeTruthy();
   });
 
   it("저장은 **최종 벌 안건만** 보낸다 — 임시 벌로 나가면 서버가 409 다", async () => {
@@ -770,5 +798,89 @@ describe("SCR-106 「정리 중」 — 최종 회의록을 짓는 동안", () =>
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/*
+ * WORK-012 WP2-FE — 최종 회의록 끝 「용어 보정」 표 · 안건 순서(SPEC-010 §2.5 · §4.7 · H-3).
+ * 응답 모양(코디 판정 2026-10-07): 상세 응답 **최상위** `term_corrections` — `null` = 정정이 돌지 않음(표 자리 없음) ·
+ * `[]` = 돌았고 바꿀 것 없음(「바로잡은 용어 없음」 한 줄) · 행 목록 = 표.
+ */
+describe("WP2-FE — 「용어 보정」 표 · 안건 순서", () => {
+  const rows = [
+    { heard: "캐스티", corrected: "Casty", grade: "auto" },
+    { heard: "김민수 님", corrected: "김민서 님", grade: "presumed" },
+  ];
+  const section = () => screen.queryByRole("region", { name: "용어 보정" });
+
+  it("행이 있으면 최종 회의록 «끝»에 표가 선다 — 들린 말 · 바로잡은 말 · 처리(바꿈/표에만) · 서버 순서 그대로", async () => {
+    renderAfter({}, [agenda], { term_corrections: rows });
+    await screen.findByText("DB ax 전략");
+    const region = await screen.findByRole("region", { name: "용어 보정" });
+    const table = within(region).getByRole("table", { name: "용어 보정" });
+    const header = [...table.querySelectorAll("thead th")].map((cell) => cell.textContent);
+    expect(header).toEqual(["들린 말", "바로잡은 말", "처리"]);
+    const body = [...table.querySelectorAll("tbody tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
+    expect(body).toEqual([
+      ["캐스티", "Casty", "바꿈"],
+      ["김민수 님", "김민서 님", "표에만"],
+    ]);
+    // «끝» — 회의록 본문의 마지막 안건 뒤에 선다
+    const note = region.closest(".scax-note__body") as HTMLElement;
+    const blocks = [...note.querySelectorAll(".scax-agenda-block")];
+    expect(blocks.at(-1)).toBe(region);
+    // 읽기 전용 — 칸·단추가 없다
+    expect(within(region).queryByRole("textbox")).toBeNull();
+    expect(within(region).queryByRole("button")).toBeNull();
+  });
+
+  it("`[]` 이면 표 자리에 「바로잡은 용어 없음」 한 줄 (H-3)", async () => {
+    renderAfter({}, [agenda], { term_corrections: [] });
+    const region = await screen.findByRole("region", { name: "용어 보정" });
+    expect(within(region).getByText("바로잡은 용어 없음")).toBeTruthy();
+    expect(within(region).queryByRole("table")).toBeNull();
+  });
+
+  it("`null`(정정이 돌지 않은 회의)·칸 없음(옛 응답)이면 표 자리 자체가 없다 (H-3)", async () => {
+    renderAfter({}, [agenda], { term_corrections: null });
+    await screen.findByText("수요는 구조적으로 는다는 전제에 합의했다.");
+    expect(section()).toBeNull();
+    expect(screen.queryByText("바로잡은 용어 없음")).toBeNull();
+    cleanup();
+    renderAfter({}, [agenda]);
+    await screen.findByText("수요는 구조적으로 는다는 전제에 합의했다.");
+    expect(section()).toBeNull();
+  });
+
+  it("「실패」 화면에서도 최종 벌이 서면 표가 선다 · 「정리 중」·「예정」에는 없다", async () => {
+    renderAfter({ status: "failed", failure_reason: "finalize_failed" }, [agenda], { term_corrections: rows });
+    expect(await screen.findByRole("region", { name: "용어 보정" })).toBeTruthy();
+    cleanup();
+    renderAfter({ status: "summarizing" }, [agenda], { term_corrections: rows });
+    await screen.findByText("DB ax 전략");
+    expect(section()).toBeNull();
+    cleanup();
+    renderAfter({ status: "scheduled", started_at: null }, [{ ...agenda, track: "memo" }], { term_corrections: rows });
+    await screen.findByText("DB ax 전략");
+    expect(section()).toBeNull();
+  });
+
+  it("표가 서도 「참석 N명」은 그대로다 — 보정 표는 머리·참석자를 건드리지 않는다 (OQ-905 · D-17)", async () => {
+    // 화자 라벨(「화자 N」)이 그대로인 것은 위 스크립트 시험이 잠근다 — 이 판은 스크립트(원문)를 바꾸지 않는다(§4.7-8)
+    renderAfter({}, [agenda], { term_corrections: rows });
+    await screen.findByRole("region", { name: "용어 보정" });
+    expect(document.body.textContent).toContain("참석 2명");
+  });
+
+  it("최종 안건은 서버가 매긴 순서(`order`) 그대로 선다 — 화면이 근거 시각으로 다시 정렬하지 않는다 (D-15)", async () => {
+    /* 서버가 적재 때 가장 이른 근거 시각으로 `order` 를 매긴다(§4.7-7). 화면은 그 값만 따른다 —
+       여기서는 일부러 «근거 시각이 늦은 안건» 을 order 1 로 줘서, 화면이 시각으로 다시 줄 세우지 않는지 본다. */
+    const late = { ...agenda, agenda_id: "a-late", order: 1, title: "늦게 나온 안건", lines: [{ ...agenda.lines[0], line_id: "l-late", evidence: [{ start_ms: 900_000, end_ms: 950_000 }] }], todos: [] };
+    const early = { ...agenda, agenda_id: "a-early", order: 2, title: "먼저 나온 안건", lines: [{ ...agenda.lines[0], line_id: "l-early", text: "앞선 줄.", evidence: [{ start_ms: 10_000, end_ms: 20_000 }] }], todos: [] };
+    // 배열 순서도 order 와 반대로 — 화면은 배열 순서도, 근거 시각도 아니라 서버의 `order` 를 따른다
+    renderAfter({}, [early, late]);
+    await screen.findByText("DB ax 전략");
+    const titles = [...document.querySelectorAll(".scax-note__body .scax-agenda-block__title")].map((node) => node.textContent);
+    expect(titles).toEqual(["안건 1. 늦게 나온 안건", "안건 2. 먼저 나온 안건"]);
   });
 });

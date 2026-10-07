@@ -58,7 +58,9 @@ class ConversationWorker:
         self._settings = settings
         self._sessions = make_session_factory(settings.database_url)
         self._execution_guard = SqlAlchemyConversationExecutionGuard(self._sessions.kw["bind"])
-        self._provider = provider or create_conversation_provider(settings)
+        self._provider = provider or create_conversation_provider(
+            settings, timeout_seconds=settings.ai_timeout_conversation_seconds
+        )
         # Rebuilding the turn's context from the canonical conversation, not from the provider's memory.
         self._application = create_workflow_application(settings)
         self._worker_id = f"conversation-worker:{uuid4().hex[:12]}"
@@ -148,12 +150,17 @@ class ConversationWorker:
             message.execution.conversation_id,
             include_exchanges=request.provider_session_ref is None,
         )
+        # A provider checkpoint may contain prior material text whose permission has since changed.
+        session_ref = None if pack.get("reset_provider_session") else request.provider_session_ref
         request = replace(
             request,
-            # A provider checkpoint may contain prior material text whose permission has since changed.
-            provider_session_ref=None if pack.get("reset_provider_session") else request.provider_session_ref,
+            provider_session_ref=session_ref,
             seed_references=tuple(pack["seeds"]),
             recent_exchanges=tuple(pack["exchanges"]),
+            # AI 맥락 목록 — **새 provider 세션을 여는 턴에만**(대화의 첫 턴 · 세션을 새로 열 때) 그 순간 DB 에서 싣는다
+            # (WP2 의 같은 함수 · SPEC-010 §4.5 · OQ-1002 ② 코디 고침 — 검수 W-3). 이어 쓰는 턴은 세션이 이미 갖고 있다 —
+            # 매 턴 실으면 세션 기록에 목록이 한 벌씩 쌓여 긴 대화가 느려지고 문맥 한도에 닿는다.
+            context_catalog=self._application.ai_context_catalog() if session_ref is None else None,
         )
         with self._sessions() as session:
             return ClaimedTurn(

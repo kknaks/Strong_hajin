@@ -17,6 +17,7 @@ from ax_workspace.platform.persistence import (
     MeetingAiSessionRecord,
     MeetingBatchRunRecord,
     MeetingRecordingFileRecord,
+    MeetingTermCorrectionRecord,
     MeetingTodoRecord,
     MeetingTranscriptRecord,
     MeetingRecord,
@@ -784,21 +785,17 @@ class SqlAlchemyMeetingRepository:
         self._session.flush()
 
     def next_meeting_after(self, meeting: MeetingRecord) -> MeetingRecord | None:
-        """이어진 다음 회의 — 이 회의를 이월한 회의이거나, 같은 조직의 다음 예약이다 (SPEC-004 §8.2 기한 ②)."""
-        carried = self._session.scalar(
-            select(MeetingRecord)
-            .where(MeetingRecord.carried_from_meeting_id == meeting.id)
-            .order_by(MeetingRecord.starts_at)
-        )
-        if carried is not None:
-            return carried
+        """다음 회의 — **이 회의에서 이월된 회의만**이다 (SPEC-010 §4.8 기한 ② · DEC-009 D-19).
+
+        취소된 회의는 빼고, **이 회의보다 뒤에 시작하는 것** 중 가장 이른 것. 0.6.x 는 이월 회의가 없으면 같은 owner 의
+        아무 다음 예약을 잡았다 — 같은 날 오후의 다른 회의가 「다음 회의」 가 되어 기한이 회의 전날로 떨어졌다(BE §5.5).
+        """
         return self._session.scalar(
             select(MeetingRecord)
             .where(
-                MeetingRecord.organization_id == meeting.organization_id,
-                MeetingRecord.owner_id == meeting.owner_id,
+                MeetingRecord.carried_from_meeting_id == meeting.id,
+                MeetingRecord.status != "cancelled",
                 MeetingRecord.starts_at > meeting.starts_at,
-                MeetingRecord.status == "scheduled",
             )
             .order_by(MeetingRecord.starts_at)
         )
@@ -810,8 +807,52 @@ class SqlAlchemyMeetingRepository:
         """
         self._session.execute(delete(MeetingTodoRecord).where(MeetingTodoRecord.meeting_id == meeting.id))
         self._session.execute(delete(MeetingLineRecord).where(MeetingLineRecord.meeting_id == meeting.id))
+        # 용어 보정 표도 회의록의 일부다 — 함께 지우고 「정정이 돌았다」 표지도 걷는다 (SPEC-010 §4.7-4).
+        self._session.execute(
+            delete(MeetingTermCorrectionRecord).where(MeetingTermCorrectionRecord.meeting_id == meeting.id)
+        )
+        meeting.term_corrected_at = None
         meeting.last_saved_at = None
         self._session.flush()
+
+    # ------------------------------------------------------------------ 용어 보정 표 (SPEC-010 §4.7)
+
+    def replace_term_corrections(
+        self, meeting: MeetingRecord, rows: list[dict[str, str]] | None, *, at: datetime
+    ) -> None:
+        """그 회의의 보정 표를 **통째로 갈아 끼우고** `term_corrected_at` 을 찍는다 — 부르는 쪽의 트랜잭션 안이다.
+
+        `rows=None` = 정정 pass 가 돌지 않았다 — 표를 비우고 시각도 걷는다(응답 `null`).
+        """
+        self._session.execute(
+            delete(MeetingTermCorrectionRecord).where(MeetingTermCorrectionRecord.meeting_id == meeting.id)
+        )
+        if rows is None:
+            meeting.term_corrected_at = None
+            self._session.flush()
+            return
+        for order, row in enumerate(rows, start=1):
+            self._session.add(
+                MeetingTermCorrectionRecord(
+                    meeting_id=meeting.id,
+                    order_index=order,
+                    heard=row["heard"],
+                    corrected=row["corrected"],
+                    grade=row["grade"],
+                    created_at=at,
+                )
+            )
+        meeting.term_corrected_at = at
+        self._session.flush()
+
+    def term_corrections(self, meeting: MeetingRecord) -> list[MeetingTermCorrectionRecord]:
+        return list(
+            self._session.scalars(
+                select(MeetingTermCorrectionRecord)
+                .where(MeetingTermCorrectionRecord.meeting_id == meeting.id)
+                .order_by(MeetingTermCorrectionRecord.order_index)
+            )
+        )
 
     # ------------------------------------------------------------------ 확정 발화 · 오디오 원본
 
@@ -913,11 +954,22 @@ class SqlAlchemyMeetingRepository:
 
     # ------------------------------------------------------------------ AI 세션 · 배치 회차
 
-    def record_ai_session(self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str) -> None:
-        """회의당 한 행. 다시 열면 참조만 갈아 끼운다 — 회의당 세션 하나가 계약이다."""
+    def record_ai_session(
+        self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None:
+        """회의당 한 행 — **기대한 참조일 때만** 갈아 끼운다(compare-and-set · WORK-012 WP2 수정 1 F-2).
+
+        `expected` 는 부르는 쪽이 「지금 이것이겠지」 하고 본 참조다(없었으면 `None`). 그 사이 다른 쪽(웜스타트 ↔ 세션 없는
+        배치)이 먼저 세션을 기록했으면 덮어쓰지 않고 **지금 있는 참조를 돌려준다** — 진 쪽 세션은 버려진다. 회의 행을 잠가
+        두 기록을 줄 세운다. 돌려주는 값 = 이 호출 뒤 원장에 남은 참조.
+        """
+        self._session.scalar(select(MeetingRecord).where(MeetingRecord.id == meeting_id).with_for_update())
         row = self._session.scalar(
             select(MeetingAiSessionRecord).where(MeetingAiSessionRecord.meeting_id == meeting_id)
         )
+        current = None if row is None else row.provider_session_ref
+        if current != expected:
+            return current
         if row is None:
             self._session.add(
                 MeetingAiSessionRecord(
@@ -931,6 +983,7 @@ class SqlAlchemyMeetingRepository:
             row.provider_session_ref = provider_session_ref
             row.persona_id = persona_id
         self._session.flush()
+        return provider_session_ref
 
     def ai_session(self, meeting_id: UUID) -> MeetingAiSessionRecord | None:
         return self._session.scalar(

@@ -27,6 +27,7 @@ from ax_workspace.platform.cli_process import (
     EventIngestFailed,
     ScaxMcpServer,
     invalid_response_message as _invalid_response_message,
+    invoke_plain_runner as _invoke_plain_runner,
     invoke_runner as _invoke_runner,
     structured_body as _structured_body,
     subprocess_runner as _subprocess_runner,
@@ -51,6 +52,7 @@ from ax_workspace.modules.ax_execution.ai import (
     CancelToken,
     ProviderCancelled,
     ProviderRequestFailed,
+    ProviderTimedOut,
     ProviderResponseInvalid,
     ProviderUnavailable,
 )
@@ -97,17 +99,20 @@ class ClaudeCliProviderAdapter:
         with TemporaryDirectory(prefix="scax-claude-") as temporary:
             work_dir = Path(temporary)
             started = perf_counter()
+            # 프롬프트는 argv 가 아니라 stdin 이다 — `--print` 는 stdin 이 TTY 가 아니면 파이프 입력을 프롬프트로 읽는다
+            # (Claude Code 2.1.x `getInputPrompt` · 상한 10MB). 리눅스 한 인자 128KiB 상한을 비켜 간다(WP2 수정 1 W-1).
             arguments = self._isolation_arguments() + [
                 "--output-format",
                 "json",
                 "--json-schema",
                 json.dumps(request.output_schema),
-                request.prompt,
             ]
             try:
-                result = self._runner(command, arguments, work_dir, dict(os.environ), self._profile.timeout_seconds)
+                result = _invoke_plain_runner(
+                    self._runner, command, arguments, work_dir, dict(os.environ), self._profile.timeout_seconds, request.prompt
+                )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Claude CLI generation timed out") from error
+                raise ProviderTimedOut("Claude CLI generation timed out") from error
             except OSError as error:
                 raise ProviderUnavailable("Claude CLI could not start") from error
             latency_ms = int((perf_counter() - started) * 1000)
@@ -179,9 +184,10 @@ class ClaudeCliProviderAdapter:
                     self._profile.timeout_seconds,
                     ingest.consume_line,
                     (lambda: cancel.is_set()) if cancel is not None else None,
+                    stdin_text=prompt,
                 )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Claude CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
+                raise ProviderTimedOut("Claude CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
             except EventIngestFailed as error:
                 raise ProviderRequestFailed("Claude CLI events could not be persisted", ingest.provenance(request, started, self._profile)) from error
             except OSError as error:
@@ -278,7 +284,9 @@ class ClaudeCliProviderAdapter:
             arguments += ["--allowedTools", allowed]
         if request.provider_session_ref:
             arguments += ["--resume", request.provider_session_ref]
-        return [*arguments, prompt]
+        # 프롬프트는 stdin 으로 간다(`_invoke_runner(stdin_text=…)`) — argv 에 싣지 않는다(WP2 수정 1 W-1).
+        del prompt
+        return arguments
 
     @staticmethod
     def _mcp_config(request: AiConversationRequest, server: ScaxMcpServer) -> dict[str, Any]:
@@ -316,6 +324,9 @@ class ClaudeCliProviderAdapter:
             cls.ANSWER_PRESENTATION_POLICY,
             cls.FOLLOW_UP_POLICY,
         ]
+        if request.context_catalog:
+            # AI 맥락 목록 — 새 세션을 여는 턴에만, Codex 와 같은 자리 (SPEC-010 §4.5 · 검수 W-3).
+            sections.append(request.context_catalog)
         if request.asked_at is not None:
             local = request.asked_at.astimezone(ZoneInfo(request.timezone_name))
             sections.append(
@@ -342,6 +353,13 @@ class ClaudeCliProviderAdapter:
                 for item in request.context_references
             )
             sections.append(f"Context references authorized for this turn:\n{references}")
+            # 메시지함 메시지는 서버가 조합한 맥락 JSON 을 **덩어리로** 따로 싣는다(SPEC-008 §4.8 ② · 한 줄 요약과 별도).
+            blocks = [item["context"] for item in request.context_references if item.get("context")]
+            if blocks:
+                sections.append(
+                    "Inbox message context (server-composed from this person's own inbox; `target: true` marks the "
+                    "message they picked — read it, then follow the user message):\n" + "\n".join(blocks)
+                )
         sections.append(f"User message:\n{request.prompt}")
         return "\n\n".join(sections)
 

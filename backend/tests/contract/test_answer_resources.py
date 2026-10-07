@@ -755,3 +755,53 @@ def test_details_read_before_drafting_work_can_be_cited_as_sources(tmp_path, mon
     assert {(resources[ref]["resource_type"], resources[ref]["title"]) for ref in cited} == {
         ("meeting", "개편 범위 회의"), ("task", "개편 범위 확정"),
     }
+
+
+def test_the_context_catalog_rides_only_the_turns_that_open_a_provider_session(tmp_path):
+    """017 · 검수 W-3(코디 판정 — OQ-1002 ② 고침) — 맥락 목록은 **세션의 첫 턴과 새 세션을 열 때만** 싣는다.
+
+    이어 쓰는 턴에는 싣지 않는다(세션이 이미 갖고 있다 — 매 턴 실으면 세션 기록에 쌓인다). 새 세션을 열면 그 순간
+    DB 의 목록을 다시 싣는다(별도 표가 없다 — 그 사이 생긴 프로젝트가 바로 들어간다).
+    """
+    from datetime import UTC, datetime
+
+    from ax_workspace.platform.persistence import ProjectRecord
+
+    client, settings, database_url, application = _stack(tmp_path)
+    conversation, _ = _delegated_turn(client, database_url, MINA, "catalog-session-turns")
+    seen: list = []
+    session_refs = iter(["codex-session-1", "codex-session-1", "codex-session-1", "codex-session-2"])
+
+    class Provider:
+        def converse(self, request, **kwargs):
+            seen.append((request.provider_session_ref, request.context_catalog))
+            return AiConversationResult(None, next(session_refs), "확인했습니다.", [])
+
+    worker = ConversationWorker(settings, provider=Provider(), queue_factory=lambda session: ConversationJobQueue(application.memory_job_queue))
+    path = f"/api/conversations/{conversation['conversation_id']}"
+
+    def turn(body: str) -> None:
+        assert client.post(path + "/messages", headers=MINA, json={"body": body, "context": []}).status_code == 202
+        assert asyncio.run(worker.run_once())
+
+    assert asyncio.run(worker.run_once())  # 첫 턴 — 새 세션
+    turn("이어서")  # 같은 세션을 이어 쓴다
+    with application._session_factory() as session:
+        now = datetime.now(UTC)
+        session.add(ProjectRecord(name="턴 사이에 생긴 프로젝트", state="active", created_by_actor_id="mina", created_at=now, updated_at=now))
+        session.commit()
+    turn("또 이어서")  # 이어 쓰는 턴
+    from sqlalchemy import delete
+
+    from ax_workspace.platform.persistence import ConversationProviderSessionReferenceRecord
+
+    with application._session_factory() as session:
+        # 세션을 이어 쓸 수 없게 됐다(되돌린 세션) — 다음 턴은 새 세션을 연다.
+        session.execute(delete(ConversationProviderSessionReferenceRecord))
+        session.commit()
+    turn("새 세션")
+    (first_ref, first), (second_ref, second), (third_ref, third), (fourth_ref, fourth) = seen
+    assert first_ref is None and first and first.startswith("## 조직 맥락 목록")
+    assert second_ref == "codex-session-1" and second is None
+    assert third_ref == "codex-session-1" and third is None
+    assert fourth_ref is None and fourth and "턴 사이에 생긴 프로젝트" in fourth and "턴 사이에 생긴 프로젝트" not in first

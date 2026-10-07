@@ -73,7 +73,7 @@ def test_adapter_streams_lines_to_the_sink_before_the_process_ends(tmp_path) -> 
     seen_during_run: list[int] = []
 
     def runner(
-        command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None
+        command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None
     ):
         for line in codex_lines():
             on_line(line + "\n")
@@ -100,7 +100,7 @@ def test_adapter_stops_when_the_cancel_token_is_set(tmp_path) -> None:
     stopped = {"asked": False}
 
     def runner(
-        command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None
+        command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None
     ):
         on_line(json.dumps({"type": "turn.started"}) + "\n")
         token.flag = True

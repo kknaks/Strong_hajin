@@ -276,10 +276,10 @@ describe("SCR-105 회의 목록", () => {
     expect(within(modal).queryByText("AI 가 세운 안건")).toBeNull();
   });
 
-  it("[회의 시작]은 값을 묻지 않고 바로 연다", async () => {
+  it("[빠른 회의]는 값을 묻지 않고 바로 연다", async () => {
     const { onOpenMeeting } = renderList([], []);
     vi.mocked(api.quickStartMeeting).mockResolvedValue(record({ meeting_id: "q1", status: "in_progress" }));
-    fireEvent.click(await screen.findByRole("button", { name: "회의 시작" }));
+    fireEvent.click(await screen.findByRole("button", { name: "빠른 회의" }));
     await waitFor(() => expect(onOpenMeeting).toHaveBeenCalledWith("q1"));
   });
 
@@ -295,7 +295,7 @@ describe("SCR-105 회의 목록", () => {
     expect(within(modal).getByRole("button", { name: /일시 종료 시각/ })).toBeTruthy();
   });
 
-  it("회의실은 서버가 주는 목록이다 — 빈 목록이면 「회의실 선택 안 함」만 선다", async () => {
+  it("회의실은 서버가 주는 목록이다 — 빈 목록이면 「회의실 예약 없음」만 서고 「가용 없음」 을 말한다", async () => {
     renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
@@ -303,10 +303,13 @@ describe("SCR-105 회의 목록", () => {
     // 잡을 수 없는 방을 지어내지 않는다
     expect(rooms).toHaveLength(1);
     expect(rooms[0].checked).toBe(true);
-    expect(within(modal).getByText("회의실 선택 안 함")).toBeTruthy();
+    // SPEC-010 §2.2 — 옛 「회의실 선택 안 함」 → 「회의실 예약 없음」
+    expect(within(modal).getByText("회의실 예약 없음")).toBeTruthy();
+    expect(within(modal).queryByText("회의실 선택 안 함")).toBeNull();
+    expect(await within(modal).findByText("이 시간·인원에 예약 가능한 회의실이 없습니다")).toBeTruthy();
   });
 
-  it("고른 회의실은 room_id 로, 「선택 안 함」은 null 로 나간다", async () => {
+  it("고른 회의실은 room_id 로, 「예약 없음」은 null 로 나간다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([
       { room_id: 7, name: "5F 대회의실 (20인)", capacity: 20 },
       { room_id: 9, name: "6F 소회의실 (4인)", capacity: 4 },
@@ -478,8 +481,11 @@ describe("SCR-105 회의 목록", () => {
     renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    // 처음에는 파라미터 없이 전부 받는다
-    await waitFor(() => expect(api.readMeetingRooms).toHaveBeenCalledWith(undefined));
+    // 처음부터 그 시간·인원으로 묻는다(SPEC-010 §4.1 — 정원 조건 `people` · 생성이라 `meeting_id` 없음)
+    await waitFor(() => expect(api.readMeetingRooms).toHaveBeenCalledTimes(1));
+    const first = vi.mocked(api.readMeetingRooms).mock.calls[0]?.[0];
+    expect(first?.people).toBe(0);
+    expect(first?.meeting_id ?? null).toBeNull();
 
     fireEvent.click(within(modal).getByRole("button", { name: /일시 시작 시각/ }));
     fireEvent.click(await screen.findByRole("option", { name: "09:30" }));
@@ -531,7 +537,7 @@ describe("SCR-105 회의 목록", () => {
     renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    await waitFor(() => expect(api.readMeetingRooms).toHaveBeenCalledWith(undefined));
+    await waitFor(() => expect(api.readMeetingRooms).toHaveBeenCalled());
 
     /* 기본값이 우연히 23:30 인 시간대(23:00~23:30)에도 «값이 바뀌어» 다시 묻도록, 먼저 다른 시각으로
        옮겼다가 23:30 으로 돌아온다. 안 그러면 그 시간대에서는 아무것도 안 바뀌어 검사가 헛돈다. */
@@ -687,7 +693,7 @@ describe("SCR-105 회의 목록", () => {
 });
 
 /* ════════════════════════════════════════════════════════════════════════════
-   [회의 시작] 한 번 = 회의 하나 (2026-09-14 사용자 보고).
+   [빠른 회의](옛 [회의 시작] — SH-IMP-020) 한 번 = 회의 하나 (2026-09-14 사용자 보고).
 
    클릭 한 번에 `POST /api/meetings/quick-start` 가 1ms 간격으로 **두 번** 나가고 회의가 둘 생겼다.
    원인은 `setBusy` 의 «함수형 업데이터 안» 에서 서버를 부른 것이다 — 그 자리는 React 가 순수하다고
@@ -711,9 +717,9 @@ function renderListStrict() {
   return { onError, onOpenMeeting };
 }
 
-const startButton = () => screen.findByRole("button", { name: "회의 시작" });
+const startButton = () => screen.findByRole("button", { name: "빠른 회의" });
 
-describe("[회의 시작] — 한 번 누르면 회의 하나다", () => {
+describe("[빠른 회의] — 한 번 누르면 회의 하나다", () => {
   it("StrictMode 에서도 클릭 한 번에 quick-start 는 한 번만 나간다", async () => {
     const { onOpenMeeting } = renderListStrict();
     vi.mocked(api.quickStartMeeting).mockResolvedValue(record({ meeting_id: "q1", status: "in_progress" }));
@@ -822,5 +828,126 @@ describe("회의 목록 — 탭 재진입 (B-01)", () => {
     expect(screen.queryByText("어제 본 회의")).toBeNull();
     const fresh = screen.getByText("오늘 잡힌 회의").closest(".scax-meeting-card") as HTMLElement;
     for (const button of within(fresh).getAllByRole("button")) expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+/*
+ * WORK-012 WP1-FE — 「지난 회의 불러오기」·안건 출처(SH-IMP-005 · SPEC-010 §2.3 · §4.2) · 머리 단추 문구(SH-IMP-020).
+ * 불러오기는 날짜·시작·종료를 건드리지 않고, 제출은 안건마다 `source` 를 보낸다.
+ */
+describe("WP1-FE — 불러오기 · 안건 출처 · 빠른 회의", () => {
+  /** 지난 회의는 **다른 날짜·다른 시각**이다 — 2026-09-10 15:00~16:00(KST). 불러와도 모달의 일시가 그대로여야 한다. */
+  const pastMeeting = () =>
+    record({ meeting_id: "p1", title: "주간 회의", starts_at: "2026-09-10T06:00:00Z", ends_at: "2026-09-10T07:00:00Z" }, [
+      agenda({ agenda_id: "f1", title: "이어서 볼 최종 안건", track: "final", concluded: false }),
+      agenda({ agenda_id: "f2", title: "끝난 안건", track: "final", concluded: true }),
+    ]);
+
+  async function openBookingWithSuggestion() {
+    renderList([], [row({ meeting_id: "p1", title: "주간 회의" })]);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+    vi.mocked(api.readMeeting).mockResolvedValue(pastMeeting());
+    fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
+    return modal;
+  }
+
+  const when = (modal: HTMLElement) => ({
+    date: within(modal).getByRole("button", { name: /일시 달력 열기/ }).textContent,
+    start: within(modal).getByRole("button", { name: /일시 시작 시각/ }).textContent,
+    end: within(modal).getByRole("button", { name: /일시 종료 시각/ }).textContent,
+  });
+
+  it("[불러오기]는 날짜·시작·종료를 바꾸지 않는다 — 안건만 결론 안 난 것으로 담는다 (AC-09)", async () => {
+    const modal = await openBookingWithSuggestion();
+    const before = when(modal);
+    // 지난 회의의 일시(2026/09/10 · 15:00 · 16:00)와 겹치지 않는 값으로 시작했는지 먼저 본다 — 같으면 이 시험이 아무것도 못 가른다
+    expect(before.date).not.toContain("2026/09/10");
+
+    fireEvent.click(await within(modal).findByRole("button", { name: "불러오기" }));
+    await waitFor(() => expect(within(modal).getByText("이어서 볼 최종 안건")).toBeTruthy());
+
+    expect(when(modal)).toEqual(before);
+    expect(within(modal).queryByText("끝난 안건")).toBeNull();
+    // 불러온 안건은 「지난 회의에서 넘어옴」
+    expect(within(modal).getByText("지난 회의에서 넘어옴")).toBeTruthy();
+  });
+
+  it("제출은 안건마다 출처를 보낸다 — 불러온 미결 안건 = carried · 손으로 쓴 안건 = manual (AC-10)", async () => {
+    const modal = await openBookingWithSuggestion();
+    fireEvent.click(await within(modal).findByRole("button", { name: "불러오기" }));
+    await waitFor(() => expect(within(modal).getByText("이어서 볼 최종 안건")).toBeTruthy());
+
+    fireEvent.change(within(modal).getByPlaceholderText("안건을 적으세요"), { target: { value: "새로 쓴 안건" } });
+    fireEvent.click(within(modal).getByRole("button", { name: "안건 추가" }));
+    // 손으로 쓴 안건의 문구는 「새로 추가된 안건」이다(옛 「직접 입력」)
+    expect(within(modal).getByText("새로 추가된 안건")).toBeTruthy();
+    expect(within(modal).queryByText("직접 입력")).toBeNull();
+
+    addGuest(modal, "한서린");
+    vi.mocked(api.bookMeeting).mockResolvedValue(record());
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalled());
+    const input = vi.mocked(api.bookMeeting).mock.calls[0][0];
+    expect(input.agendas).toEqual([
+      { title: "이어서 볼 최종 안건", source: "carried" },
+      { title: "새로 쓴 안건", source: "manual" },
+    ]);
+    expect(input.carried_from_meeting_id).toBe("p1");
+  });
+
+  it("불러오지 않은 회의의 안건은 전부 manual 이다 — 이어온 회의도 없다", async () => {
+    renderList([], []);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+    fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "새 회의" } });
+    fireEvent.change(within(modal).getByPlaceholderText("안건을 적으세요"), { target: { value: "첫 안건" } });
+    fireEvent.click(within(modal).getByRole("button", { name: "안건 추가" }));
+    addGuest(modal, "한서린");
+    vi.mocked(api.bookMeeting).mockResolvedValue(record());
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalled());
+    const input = vi.mocked(api.bookMeeting).mock.calls[0][0];
+    expect(input.agendas).toEqual([{ title: "첫 안건", source: "manual" }]);
+    expect(input.carried_from_meeting_id ?? null).toBeNull();
+  });
+
+  it("목록 머리의 주 단추는 「빠른 회의」다 — 아이콘(재생)·옆 「회의 생성」은 그대로 (SH-IMP-020)", async () => {
+    renderList([], []);
+    const quick = await screen.findByRole("button", { name: "빠른 회의" });
+    expect(quick.querySelector("svg")).toBeTruthy();
+    expect(quick.className).toContain("scax-button--solid-primary");
+    expect(screen.getByRole("button", { name: "회의 생성" })).toBeTruthy();
+    // 머리에 옛 문구가 남지 않는다
+    expect(screen.queryByRole("button", { name: "회의 시작" })).toBeNull();
+  });
+});
+
+/* WORK-012 WP3-FE — WP1 검수 W-3: 불러오기 뒤 지난 회의 방을 새 시간·인원에 못 쓰면 조용히 「예약 없음」 이 되지 않고 이유를 보인다 */
+describe("WP3-FE — 불러오기 뒤 지난 회의 방 (W-3)", () => {
+  const past = () => record({ meeting_id: "p1", title: "주간 회의", location: "5F 대회의실" }, []);
+
+  async function load(rooms: Array<{ room_id: number; name: string; capacity: number }>) {
+    vi.mocked(api.readMeetingRooms).mockResolvedValue(rooms);
+    renderList([], [row({ meeting_id: "p1", title: "주간 회의" })]);
+    fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
+    const modal = await screen.findByRole("dialog", { name: "회의 예약" });
+    vi.mocked(api.readMeeting).mockResolvedValue(past());
+    fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
+    fireEvent.click(await within(modal).findByRole("button", { name: "불러오기" }));
+    return modal;
+  }
+
+  it("그 방을 지금 쓸 수 있으면 미리 골라진다", async () => {
+    const modal = await load([{ room_id: 7, name: "5F 대회의실", capacity: 20 }]);
+    await waitFor(() => expect((within(modal).getByLabelText("5F 대회의실") as HTMLInputElement).checked).toBe(true));
+  });
+
+  it("못 쓰면 「예약 없음」 그대로 두되 그 이유를 한 줄로 보인다", async () => {
+    const modal = await load([{ room_id: 9, name: "6F 소회의실", capacity: 4 }]);
+    expect(await within(modal).findByText("지난 회의의 회의실 「5F 대회의실」 은 이 시간·인원에 예약할 수 없습니다")).toBeTruthy();
+    expect((within(modal).getByLabelText("회의실 예약 없음") as HTMLInputElement).checked).toBe(true);
   });
 });

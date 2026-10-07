@@ -158,10 +158,14 @@ from ax_workspace.modules.reports.application import DailyReportAccessDenied
 from ax_workspace.modules.meetings.materials import inline_media_type
 from ax_workspace.modules.meetings.rooms import (
     RoomBookingRefused,
+    RoomNotFound,
+    RoomReservationUnconfirmed,
+    RoomServiceUnavailable,
     RoomCreationIdempotencyConflict,
     RoomCreationIdempotencyRequired,
 )
 from ax_workspace.modules.meetings.domain import (
+    MeetingAgendaSourceInvalid,
     MeetingAccessDenied,
     MeetingError,
     MeetingNotFound,
@@ -198,7 +202,7 @@ from ax_workspace.modules.meetings.stream import (
     TranscriptPartialFrame,
 )
 from ax_workspace.modules.work.projects import ProjectAccessDenied, ProjectError, ProjectNotFound
-from ax_workspace.modules.ax_execution.conversations import DEFAULT_CONVERSATION_LIST_LIMIT, ConversationError, ConversationQueueOverflow
+from ax_workspace.modules.ax_execution.conversations import DEFAULT_CONVERSATION_LIST_LIMIT, ContextMessageNotFound, ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
@@ -431,7 +435,7 @@ class _WebSocketStreamClient:
 
 
 class ConversationContextReferenceRequest(BaseModel):
-    resource_type: Literal["task", "work_request"]
+    resource_type: Literal["task", "work_request", "inbox_message"]
     resource_id: UUID
     resource_version: int = Field(ge=1)
     included: bool
@@ -516,6 +520,9 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail=str(error))
     if isinstance(error, ValidationError):
         return HTTPException(status_code=422, detail=error.errors(include_input=False, include_context=False))
+    if isinstance(error, ContextMessageNotFound):
+        # 참고한 메시지가 사라졌다 — 대화가 사라진 것이 아니다(SPEC-008 §4.8 ① · 검수 W-6).
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": error.code, "message": error.message})
     if isinstance(error, ResourceNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RESOURCE_NOT_FOUND_MESSAGE)
     if isinstance(error, NotificationNotFound):
@@ -545,6 +552,19 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     if isinstance(error, ProjectError):
         return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
+    if isinstance(error, RoomServiceUnavailable):
+        # 회의실 목록이 예약 시스템에 닿지 않았다 — 「가용 없음」 과 가른다 (SPEC-010 §4.1 · WP3 계약 고정 4).
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"code": error.reason, "message": str(error)}
+        )
+    if isinstance(error, RoomReservationUnconfirmed):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail={"code": error.reason, "message": str(error)}
+        )
+    if isinstance(error, RoomNotFound):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": error.reason, "message": str(error)}
+        )
     if isinstance(error, RoomBookingRefused):
         # 자리를 못 잡아 **회의를 만들지 않았다** (SCAX-WP-007 D36-2). 사람이 이어서 고를 수 있게
         # 그 시간에 가능한 방을 함께 낸다 — 사유만 주고 창을 닫게 하지 않는다.
@@ -555,6 +575,12 @@ def _runtime_error(error: Exception) -> HTTPException:
                 "message": str(error),
                 "available_rooms": error.available_rooms,
             },
+        )
+    if isinstance(error, MeetingAgendaSourceInvalid):
+        # 생성 안건 출처 (SPEC-010 §4.2) — 화면이 고칠 수 있게 코드를 싣는다. `MeetingError` 의 422 보다 먼저 본다.
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": error.code, "message": str(error)},
         )
     if isinstance(error, RoomCreationIdempotencyRequired):
         return HTTPException(
@@ -920,7 +946,7 @@ def create_app(
                 location=request.location,
                 attendee_ids=request.attendee_ids,
                 external_attendees=request.external_attendees,
-                agendas=[{"title": row.title} for row in request.agendas],
+                agendas=[{"title": row.title, "source": row.source} for row in request.agendas],
                 carried_from_meeting_id=request.carried_from_meeting_id,
                 room_id=request.room_id,
                 idempotency_key=idempotency_key,
@@ -932,18 +958,19 @@ def create_app(
     def list_meeting_rooms(
         starts_at: datetime | None = None,
         ends_at: datetime | None = None,
+        people: int | None = Query(default=None, ge=0),
+        meeting_id: UUID | None = None,
         principal: Principal = Depends(developer_principal),
     ) -> list[dict[str, object]]:
-        """고를 수 있는 사옥 회의실. 예약 시스템이 없거나 닿지 않으면 **빈 목록**이다 —
-        화면은 「회의실 선택 안 함」만 세우고, 잡을 수 없는 방을 보여 주지 않는다.
-
-        `starts_at`·`ends_at` 을 함께 주면 **그 시간에 비어 있는 방만** 내고 `available: true` 가 붙는다
-        (SCAX-WP-007 D36-3) — 예약이 거절된 뒤 모달이 회의실 칸만 다시 그리는 자리다.
-        둘 중 하나만 오면 시간을 모르는 것과 같으므로 전체 목록이다.
+        """회의실 셀렉트의 선택지 (SPEC-010 §4.1 · WP3 계약 고정 4) — `{room_id, name, capacity, available, current,
+        unavailable_reason}`. `people` = 참석 인원(사내+사외, 정원 조건) · `meeting_id` = 수정 중인 회의(자기 예약을 점유에서
+        빼고 지금 방을 `current` 로). 예약 시스템에 닿지 않으면 `503 ROOM_SERVICE_UNAVAILABLE`, 계정 미설정이면 `200 []`.
+        둘 중 하나만 오면 시간을 모르는 것과 같으므로 시간 조건이 없다.
         """
-        del principal
         try:
-            return app.state.workflow_application.meeting_rooms(starts_at=starts_at, ends_at=ends_at)
+            return app.state.workflow_application.meeting_rooms(
+                principal, starts_at=starts_at, ends_at=ends_at, people=people, meeting_id=meeting_id
+            )
         except Exception as error:
             raise _runtime_error(error) from error
 
@@ -966,11 +993,19 @@ def create_app(
     def update_meeting(
         meeting_id: UUID,
         request: UpdateMeetingRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         principal: Principal = Depends(developer_principal),
     ) -> dict[str, object]:
-        changes = request.model_dump(exclude_unset=True)
+        """회의 정보 수정 (SPEC-010 §4.3) — `room` 없음 = 방 유지(시각·인원이 바뀌면 재확인) · `{room_id: null}` = 예약 없음 ·
+        `{room_id: n}` = 그 방. 예약 없던 회의에 방을 고르면 새 예약이라 `Idempotency-Key` 가 필요하다(생성과 같은 울타리)."""
         try:
-            return app.state.workflow_application.update_meeting(principal, meeting_id, changes)
+            return app.state.workflow_application.update_meeting(
+                principal,
+                meeting_id,
+                request.changes(),
+                room=request.room_choice(),
+                idempotency_key=idempotency_key,
+            )
         except Exception as error:
             raise _runtime_error(error) from error
 

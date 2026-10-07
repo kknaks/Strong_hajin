@@ -34,6 +34,9 @@ class UserEventType:
     REPLY_RESULT = "inbox.reply_result"
     #: 연동·방 상태가 바뀌었다(백필 끝·끊김·되살림·카톡 수집기 상태) — 설정·배너가 다시 읽는다(D-50).
     INTEGRATION_CHANGED = "integration.changed"
+    #: 메시지(메일)의 `made_task_count` 가 바뀌었다 — 그 메시지로 만든 업무가 확정됐다(SPEC-008 §4.4 · H-5). `message_id` ·
+    #: `room_id`(메일이면 없음)만 싣는다. 메시지함은 받아서 그 방(메일)을 다시 읽는다. **업무 확정 커밋 뒤**에 낸다.
+    MESSAGE_UPDATED = "inbox.message_updated"
 
 
 @dataclass(frozen=True, slots=True)

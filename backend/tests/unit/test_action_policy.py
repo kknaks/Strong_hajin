@@ -156,8 +156,15 @@ def test_ax_proposal_commands_cover_meaningful_equivalence_classes() -> None:
             ["confirm", "save_draft", "reject"],
         ),
         (
-            "other-editable-proposals-do-not-save",
+            # AX 회의 생성도 초안 저장을 갖는다 (SPEC-010 §4.4 · OQ-1001).
+            "meeting-creation-draft-also-saves",
             _ax_facts(action_type="meeting.reservation.create", pending=True, has_submission=True),
+            (ACTION_DECIDE,),
+            ["confirm", "save_draft", "reject"],
+        ),
+        (
+            "meeting-update-card-confirms-without-saving",
+            _ax_facts(action_type="meeting.info.update", pending=True, has_submission=True),
             (ACTION_DECIDE,),
             ["confirm", "reject"],
         ),

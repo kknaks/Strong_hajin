@@ -5,6 +5,7 @@ import { ActionCommandButtons, ActionPreviewDetails, actionKicker, actionSubject
 import { ActionTaskCard } from "../action/ActionTaskCard";
 import { AxDraftCard, axDraftFromAction } from "../action/AxDraftCard";
 import { ActionMeetingCard } from "../action/ActionMeetingCard";
+import { ActionMeetingUpdateCard } from "../action/ActionMeetingUpdateCard";
 import { ActionProgressBatchCard } from "../action/ActionProgressBatchCard";
 import { Badge } from "../../ds/Badge";
 import { Button } from "../../ds/Button";
@@ -247,6 +248,11 @@ function ConversationTimeline({
         const actions = (conversation.actions ?? []).filter((action) => action.turn_id === turn.turn_id);
         const named = (conversation.answer_resources ?? []).filter((item) => item.turn_id === turn.turn_id);
         const retried = conversation.turns.find((item) => item.retry_of_turn_id === turn.turn_id);
+        /* 이 턴이 실은 메시지함 참고 자료의 «실제 범위» 한 줄(SPEC-008 §2.9 ③-2 · WP4 계약 고정 1) — 서버가 조합 때 만든 글자 그대로.
+           조합 전이라 `label` 이 아직 없으면 줄을 그리지 않는다 */
+        const referenceLines = (conversation.context_references ?? [])
+          .filter((reference) => reference.resource_type === "inbox_message" && reference.turn_id === turn.turn_id && reference.label)
+          .map((reference) => reference.label as string);
         const executionTerminal = isTerminalTurn(turn);
         return (
           <section className="scax-turn" data-turn-id={turn.turn_id} key={turn.turn_id}>
@@ -258,6 +264,13 @@ function ConversationTimeline({
                   {item.body}
                 </p>
               ))}
+            {referenceLines.length > 0 && (
+              <ul aria-label="참고 자료" className="scax-msg__references">
+                {referenceLines.map((label, index) => (
+                  <li key={`${label}-${index}`}>{label}</li>
+                ))}
+              </ul>
+            )}
             {!executionTerminal && <ExecutionRail onRetry={retried ? undefined : () => onRetryTurn(turn.turn_id)} tools={tools} turn={turn} />}
             {/* 바퀴 12: 껍데기는 우리 것(.scax-msg*, 바퀴 7), 안에 넘기는 값은 main(#11)의 새 답변 문서다 */}
             {messages
@@ -306,12 +319,21 @@ function ConversationTimeline({
                 onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
               />
             ) : axDraftFromAction(action) ? (
-              /* AX 업무 생성·요청 초안 — 높이 고정 요약 카드 (SPEC-002 §2.9 · WORK-008 3b). 다른 task 편집 카드는 아래 그대로다. */
+              /* AX 업무 생성·요청 · 회의 생성 초안 — 높이 고정 쪽 나눔 카드 (SPEC-002 §2.9 · SPEC-010 §2.4). 다른 task 편집 카드는 아래 그대로다. */
               <AxDraftCard
                 key={`${personaId}:${action.action_id}`}
                 onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+                onOpenMeeting={onOpenMeeting}
                 onOpenTask={onOpenTask}
                 source={axDraftFromAction(action)!}
+              />
+            ) : action.edit_contract?.editor === "meeting_update" ? (
+              /* AX 회의 수정 — 편집 계약이 생겨 고칠 수 있는 카드로 선다(SPEC-010 §2.4 · WP3 계약 고정 1). 예전엔 결과 카드였다 */
+              <ActionMeetingUpdateCard
+                action={action}
+                key={`${personaId}:${action.action_id}`}
+                onCommand={(command, payload) => onDecide(action.action_id, action.version, command, payload)}
+                onOpenMeeting={onOpenMeeting}
               />
             ) : action.edit_contract?.editor === "task" ? (
               <ActionTaskCard

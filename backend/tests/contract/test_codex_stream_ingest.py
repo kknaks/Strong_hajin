@@ -93,7 +93,7 @@ def test_sink_failure_stops_the_run_and_fails_the_turn_instead_of_completing_sil
 
     # Adapter path: the failure surfaces as a provider failure with provenance, never as a completed result.
     def runner(
-        command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None
+        command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None
     ) -> ProcessResult:
         from ax_workspace.platform.codex_cli import EventIngestFailed
 

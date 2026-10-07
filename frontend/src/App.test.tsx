@@ -2472,3 +2472,63 @@ describe("AX 초안 저장 실패 — 창 안에만 (WORK-009 2a-1 fix0 · SPEC-
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "새 업무 추가" })).toBeNull());
   });
 });
+
+/*
+ * WORK-012 WP4-FE — 메시지함 → AX 가 «서랍을 새 대화로 열고 참고 자료를 싣는다»(SPEC-008 §2.9 ③ · §4.8 ① · OQ-815).
+ * 메시지함 단추가 App 의 `askAx` 를 타고, 대화 메시지 전송 본문에 `context: [{resource_type: "inbox_message", ...}]` 가 실리는지 본다.
+ */
+describe("메시지함 → AX 서랍", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("메시지 막대의 AX 업무 생성 — 서랍이 새 대화로 열리고 말풍선 + 그 메시지 참고 자료를 보낸다", async () => {
+    const T = "2026-10-07T00:10:00Z";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/organization/me") return jsonResponse({ member_id: "mina", display_name: "민아 (구성원)", organizations: [], capabilities: ["action.read", "action.decide"] });
+      if (path.startsWith("/api/inbox/messages"))
+        return jsonResponse({
+          items: [{ kind: "slack", room_id: "r1", integration_id: "i-slack", room_type: "channel", title: "#pilot-launch", member_count: 3, unread_count: 0, last_at: T, at: T, preview: [] }],
+          next_cursor: null,
+          unread_counts: { all: 0, mail: 0, slack: 0, kakao: 0 },
+        });
+      if (path === "/api/integrations") return jsonResponse([]);
+      if (path === "/api/inbox/rooms/r1/messages")
+        return jsonResponse({
+          room: { room_id: "r1", integration_id: "i-slack", kind: "slack", room_type: "channel", name: "#pilot-launch", member_count: 3, external_id: "C01", read_up_to_key: null, permalink: null },
+          users: { U1: { name: "한서윤" } },
+          next_cursor: null,
+          messages: [{ id: "msg-7", key: "7.0", at: T, author: "U1", thread_key: null, raw: { user: "U1", text: "배포 일정 잡아 주세요" }, attachments: [] }],
+        });
+      if (path === "/api/conversations" && init?.method === "POST")
+        return jsonResponse({ conversation_id: "c-new", title: "새 대화", version: 1, messages: [], turns: [], context_references: [], tool_invocations: [], actions: [] });
+      if (path === "/api/conversations/c-new/messages" && init?.method === "POST")
+        return jsonResponse({ conversation_id: "c-new", message_id: "m-1", turn_id: "t-1", queued: false, queue_size: 0 });
+      if (path === "/api/conversations/c-new")
+        return jsonResponse({ conversation_id: "c-new", title: "새 대화", version: 2, messages: [], turns: [], context_references: [], tool_invocations: [], actions: [] });
+      if (path === "/api/conversations") return jsonResponse([]);
+      if (init?.method === "POST") return new Response(null, { status: 204 });
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", withSession(fetchMock));
+    vi.stubGlobal("WebSocket", undefined);
+
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "메시지함" }));
+    fireEvent.click(await screen.findByText("#pilot-launch", { selector: "h3" }));
+    await screen.findByText("배포 일정 잡아 주세요");
+    const row = document.querySelector('[data-message-id="msg-7"]') as HTMLElement;
+    fireEvent.click(within(row.querySelector('[role="toolbar"]') as HTMLElement).getByRole("button", { name: "AX 업무 생성" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations/c-new/messages" && init?.method === "POST")).toBe(true));
+    const [, sent] = fetchMock.mock.calls.find(([path, init]) => path === "/api/conversations/c-new/messages" && init?.method === "POST")!;
+    const payload = JSON.parse(String(sent?.body));
+    expect(payload.body).toBe("이 메시지 읽고 업무를 생성해 줘");
+    expect(payload.context).toEqual([{ resource_type: "inbox_message", resource_id: "msg-7", resource_version: 1, included: true }]);
+    // 누를 때마다 새 대화 — 대화를 만드는 POST 가 나갔다
+    expect(fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations" && init?.method === "POST")).toBe(true);
+  });
+});

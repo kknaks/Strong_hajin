@@ -1252,9 +1252,13 @@
       "operation": "update_meeting",
       "owning_calls": [
         "self._meetings(session).attach_reservation",
+        "self._meetings(session).clear_reservation",
         "self._meetings(session).get",
         "self._meetings(session).reservation_input",
-        "self._meetings(session).update_info"
+        "self._meetings(session).room_change_input",
+        "self._meetings(session).update_info",
+        "self._resolve_room_creation_attempt(principal, f'meeting-update:{plan.meeting_id}:{plan.request_key}', request, {**source, 'people': source['people']}, allow_replacement=False).view",
+        "self._unknown_creation_reservation(error, request.room_id).stored"
       ],
       "baseline_tools": [],
       "target_tools": [
@@ -1266,7 +1270,7 @@
         "update_meeting"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(meeting_id: UUID, request: UpdateMeetingRequest, principal: Principal) -> dict[str, object]"
+      "http_signature": "(meeting_id: UUID, request: UpdateMeetingRequest, idempotency_key: str | None, principal: Principal) -> dict[str, object]"
     },
     {
       "http": "PATCH /api/tasks/{task_id}",
@@ -10547,6 +10551,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -10556,7 +10571,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -12139,6 +12155,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -12148,7 +12175,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -15907,6 +15935,49 @@
               "title": "TaskMemberView",
               "type": "object"
             },
+            "TaskOriginMessage": {
+              "description": "원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③).",
+              "properties": {
+                "message_id": {
+                  "title": "Message Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Kind"
+                },
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Room Id"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "source_kind",
+                "room_id",
+                "label"
+              ],
+              "title": "TaskOriginMessage",
+              "type": "object"
+            },
             "TaskOriginSource": {
               "properties": {
                 "type": {
@@ -15973,13 +16044,24 @@
                       "type": "null"
                     }
                   ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskOriginMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "kind",
                 "actor_role",
                 "actor",
-                "source"
+                "source",
+                "message"
               ],
               "title": "TaskOriginView",
               "type": "object"
@@ -16585,6 +16667,49 @@
               "title": "TaskMemberView",
               "type": "object"
             },
+            "TaskOriginMessage": {
+              "description": "원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③).",
+              "properties": {
+                "message_id": {
+                  "title": "Message Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Kind"
+                },
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Room Id"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "source_kind",
+                "room_id",
+                "label"
+              ],
+              "title": "TaskOriginMessage",
+              "type": "object"
+            },
             "TaskOriginSource": {
               "properties": {
                 "type": {
@@ -16651,13 +16776,24 @@
                       "type": "null"
                     }
                   ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskOriginMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "kind",
                 "actor_role",
                 "actor",
-                "source"
+                "source",
+                "message"
               ],
               "title": "TaskOriginView",
               "type": "object"
@@ -17157,6 +17293,49 @@
               "title": "TaskMemberView",
               "type": "object"
             },
+            "TaskOriginMessage": {
+              "description": "원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③).",
+              "properties": {
+                "message_id": {
+                  "title": "Message Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Kind"
+                },
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Room Id"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "source_kind",
+                "room_id",
+                "label"
+              ],
+              "title": "TaskOriginMessage",
+              "type": "object"
+            },
             "TaskOriginSource": {
               "properties": {
                 "type": {
@@ -17223,13 +17402,24 @@
                       "type": "null"
                     }
                   ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskOriginMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "kind",
                 "actor_role",
                 "actor",
-                "source"
+                "source",
+                "message"
               ],
               "title": "TaskOriginView",
               "type": "object"
@@ -31511,7 +31701,7 @@
       {
         "name": "meeting_room_list",
         "title": "회의실 후보 조회",
-        "description": "Read reservable office meeting rooms. Supply both ISO date-times to return only rooms currently available for that slot.",
+        "description": "Read reservable office meeting rooms as {room_id, name, capacity, available, current, unavailable_reason}. Supply both ISO date-times for that slot and people (internal + external attendees) for capacity; supply meeting_id when changing an existing meeting so its own reservation is not counted as busy and its current room is marked current.",
         "adapter_operation": "meeting_rooms",
         "exposure": {
           "any_capabilities": [],
@@ -31553,6 +31743,30 @@
               ],
               "default": null,
               "title": "Ends At"
+            },
+            "people": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "People"
+            },
+            "meeting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Meeting Id"
             }
           },
           "title": "meeting_room_listArguments",
@@ -31853,7 +32067,7 @@
       {
         "name": "meeting_create",
         "title": "회의 생성 준비",
-        "description": "Prepare a meeting reservation with its schedule, attendees, agendas and optional room selection. When room_id is supplied, request.idempotency_key is required and the same key must be reused after a transport failure. Delegated execution requires human confirmation; creating the meeting does not start it.",
+        "description": "Prepare a meeting reservation with its schedule, attendees, agendas and optional room selection. When continuing a previous meeting, set carried_from_meeting_id and put that meeting's unresolved final agendas with source \"carried\"; newly stated agendas are \"manual\". The place is chosen only as room_id (see meeting_room_list); do not put free-text location. When room_id is supplied, request.idempotency_key is required and the same key must be reused after a transport failure. Delegated execution requires human confirmation; creating the meeting does not start it.",
         "adapter_operation": "create_current_meeting",
         "exposure": {
           "any_capabilities": [],
@@ -31951,7 +32165,7 @@
                 },
                 "agendas": {
                   "items": {
-                    "$ref": "#/$defs/MeetingAgendaDraftInput"
+                    "$ref": "#/$defs/MeetingReservationAgendaInput"
                   },
                   "title": "Agendas",
                   "type": "array"
@@ -32009,7 +32223,7 @@
               "title": "McpMeetingReservationInput",
               "type": "object"
             },
-            "MeetingAgendaDraftInput": {
+            "MeetingReservationAgendaInput": {
               "additionalProperties": false,
               "properties": {
                 "title": {
@@ -32017,12 +32231,21 @@
                   "minLength": 1,
                   "title": "Title",
                   "type": "string"
+                },
+                "source": {
+                  "default": "manual",
+                  "enum": [
+                    "manual",
+                    "carried"
+                  ],
+                  "title": "Source",
+                  "type": "string"
                 }
               },
               "required": [
                 "title"
               ],
-              "title": "MeetingAgendaDraftInput",
+              "title": "MeetingReservationAgendaInput",
               "type": "object"
             }
           },
@@ -33079,7 +33302,7 @@
       {
         "name": "meeting_update",
         "title": "회의 수정 준비",
-        "description": "Prepare editing one readable meeting information with the fields explicitly present in request. Delegated execution requires human confirmation.",
+        "description": "Prepare editing one readable meeting information with the fields explicitly present in request. Change the room only through request.room = {room_id} ({room_id: null} = no room reservation; omit to keep the room). Check rooms first with meeting_room_list(meeting_id, starts_at, ends_at, people). Choosing a room for a meeting that had none books a new room and needs idempotency_key outside delegated turns. Free-text location is not a room. Delegated execution requires human confirmation.",
         "adapter_operation": "update_current_meeting",
         "exposure": {
           "any_capabilities": [],
@@ -33195,9 +33418,45 @@
                   ],
                   "default": null,
                   "title": "External Attendees"
+                },
+                "room": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MeetingRoomChoice"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
                 }
               },
               "title": "MeetingInfoPatch",
+              "type": "object"
+            },
+            "MeetingRoomChoice": {
+              "additionalProperties": false,
+              "description": "회의 수정의 회의실 고르기 (SPEC-010 §4.3) — `room_id: null` = 「회의실 예약 없음」 · `room_id: n` = 그 방으로 ·\n`keep: true` = **기존 — 변경 안 함**(WP3 계약 고정 5 — AX 가 다른 방을 제안했어도 사람이 기존 방을 고른 것).",
+              "properties": {
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "회의실 번호"
+                },
+                "keep": {
+                  "default": false,
+                  "title": "기존 회의실 유지",
+                  "type": "boolean"
+                }
+              },
+              "title": "MeetingRoomChoice",
               "type": "object"
             }
           },
@@ -33208,6 +33467,18 @@
             },
             "request": {
               "$ref": "#/$defs/MeetingInfoPatch"
+            },
+            "idempotency_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Idempotency Key"
             }
           },
           "required": [
@@ -46678,6 +46949,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -46687,7 +46969,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -47582,7 +47865,7 @@
       {
         "name": "conversation_message_send",
         "title": "대화 메시지 접수 준비",
-        "description": "Prepare submitting a message with selected current task/request context to one of this person's conversations. A durable turn is queued; this response is acceptance, not a generated answer. Delegated execution requires human confirmation.",
+        "description": "Prepare submitting a message with selected current task/request/inbox-message context to one of this person's conversations. An inbox_message reference only points at the message (resource_version 1); the server composes its surrounding lines itself. A durable turn is queued; this response is acceptance, not a generated answer. Delegated execution requires human confirmation.",
         "adapter_operation": "accept_conversation_message",
         "exposure": {
           "any_capabilities": [],
@@ -47605,7 +47888,8 @@
                 "resource_type": {
                   "enum": [
                     "task",
-                    "work_request"
+                    "work_request",
+                    "inbox_message"
                   ],
                   "title": "맥락 종류",
                   "type": "string"
@@ -48936,6 +49220,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -48945,7 +49240,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -71809,6 +72105,7 @@
         "screen_callers": [],
         "operation": "meeting_rooms",
         "owning_calls": [
+          "self._meetings(session).room_context",
           "self._room_gateway.available",
           "self._room_gateway.rooms"
         ],
@@ -71822,7 +72119,7 @@
           "meeting_rooms"
         ],
         "acceptance_evidence": "현재 HTTP·MCP 계약 및 소유 애플리케이션 호출 동등성 테스트",
-        "http_signature": "(starts_at: datetime | None, ends_at: datetime | None, principal: Principal) -> list[dict[str, object]]"
+        "http_signature": "(starts_at: datetime | None, ends_at: datetime | None, people: int | None, meeting_id: UUID | None, principal: Principal) -> list[dict[str, object]]"
       },
       {
         "http": "GET /api/meetings/{meeting_id}/export",
@@ -73140,7 +73437,7 @@
           "alternative": "메시지함·설정 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·메시지·첨부는 회원 소유라 남의 것은 404 로 가린다.",
           "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
         },
-        "http_signature": "(message_id: UUID, aid: str, principal: Principal) -> Response"
+        "http_signature": "(message_id: UUID, aid: str, download: bool, principal: Principal) -> Response"
       },
       {
         "http": "GET /api/inbox/rooms/{room_id}/attachments/{aid}",
@@ -73161,7 +73458,7 @@
           "alternative": "메시지함·설정 화면(WORK-011 FE-a·FE-b)과 Mac 수집기(SPEC-009)가 이 경로를 부른다. 연동·방·메시지·첨부는 회원 소유라 남의 것은 404 로 가린다.",
           "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
         },
-        "http_signature": "(room_id: UUID, aid: str, variant: Literal['thumb'] | None, principal: Principal) -> Response"
+        "http_signature": "(room_id: UUID, aid: str, variant: Literal['thumb'] | None, download: bool, principal: Principal) -> Response"
       },
       {
         "http": "GET /api/inbox/mail/{message_id}/remote-image",

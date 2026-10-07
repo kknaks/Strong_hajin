@@ -81,7 +81,8 @@ def test_the_meeting_editor_contract_names_exactly_the_reservation_fields(tmp_pa
 
     item = client.get(f"/api/action-items/{proposed.structured_content['action_id']}", headers=headers).json()
     contract = item["edit_contract"]
-    reservation = set(MeetingReservationInput.model_fields)
+    # 장소 글자 칸은 없다 — 장소는 회의실(`room_id`) 셀렉트뿐이다(SPEC-010 §2.4 · §4.4 · OQ-1005 · W-r2-6).
+    reservation = set(MeetingReservationInput.model_fields) - {"location"}
     assert contract["editor"] == "meeting"
     assert set(contract["values"]) == reservation
     assert {field["id"] for field in contract["fields"]} == reservation

@@ -784,3 +784,67 @@ def test_relay_cache_keeps_to_its_limits() -> None:
     stale = RelayCache(ttl_seconds=0)
     stale.put(("e",), Download("e", "image/png", b"1"))
     assert stale.get(("e",)) is None
+
+
+# ── WORK-012 WP1-BE — 받기 `download=1` · 원격 SVG (SPEC-008 §2.2 · §4.4 · DEC-009 D-22 · D-24) ─────────────────────
+
+
+@pytest.mark.parametrize(
+    ("bytes_and_type", "preview"),
+    [
+        ((b"slack-bytes", "image/png"), "inline"),
+        ((b"%PDF-1.7", "application/pdf"), "inline"),
+        ((b"PK\x03\x04", "application/zip"), "attachment"),
+    ],
+)
+def test_download_1_is_always_an_attachment_and_the_preview_keeps_its_rule(tmp_path, bytes_and_type, preview) -> None:
+    """받기(`?download=1`)는 형식과 무관하게 `attachment` — 미리보기(없음)는 허용 목록만 `inline`. 머리는 둘 다 그대로."""
+    client, _, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    fakes["slack"].download = lambda token, link: bytes_and_type
+    # 미리보기 판정은 이름(확장자)도 본다 — 형식에 맞는 이름으로 둔다.
+    extension = {"image/png": "png", "application/pdf": "pdf", "application/zip": "zip"}[bytes_and_type[1]]
+    with sessions() as session:
+        record = session.scalar(select(ExternalAttachmentRecord).where(ExternalAttachmentRecord.aid == "slack-aid-1"))
+        record.name, record.mime = f"자료.{extension}", bytes_and_type[1]
+        session.commit()
+    url = f"/api/inbox/rooms/{ids['channel']}/attachments/slack-aid-1"
+    shown = client.get(url, headers=MINA)
+    taken = client.get(url, headers=MINA, params={"download": "1"})
+    assert shown.status_code == taken.status_code == 200, (shown.text, taken.text)
+    assert shown.headers["content-disposition"].startswith(f"{preview};")
+    assert taken.headers["content-disposition"].startswith("attachment;")
+    assert taken.content == bytes_and_type[0]
+    for response in (shown, taken):
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert "sandbox" in response.headers["content-security-policy"]
+        assert response.headers["cross-origin-resource-policy"] == "same-origin"
+
+
+def test_mail_attachment_download_1_is_an_attachment_too(tmp_path) -> None:
+    client, _, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    url = f"/api/inbox/mail/{ids['mails'][1]}/attachments/{ids['pdf_aid']}"
+    assert client.get(url, headers=MINA).headers["content-disposition"].startswith("inline;")
+    taken = client.get(url, headers=MINA, params={"download": "1"})
+    assert taken.status_code == 200 and taken.headers["content-disposition"].startswith("attachment;")
+    assert client.get(url, headers=JIHO, params={"download": "1"}).status_code == 404
+
+
+def test_a_remote_svg_is_served_inline_as_svg_under_the_sandbox(tmp_path) -> None:
+    """원격 이미지 응답은 래스터·SVG 모두 `inline` — SVG 는 `image/svg+xml` + 샌드박스 CSP · nosniff · CORP (I-2 닫힘)."""
+    client, _, fakes, cipher, sessions = _stack(tmp_path)
+    ids = _seed(sessions, cipher)
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><text>badge</text></svg>'
+    fakes["images"].fetch = lambda url: (svg, "image/svg+xml")
+    response = client.get(
+        f"/api/inbox/mail/{ids['mails'][1]}/remote-image", headers=MINA, params={"u": "https://tracker.example/pixel.gif"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.content == svg
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.headers["content-disposition"].startswith("inline;")
+    policy = response.headers["content-security-policy"]
+    assert "sandbox" in policy and "default-src 'none'" in policy
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"

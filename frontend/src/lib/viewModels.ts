@@ -437,11 +437,19 @@ export type TaskHistoryDiff = {
  * surface has to decide whether a member id means requester, assigner or assignee. `source` is absent when the
  * caller may not read the resource behind it.
  */
+/**
+ * 업무가 나온 **원래 메시지**(SPEC-008 §4.8 ③) — AX 대화의 참고 자료로 메시지·메일을 받아 그 턴의 업무 제안이 확정됐을 때 남는다.
+ * `label` = 「슬랙 #채널명」·「카톡 {방 이름}」·「메일 {제목}」. 메일이면 `room_id` 가 `null`.
+ */
+export type TaskOriginMessage = { message_id: string; source_kind: "mail" | "slack" | "kakao" | string; room_id: string | null; label: string };
+
 export type TaskOrigin = {
   kind: "self_created" | "work_request" | "direct_assignment" | string;
   actor_role: string;
   actor: { member_id: string; display_name: string } | null;
   source: { type: string; id: string; title: string | null } | null;
+  /** 원래 메시지 — 「판단 보기」(`source`)와 **함께** 선다(SPEC-008 §2.9 ④). */
+  message?: TaskOriginMessage | null;
 };
 
 /** One step inside a Task: no assignment, no lineage, no judgement. */
@@ -891,7 +899,8 @@ export type ActionEditField = {
 };
 
 export type ActionEditContract = {
-  editor: "task" | "meeting" | "task_progress_batch" | "command";
+  /** `meeting_update` = AX 회의 수정 카드(SPEC-010 §2.4 · WP3 계약 고정 1 — `meeting.info.update` 에 새로 생긴 편집 계약). */
+  editor: "task" | "meeting" | "meeting_update" | "task_progress_batch" | "command";
   base_submission_version: number;
   values: Record<string, unknown>;
   fields: ActionEditField[];
@@ -1028,10 +1037,15 @@ export type Notification = {
 };
 
 export type ConversationContextReference = {
-  resource_type: "task" | "work_request";
+  /** `inbox_message` = 메시지함의 메시지·메일(SPEC-008 §4.8 ① — 서버 메시지 id · 판 `1` 고정). 프론트는 가리키기만 한다. */
+  resource_type: "task" | "work_request" | "inbox_message";
   resource_id: string;
   resource_version: number;
   included: boolean;
+  /** 이 참고 자료를 실은 턴(응답에만 — WP4 계약 고정 1). */
+  turn_id?: string | null;
+  /** 서버가 맥락을 조합할 때 만든 한 줄 — 실제 실은 범위(「슬랙 · #채널 · {첫}~{끝} · N건」 등). 조합 전이면 없다. */
+  label?: string | null;
 };
 
 export type ConversationMessageAcceptance = {
@@ -1290,7 +1304,18 @@ export type MeetingTranscript = {
   memos: Array<{ line_id: string; agenda_id: string; text: string; author: string | null; atMs: number | null }>;
 };
 
-export type MeetingRecord = { meeting: MeetingInfo; agendas: MeetingAgenda[] };
+/**
+ * 용어 보정 표 한 줄(SPEC-010 §4.7-4) — `heard` 들린 말(STT 표기) · `corrected` 바로잡은 말 ·
+ * `grade` `auto`(본문에 바로잡은 말로 썼다) | `presumed`(본문은 들린 말 그대로 — 표에만). 순서 = 원문에 처음 나온 순(서버가 정함).
+ */
+export type MeetingTermCorrection = { heard: string; corrected: string; grade: "auto" | "presumed" | string };
+
+/**
+ * 회의 상세 응답. `term_corrections` 는 **최상위**(`meeting`·`agendas` 옆 — 코디 판정 2026-10-07):
+ * `null` = 정정이 돌지 않은 회의(이 판 이전 · 합성 실패 — 표 자리 없음) · `[]` = 돌았는데 바로잡을 것이 없었다 · 행 목록.
+ * 옛 서버·스트림이 이 칸을 싣지 않으면(`undefined`) `null` 과 같이 본다.
+ */
+export type MeetingRecord = { meeting: MeetingInfo; agendas: MeetingAgenda[]; term_corrections?: MeetingTermCorrection[] | null };
 
 /* ---- 회의 자료와 공유 (SCAX-WP-005) ---- */
 
@@ -1315,7 +1340,19 @@ export type MeetingMaterialFailure = { name: string; reason: "too_large" | "unsu
 export type MeetingMaterialUpload = { attached: MeetingMaterial[]; failed: MeetingMaterialFailure[] };
 
 /** 고를 수 있는 사옥 회의실 (SCAX-WP-007). 예약 시스템이 없거나 닿지 않으면 목록이 **빈다**. */
-export type MeetingRoom = { room_id: number; name: string; capacity: number };
+/**
+ * 회의실 목록 한 줄(SPEC-010 §4.1 · WP3 계약 고정 4). `available` = 그 시간·인원에 쓸 수 있음 ·
+ * `current` = 수정 중인 회의의 지금 방(쓸 수 없어도 목록에 온다 — 맨 위 「기존」 줄) · `unavailable_reason` ∈ `time_conflict`·`capacity`·`null`.
+ * 옛 응답·거절 응답(`available_rooms`)은 뒤 셋이 없을 수 있다 — 없으면 쓸 수 있는 방으로 본다.
+ */
+export type MeetingRoom = {
+  room_id: number;
+  name: string;
+  capacity: number | null;
+  available?: boolean;
+  current?: boolean;
+  unavailable_reason?: "time_conflict" | "capacity" | string | null;
+};
 
 /**
  * 회의실 예약이 어떻게 됐나. `booked` 면 회의의 `location` 이 그 방 이름으로 차 있다.
@@ -1607,6 +1644,8 @@ export type InboxMail = {
   safe_html: string;
   attachments: InboxAttachment[];
   sent_replies: InboxSentReply[];
+  /** 이 메일로 확정된 업무 수(SPEC-008 §4.8 ④) — 1 이상이면 머리에 「업무 만듦」. 없거나 0 이면 표지 없음. */
+  made_task_count?: number;
 };
 
 export type InboxRoomHeader = {
@@ -1632,6 +1671,8 @@ export type InboxRoomMessage = {
   thread_key: string | null;
   raw: Record<string, unknown>;
   attachments: InboxAttachment[];
+  /** 이 메시지로 확정된 업무 수(SPEC-008 §4.8 ④) — 1 이상이면 행에 「업무 만듦」. */
+  made_task_count?: number;
 };
 
 /** 이름 풀이표 — 슬랙 사용자 id → 이름·봇 여부. 서버가 싣지 않으면 원문 `user_profile` 로 푼다. */
@@ -1647,7 +1688,8 @@ export type InboxRoomPage = {
 /** 사용자 사건 채널(`/api/inbox/stream`) 한 건 — 본문은 싣지 않고 «무엇이 바뀌었는지»만 온다(NOTIFY 계약). */
 export type InboxStreamEvent = {
   v: number;
-  type: "inbox.message_arrived" | "inbox.reply_result" | "integration.changed" | string;
+  /** `inbox.message_updated` = 메시지(메일)의 `made_task_count` 가 바뀌었다 — `{message_id, room_id|null}`, 본문 없음(SPEC-008 §4.4 · H-5). */
+  type: "inbox.message_arrived" | "inbox.reply_result" | "integration.changed" | "inbox.message_updated" | string;
   member_id: string;
   integration_id?: string;
   room_id?: string;

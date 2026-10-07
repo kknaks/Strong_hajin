@@ -3,9 +3,11 @@
 SCAX-SPEC-004 §8. 못박는 것 —
 
 1. **`/end` 는 전이만 하고 즉시 답한다.** 합성은 durable job 이 뒤에서 돈다 — 사람이 종료를 누르고 기다리지 않는다.
-2. **같은 세션을 이어 쓴다** (§8-3) — 회의를 처음부터 다시 읽히지 않는다. 세션이 없거나 죽었으면
-   **콜드 스타트**로 확정 발화 전량을 한 번에 실어 폴백한다. 그 횟수는 기록으로 남는다.
+2. **같은 세션을 이어 쓴다** (§8-3) — 세션이 없거나 죽었으면 **콜드 스타트**(새 세션)로 폴백한다. 그 횟수는 기록으로 남는다.
+   **재전사 전체 발화와 AI 맥락 목록은 매번 싣는다** (SPEC-010 §4.7-1 · §4.5) — 이어 쓰든 새로 열든.
 3. 시도 상한까지 다시 걸고, 그래도 안 되면 **「실패」**다 — 받은 발화와 메모는 그대로 남고 `/finalize` 가 다시 건다.
+   **timeout 은 다르다** (SPEC-010 §4.6) — 같은 세션을 다시 잇지 않고 **새 세션으로 1회**. 그 1회도 실패하면 「실패」다
+   (같은 세션 resume 이 세 번 90초씩 도는 일이 없다).
 4. **원본 두 벌은 불가침이다** (D53 · §8-5). 합성은 최종 벌만 쓰고, 재시도도 최종 벌만 갈아 끼운다.
    **한 벌이 비어도 돈다** — 정본 재료는 재전사한 원문이고 두 벌은 그 위에 얹는 재료다 (§8-3 · W-1).
 5. 적재는 **한 트랜잭션** — 최종 벌 전량 신규 작성 · 후보 전량 교체(승격된 것은 유지) · 제목 후보 ·
@@ -18,7 +20,7 @@ import logging
 import threading
 from typing import Any, Protocol
 
-from ax_workspace.modules.meetings.batch import SchemaViolation
+from ax_workspace.modules.meetings.batch import AiCallTimedOut, SchemaViolation
 from ax_workspace.modules.meetings.retranscribe import (
     FAILED_EMPTY,
     FAILED_NO_RECORDING,
@@ -94,6 +96,9 @@ class FinalizeGateway(Protocol):
     def existing_task_titles(self, persona_id: str) -> set[str]:
         """이미 있는 업무의 정규화된 제목 — 후보 중복을 막는 근거다 (§8.1)."""
 
+    def ai_context_catalog(self) -> str:
+        """AI 맥락 목록 한 덩어리 — 그 순간 DB 에서 조립한다 (SPEC-010 §4.5). 정정 pass 의 근거다."""
+
     def commit_success(self, meeting_id: str, notes: FinalNotes, *, cold_start: bool) -> None:
         """한 트랜잭션 — 최종 줄·후보 전량 교체 · 제목 후보 · 상태 done."""
 
@@ -152,23 +157,41 @@ class MeetingFinalizeService:
             # 「정리 중」이 아니다 — 이미 끝났거나 되돌려졌다. 잡의 재배달일 뿐이므로 조용히 성공으로 둔다.
             return True
 
+        # 맥락 목록은 이 회차에 한 번 읽어 모든 시도가 같이 싣는다 — 시도마다 DB 를 다시 훑지 않는다.
+        source["ai_context_catalog"] = self._gateway.ai_context_catalog()
+
         last_reason = ""
-        for attempt in range(1, self._attempts + 1):
+        attempt = 0
+        #: timeout 뒤 새 세션 1회를 이미 썼는가. 쓴 뒤의 실패는 무엇이든 「실패」다 (SPEC-010 §4.6).
+        renewed_after_timeout = False
+        while True:
+            attempt += 1
             try:
                 notes, cold_start = self._attempt(source)
                 # **적재도 그 시도 안이다.** 밖에 두면 적재가 깨졌을 때 예외가 이 자리를 그냥 지나쳐
                 # 「실패」로 옮기지 못하고, 회의가 「정리 중」에 갇힌 채 화면이 영원히 폴링한다.
                 self._gateway.commit_success(meeting_id, notes, cold_start=cold_start)
+            except AiCallTimedOut as error:
+                last_reason = FAILURE_UNFINISHED
+                if renewed_after_timeout:
+                    logger.warning("회의 %s 합성의 새 세션 재시도도 상한을 넘겼습니다: %s", meeting_id, error)
+                    break
+                # 같은 세션을 다시 잇지 않는다 — **새 세션 1회**(전사 전량·맥락 목록은 언제나 싣는다).
+                logger.warning("회의 %s 합성이 상한을 넘겼습니다 — 새 세션으로 한 번 다시 돕니다", meeting_id)
+                renewed_after_timeout = True
+                source["session_ref"] = None
+                continue
             except (FinalizeFailed, SchemaViolation) as error:
                 # 사유는 화면용 한 줄이고, 무엇이 깨졌는지는 **로그에만** 남는다.
                 last_reason = _reason_of(error)
                 logger.warning("회의 %s 합성 시도 %s/%s 실패: %s", meeting_id, attempt, self._attempts, error)
-                continue
             except Exception as error:  # noqa: BLE001 — provider·적재 실패는 그 시도의 실패다. 회의를 잃지 않는다
                 last_reason = _reason_of(error)
                 logger.exception("회의 %s 합성 시도 %s/%s 실패", meeting_id, attempt, self._attempts)
-                continue
-            return True
+            else:
+                return True
+            if renewed_after_timeout or attempt >= self._attempts:
+                break
 
         self._gateway.commit_failure(meeting_id, last_reason or FAILURE_UNFINISHED)
         return False
@@ -229,7 +252,7 @@ class MeetingFinalizeService:
     def _compose(self, source: dict[str, Any], *, session_ref: str | None) -> tuple[FinalNotes, bool]:
         cold_start = not session_ref
         if cold_start:
-            # 세션이 없다 — 회의를 기억하는 상대가 없으므로 확정 발화 전량을 한 번에 싣는다.
+            # 세션이 없다(또는 timeout 뒤 새 세션) — 새로 연다. 발화 전량·맥락 목록은 어느 쪽이든 실린다.
             self.cold_starts += 1
             logger.info("회의 %s 합성이 콜드 스타트로 돕니다 — 세션이 없습니다", source["meeting_id"])
         prompt = build_final_prompt(
@@ -238,7 +261,9 @@ class MeetingFinalizeService:
             ai_agendas=source["ai_agendas"],
             memo_lines=source["memo_lines"],
             ai_lines=source["ai_lines"],
-            transcript=source["transcript"] if cold_start else None,
+            # 재전사 전체 발화는 **매번** 싣는다 — 이어 쓰든 새로 열든 (SPEC-010 §4.7-1 · OQ-904).
+            transcript=source["transcript"],
+            catalog=source.get("ai_context_catalog"),
         )
         body = self._agent.run_final(
             persona_id=source["persona_id"], session_ref=session_ref, prompt=prompt
@@ -259,6 +284,7 @@ class MeetingFinalizeService:
                     self._gateway.existing_task_titles(source["persona_id"])
                 ),
                 next_meeting_starts_on=source.get("next_meeting_starts_on"),
+                meeting_starts_on=source.get("meeting_starts_on"),
             ),
         )
         return outcome.notes, cold_start

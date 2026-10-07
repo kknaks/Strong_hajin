@@ -71,3 +71,41 @@ def test_integration_and_message_events_arrive_over_listen_notify_after_commit()
     [(channel, payload)] = [item for item in _drain(listener) if item[1].get("type") == "inbox.message_arrived"]
     assert channel == "ax_user_events" and payload["member_id"] == "mina" and payload["source_kind"] == "slack"
     listener.close()
+
+
+def test_a_single_live_save_and_a_cursor_only_step_announce_the_integration_change() -> None:
+    """설정 연동 화면의 숫자가 바뀌는 저장마다 `integration.changed` (SPEC-008 §4.4 v0.6.0 · D-25 · WORK-012 WP1-BE).
+
+    실시간 1건 저장은 `inbox.message_arrived` 와 함께 연동 변경 한 건을 낸다(옛 판은 21건 이상일 때만). 백필의 커서만
+    옮긴 걸음도 상태가 그대로여도 낸다. 묶어 내기(1초에 한 번)는 듣는 쪽(`UserEventHub`) 몫이라 NOTIFY 는 저장마다 나간다.
+    """
+    database_url = _postgres_test_url()
+    reset_database(database_url)
+    key = generate_key()
+    app = create_app(Settings(RuntimeProfile.TEST, database_url, materials_dir=tempfile.mkdtemp(), external_token_encryption_key=key))
+    app.state.workflow_application._external_oauth = {"slack": Provider()}
+    app.state.workflow_application._slack_directory = FakeSlackDirectory(default={"C1": "channel"})
+    client = TestClient(app, follow_redirects=False)
+    state = client.post("/api/integrations/slack/connect", headers=MINA).json()["state"]
+    assert client.get("/api/integrations/slack/callback", params={"code": "c", "state": state}).status_code == 302
+    integration = client.get("/api/integrations", headers=MINA).json()[0]["id"]
+    assert client.post(f"/api/integrations/{integration}/rooms", headers=MINA, json={"room_ids": ["C1"]}).status_code == 202
+    [room] = client.get(f"/api/integrations/{integration}/rooms", headers=MINA).json()
+
+    listener = psycopg.connect(database_url.replace("postgresql+psycopg://", "postgresql://", 1), autocommit=True)
+    listener.execute("LISTEN ax_user_events")
+    store = SqlAlchemyExternalChannelsSyncStore(make_session_factory(database_url))
+    sync = ExternalSync(store, cipher=FernetTokenCipher(key), slack=None, gmail=None, gmail_topic=None)
+    event = {"team_id": "T0001", "event": {"type": "message", "channel": "C1", "user": "U1", "text": "hi", "ts": "1790000002.000100"}}
+    assert sync.handle_slack_event(event) == 1
+    kinds = [payload["type"] for _, payload in _drain(listener)]
+    assert kinds == ["inbox.message_arrived", "integration.changed"]
+
+    store.update_room(room["room_id"], backfill_cursor="cursor-2")
+    [(_, changed)] = _drain(listener)
+    assert changed["type"] == "integration.changed" and changed["integration_id"] == integration
+    store.update_integration(integration, backfill_cursor="page-2")
+    assert [payload["type"] for _, payload in _drain(listener)] == ["integration.changed"]
+    store.update_integration(integration, watch_expires_at=None)  # 화면 숫자와 무관한 칸 — 사건 없음
+    assert _drain(listener) == []
+    listener.close()

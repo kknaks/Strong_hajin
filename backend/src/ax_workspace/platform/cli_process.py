@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import inspect
 import os
 import re
 import signal
@@ -103,14 +104,49 @@ def summarize_stderr(stderr: str, *, limit: int = STDERR_SUMMARY_LIMIT) -> str:
     return text
 
 
-def invoke_runner(runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel) -> ProcessResult:
-    """Call a streaming runner; fall back to the legacy 5-argument runner used by older tests."""
+def _accepts(runner: Callable[..., Any], name: str) -> bool:
+    """러너가 그 키워드를 **시그니처로** 받는가 — `**kwargs` 도 받는 것으로 본다.
+
+    호출해 보고 `TypeError` 글자를 맞춰 다른 모양으로 다시 부르지 않는다(WORK-012 WP2 재검수 W-r2-3): 러너 안에서 다른
+    이유로 난 `TypeError` 가 같은 낱말을 품으면 **CLI 프로세스를 두 번 띄우고**, stdin 없는 되돌이는 Codex 를 빈 프롬프트로
+    돌린다. 부르기 **전에** 모양을 한 번 정한다.
+    """
     try:
+        parameters = inspect.signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
+
+
+def invoke_runner(
+    runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel, stdin_text: str | None = None
+) -> ProcessResult:
+    """스트리밍 러너를 부른다 — 모양은 **러너 시그니처로 한 번 정하고** 한 번만 부른다.
+
+    `stdin_text` — **프롬프트는 argv 가 아니라 stdin 으로 넘긴다** (WORK-012 WP2 수정 1 W-1 · 리눅스 한 인자 128KiB 상한).
+    제품 러너(`subprocess_runner`)는 셋 다 받는다. 프롬프트를 넘겨야 하는데 `stdin_text` 를 못 받는 러너면 **조용히 빼고 돌리지
+    않고** 오류로 끝낸다 — Codex 는 argv 의 `-` 를 보고 빈 stdin 을 프롬프트로 읽게 된다. `on_line` 을 모르는 옛 시험 러너는
+    5인자로 부른다(프롬프트가 없는 호출에만 해당).
+    """
+    if stdin_text is not None:
+        if not _accepts(runner, "stdin_text"):
+            raise TypeError("this runner cannot take the prompt on stdin (stdin_text)")
+        return runner(
+            command, arguments, cwd, environment, timeout_seconds,
+            on_line=on_line, should_cancel=should_cancel, stdin_text=stdin_text,
+        )
+    if _accepts(runner, "on_line"):
         return runner(command, arguments, cwd, environment, timeout_seconds, on_line=on_line, should_cancel=should_cancel)
-    except TypeError as error:
-        if "on_line" not in str(error) and "positional" not in str(error):
-            raise
-        return runner(command, arguments, cwd, environment, timeout_seconds)
+    return runner(command, arguments, cwd, environment, timeout_seconds)
+
+
+def invoke_plain_runner(runner, command, arguments, cwd, environment, timeout_seconds, stdin_text: str) -> ProcessResult:
+    """단발 생성(`generate`)용 — 프롬프트를 stdin 으로 넘긴다. 못 받는 러너면 오류다(조용히 빼고 돌리지 않는다 · W-r2-3)."""
+    if not _accepts(runner, "stdin_text"):
+        raise TypeError("this runner cannot take the prompt on stdin (stdin_text)")
+    return runner(command, arguments, cwd, environment, timeout_seconds, stdin_text=stdin_text)
 
 
 def subprocess_runner(
@@ -121,19 +157,25 @@ def subprocess_runner(
     timeout_seconds: int,
     on_line: Callable[[str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    stdin_text: str | None = None,
 ) -> ProcessResult:
     """Run the CLI in its own process group and stream stdout lines to `on_line` as they arrive.
 
     Cancel and timeout stop the whole group (a CLI may spawn MCP child processes), so nothing is orphaned.
+    `stdin_text` 가 있으면 그 글을 stdin 으로 흘리고 닫는다 — 프롬프트가 argv 한도(128KiB)에 걸리지 않는다. 쓰기는 따로 도는
+    스레드가 해서, CLI 가 stdout 을 먼저 쏟아도 파이프가 서로 막히지 않는다. 없으면 지금처럼 `/dev/null`.
     """
     process = subprocess.Popen(
         [command, *arguments],
         cwd=cwd,
         env=environment,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # 로케일과 무관하게 UTF-8 — 한국어 프롬프트를 stdin 에 쓰고 JSONL 을 읽는다(WP2 재검수 W-r2-4). 깨진 바이트는 대체한다.
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         start_new_session=True,
     )
@@ -157,7 +199,21 @@ def subprocess_runner(
                 except Exception as error:  # noqa: BLE001 - recorded and surfaced; ingestion of further lines stops
                     ingest_failure.append(error)
 
+    def feed_stdin() -> None:
+        assert process.stdin is not None
+        try:
+            process.stdin.write(stdin_text or "")
+        except (BrokenPipeError, OSError):
+            pass  # CLI 가 먼저 끝났다 — 결과는 returncode 와 stderr 가 말한다
+        finally:
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
     readers = [threading.Thread(target=drain_stdout, daemon=True), threading.Thread(target=drain_stderr, daemon=True)]
+    if stdin_text is not None:
+        readers.append(threading.Thread(target=feed_stdin, daemon=True))
     for reader in readers:
         reader.start()
     while process.poll() is None:

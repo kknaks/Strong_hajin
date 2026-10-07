@@ -41,6 +41,8 @@ class FakeBatchAgent:
         self.opened: list[dict] = []
         self.runs: list[dict] = []
         self.script: list[str | Exception] = []
+        self.fresh: list[dict] = []
+        self.fresh_session_ref: str | None = "session-fresh"
 
     def open_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> str | None:
         self.opened.append({"persona_id": persona_id, "prompt": prompt, "tools": tools})
@@ -50,6 +52,14 @@ class FakeBatchAgent:
         self.runs.append(
             {"persona_id": persona_id, "session_ref": session_ref, "prompt": prompt, "tools": tools}
         )
+        return self._next()
+
+    def run_batch_in_new_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> tuple[str | None, str]:
+        """새 세션 1회 배치 (SPEC-010 §4.6) — 같은 대본에서 하나를 꺼낸다. 열린 세션은 `fresh_session_ref`."""
+        self.fresh.append({"persona_id": persona_id, "prompt": prompt, "tools": tools})
+        return self.fresh_session_ref, self._next()
+
+    def _next(self) -> str:
         if not self.script:
             return _output([])
         item = self.script.pop(0)
@@ -381,9 +391,12 @@ def test_starting_a_meeting_opens_one_provider_session_in_the_background(tmp_pat
     # 도구는 회의를 만든 사람으로 선다 (SPEC §13 `OQ-315` 잠정값).
     assert opened["persona_id"] == "mina"
     assert opened["tools"] == DEFAULT_TOOL_REGISTRY
-    # 첫 turn 이 맥락을 싣는다 — 회의 정보 · 안건. 참석자는 수만 싣고 실명을 흘리지 않는다.
+    # 첫 turn 이 맥락을 싣는다 — 회의 정보 · 안건. **이 회의의 참석자는 수만** 싣고 실명을 흘리지 않는다.
+    # 조직 명부는 AI 맥락 목록(SPEC-010 §4.5 · D-13 — 구성원 전부)으로 따로 실리고, 화자 짐작에 쓰지 말라는 줄이 붙는다.
     assert "메모할 회의" in opened["prompt"] and "첫 안건" in opened["prompt"]
-    assert "지호" not in opened["prompt"]
+    meeting_part = opened["prompt"].split("## 이 회의", 1)[1].split("## 조직 맥락 목록", 1)[0]
+    assert "지호" not in meeting_part
+    assert "## 조직 맥락 목록" in opened["prompt"] and "화자가 누구인지 짐작하는 데 쓰지 마라" in opened["prompt"]
 
     with application._session_factory() as session:
         assert application._meetings(session).ai_session_ref(UUID(meeting_id)) == "session-1"
@@ -786,7 +799,7 @@ def test_the_batch_brings_follow_up_candidates_and_they_land_as_provisional(tmp_
     agent.script = [
         _output([
             _agenda("AI 가 가른 화제", [_line("AI 가 낸 줄")],
-                    todos=[_todo("계약서를 검토한다", due="2026-09-20"), _todo("일정을 잡는다")]),
+                    todos=[_todo("계약서를 검토한다", due="2099-09-20"), _todo("일정을 잡는다")]),
         ])
     ]
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
@@ -795,10 +808,25 @@ def test_the_batch_brings_follow_up_candidates_and_they_land_as_provisional(tmp_
     [agenda] = _agendas_of(client, meeting_id)
     assert [row["title"] for row in agenda["todos"]] == ["계약서를 검토한다", "일정을 잡는다"]
     assert all(row["provisional"] is True for row in agenda["todos"])
-    assert agenda["todos"][0]["due_candidate"] == "2026-09-20"
+    assert agenda["todos"][0]["due_candidate"] == "2099-09-20"
     assert agenda["todos"][1]["due_candidate"] is None
     # 담당자 칸은 없다 — AI 가 고르지 않는다.
     assert all("assignee" not in row for row in agenda["todos"])
+
+
+def test_a_provisional_due_before_the_meeting_day_is_cleared(tmp_path) -> None:
+    """회의 중 잠정 후보의 기한도 최종과 같은 하한을 탄다 — 회의일보다 이르면 비운다 (SPEC-010 §4.8 · OQ-1014)."""
+    client, application, agent = _stack(tmp_path)
+    made = _running(client)
+    meeting_id = made["meeting"]["meeting_id"]
+    application.meeting_batch.drain()
+    _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
+    agent.script = [_output([_agenda("AI 가 가른 화제", [_line("AI 가 낸 줄")], todos=[_todo("지난 날짜의 일", due="2020-01-02")])])]
+    assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
+    application.meeting_batch.drain()
+
+    [agenda] = _agendas_of(client, meeting_id)
+    assert agenda["todos"][0]["due_candidate"] is None
 
 
 def test_the_next_batch_replaces_the_candidates_whole(tmp_path) -> None:

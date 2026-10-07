@@ -26,6 +26,7 @@ import {
   type TaskPatch,
   type WorkRequest,
 } from "../../lib/viewModels";
+import type { TaskOriginMessage } from "../../lib/viewModels";
 import {
   CreateWorkModal,
   StatusText,
@@ -51,6 +52,8 @@ type TodayPageProps = {
   onNotice: (message: string) => void;
   /** Settles every projection an approved effect may have changed. Never throws; returns false when a read failed. */
   onDecided: () => Promise<boolean>;
+  /** 업무 상세 출처 행의 「원래 메시지」 링크(SPEC-008 §2.9 ④) — App 이 메시지함으로 가 그 메시지를 짚는다. */
+  onOpenInboxMessage?: (message: TaskOriginMessage) => void;
   onError: (message: string | null) => void;
   /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
@@ -71,6 +74,7 @@ export function TodayPage({
   onAskAx,
   onNotice,
   onDecided,
+  onOpenInboxMessage,
   onError,
   onRegisterRefresh,
   onNavigate,
@@ -425,6 +429,7 @@ export function TodayPage({
           onClose={() => setSelectedTask(null)}
           onError={onError}
           onNotice={onNotice}
+          onOpenInboxMessage={onOpenInboxMessage}
           onTransition={transitionTask}
           onUpdate={updateTaskFields}
           ownerName={me}

@@ -124,9 +124,21 @@ class MeetingFollowupCommand(MeetingFollowupInput):
     statement_index: int = Field(ge=0, title='후속 문장 번호')
 
 
+# 회의 중 안건 추가 입구(HTTP · MCP · 승인 재실행)의 입력 — **제목만** 받는다. 출처를 받지 않는 것이 계약이다
+# (SPEC-010 §5 · W-r2-5): 이 입구로 선 사람 벌 안건은 언제나 `manual` 이고 `carried` 가 들어올 길이 없다.
+# 생성의 안건은 `MeetingReservationAgendaInput` 이 받는다. (docstring 을 두지 않는다 — 도구 스키마 설명이 된다.)
 class MeetingAgendaDraftInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     title: str = Field(min_length=1, max_length=100)
+
+
+# 회의 생성 전용 안건 입력 — **안건마다 출처**를 든다 (SPEC-010 §4.2 · DEC-009 D-11).
+# `carried` = 불러온 지난 회의의 결론 안 난 최종 안건 · `manual` = 이 회의에서 새로 쓴 것(안 주면 `manual`).
+# `carried` 가 있는데 이어온 회의가 없으면 생성이 `422 AGENDA_SOURCE_INVALID` 로 거절한다(도메인 규칙).
+class MeetingReservationAgendaInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str = Field(min_length=1, max_length=100)
+    source: Literal["manual", "carried"] = "manual"
 
 
 class MeetingReservationInput(BaseModel):
@@ -140,7 +152,7 @@ class MeetingReservationInput(BaseModel):
     location: str | None = Field(default=None, max_length=300)
     attendee_ids: list[str] = Field(default_factory=list)
     external_attendees: list[str] = Field(default_factory=list)
-    agendas: list[MeetingAgendaDraftInput] = Field(default_factory=list)
+    agendas: list[MeetingReservationAgendaInput] = Field(default_factory=list)
     carried_from_meeting_id: UUID | None = None
     room_id: int | None = None
 
@@ -160,6 +172,23 @@ class MeetingReservationInput(BaseModel):
         return values
 
 
+class MeetingRoomChoice(BaseModel):
+    """회의 수정의 회의실 고르기 (SPEC-010 §4.3) — `room_id: null` = 「회의실 예약 없음」 · `room_id: n` = 그 방으로 ·
+    `keep: true` = **기존 — 변경 안 함**(WP3 계약 고정 5 — AX 가 다른 방을 제안했어도 사람이 기존 방을 고른 것)."""
+
+    model_config = ConfigDict(extra="forbid")
+    room_id: int | None = Field(default=None, title="회의실 번호")
+    keep: bool = Field(default=False, title="기존 회의실 유지")
+
+    @model_validator(mode="after")
+    def validate_choice(self) -> Self:
+        if self.keep and self.room_id is not None:
+            raise ValueError("room.keep 과 room.room_id 를 함께 줄 수 없습니다")
+        if not self.keep and "room_id" not in self.model_fields_set:
+            raise ValueError("room 에는 room_id(없음은 null) 또는 keep: true 가 필요합니다")
+        return self
+
+
 class MeetingInfoPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     title: str | None = Field(default=None, max_length=300)
@@ -169,6 +198,8 @@ class MeetingInfoPatch(BaseModel):
     location: str | None = Field(default=None, max_length=300)
     attendee_ids: list[str] | None = None
     external_attendees: list[str] | None = None
+    #: 회의실(SPEC-010 §4.3) — **안 보내면 방은 그대로**(시각·인원이 바뀌면 같은 방을 다시 확인한다).
+    room: MeetingRoomChoice | None = None
 
     @model_validator(mode="after")
     def validate_times(self) -> Self:
@@ -190,10 +221,23 @@ class MeetingInfoPatch(BaseModel):
             self.starts_at = self.starts_at.astimezone(UTC)
         if self.ends_at is not None:
             self.ends_at = self.ends_at.astimezone(UTC)
+        # 같은 사람은 하나로 — 생성(`MeetingReservationInput.validate_schedule`)과 같은 규칙이다
+        # (SPEC-010 §2.1 · §4.3 · OQ-909). 순서는 처음 나온 자리를 지킨다.
+        if self.attendee_ids is not None:
+            self.attendee_ids = list(dict.fromkeys(item for item in self.attendee_ids if item))
+        if self.external_attendees is not None:
+            self.external_attendees = list(dict.fromkeys(item for item in self.external_attendees if item))
         return self
 
     def changes(self) -> dict:
-        return self.model_dump(exclude_unset=True)
+        """회의 정보의 바뀐 칸 — 회의실 고르기(`room`)는 빼고 `room_choice()` 가 따로 낸다."""
+        return self.model_dump(exclude_unset=True, exclude={"room"})
+
+    def room_choice(self) -> dict | None:
+        """`None` = 방 유지(`room` 없음 · `keep: true`) · `{"room_id": None}` = 예약 없음 · `{"room_id": n}` = 그 방."""
+        if self.room is None or self.room.keep:
+            return None
+        return {"room_id": self.room.room_id}
 
 
 class MeetingNoteLineInput(BaseModel):

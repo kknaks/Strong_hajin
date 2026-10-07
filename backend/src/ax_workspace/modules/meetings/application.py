@@ -27,6 +27,7 @@ from ax_workspace.modules.meetings.domain import (
     TRACK_MEMO,
     ensure_agenda_capacity,
     ensure_agenda_source,
+    ensure_reservation_agenda_sources,
     ensure_agenda_track,
     ensure_line_track,
     ensure_transition,
@@ -39,7 +40,7 @@ from ax_workspace.modules.meetings.domain import (
     validate_meeting_schedule,
 )
 from ax_workspace.modules.time_blocks import TimeBlockRepository
-from ax_workspace.modules.meetings.finalize import describe_day
+from ax_workspace.modules.meetings.finalize import describe_day, floor_due
 from ax_workspace.modules.meetings.policy import (
     MeetingActorContext,
     MeetingView,
@@ -139,7 +140,9 @@ class MeetingRepository(Protocol):
     def delete_line(self, line: Any) -> None: ...
     def memo_lines(self, meeting: Any) -> list[Any]: ...
     def replace_track(self, meeting: Any, track: str) -> None: ...
-    def record_ai_session(self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str) -> None: ...
+    def record_ai_session(
+        self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None: ...
     def ai_session(self, meeting_id: UUID) -> Any | None: ...
     def succeeded_batch_cursor(self, meeting_id: UUID) -> int: ...
     def next_batch_seq(self, meeting_id: UUID) -> int: ...
@@ -153,6 +156,8 @@ class MeetingRepository(Protocol):
     def link_todo(self, todo: Any, *, work_request_id: UUID) -> None: ...
     def delete_todo(self, todo: Any) -> None: ...
     def next_meeting_after(self, meeting: Any) -> Any | None: ...
+    def replace_term_corrections(self, meeting: Any, rows: list[dict[str, str]] | None, *, at: datetime) -> None: ...
+    def term_corrections(self, meeting: Any) -> list[Any]: ...
     def delete_note_content(self, meeting: Any) -> None: ...
     def append_transcript_block(
         self, meeting_id: UUID, *, speaker_label: str, at_ms: int, end_ms: int, text: str
@@ -310,7 +315,7 @@ class MeetingApplication:
         organization_id: str | None = None,
     ) -> dict[str, Any]:
         """예약. 회의를 세우는 사람은 그 회의의 참석자이기도 하다 — 목록에서 자기 회의를 잃지 않는다."""
-        values, drafts, source = self._validated_creation(
+        values, drafts = self._validated_creation(
             principal,
             title=title,
             starts_at=starts_at,
@@ -325,7 +330,8 @@ class MeetingApplication:
         )
         meeting = self._repository.create(**values)
         # 예약 모달이 준 안건은 **사람 벌**에 선다 — 사람이 세운 것이라 출처를 갖는다 (SPEC §4.0 표 · §4.1-2).
-        for order, agenda_title in enumerate(drafts, start=1):
+        # 출처는 **안건마다** 받은 값이다 (SPEC-010 §4.2 · D-11) — 불러온 미결 안건만 `carried`.
+        for order, (agenda_title, source) in enumerate(drafts, start=1):
             self._create_agenda(
                 meeting, track=TRACK_MEMO, title=agenda_title, source=source, order_index=order
             )
@@ -401,7 +407,7 @@ class MeetingApplication:
         carried_from_meeting_id: UUID | None = None,
         organization_id: str | None = None,
         ignore_meeting_id: UUID | None = None,
-    ) -> tuple[dict[str, Any], list[str], str]:
+    ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
         self._require(principal, MEETING_MANAGE)
         organization_id = organization_id or self._repository.primary_organization(str(principal.id))
         if organization_id is None or organization_id not in principal.organization_scope:
@@ -410,9 +416,11 @@ class MeetingApplication:
         validate_meeting_schedule(starts_at, ends_at)
         attendees = self._resolved_attendees(principal, attendee_ids or [])
         carried = self._carried_source(principal, carried_from_meeting_id)
-        drafts = [normalize_agenda_title(row.get("title")) for row in (agendas or [])]
-        ensure_agenda_capacity(max(len(drafts) - 1, 0))
-        source = "carried" if carried is not None else "manual"
+        rows = list(agendas or [])
+        titles = [normalize_agenda_title(row.get("title")) for row in rows]
+        ensure_agenda_capacity(max(len(titles) - 1, 0))
+        sources = ensure_reservation_agenda_sources([row.get("source") for row in rows], carried_from=carried)
+        drafts = list(zip(titles, sources, strict=True))
         # **겹침은 마지막 409 다** — 입력이 틀린 것(422)과 읽을 수 없는 것(404)이 먼저 답한다.
         # **`quick_start` 는 이 함수를 지나지 않으므로 자연히 안 탄다** — 제외 분기를 두지 않았다.
         self._require_free_time(frozenset(attendees), starts_at, ends_at, ignoring=ignore_meeting_id)
@@ -431,7 +439,6 @@ class MeetingApplication:
                 "carried_from_meeting_id": carried,
             },
             drafts,
-            source,
         )
 
     def quick_start(self, principal: Principal) -> dict[str, Any]:
@@ -813,9 +820,9 @@ class MeetingApplication:
                 "title": meeting.title,
                 "purpose": meeting.purpose,
                 # 기준일 — 「이번 주 금요일」을 ISO 로 환산하려면 이 회의가 언제 열렸는지가 있어야 한다.
-                "starts_on": describe_day(_aware(meeting.starts_at).date()),
+                "starts_on": describe_day(_office_day(meeting.starts_at)),
                 "next_meeting_on": describe_day(
-                    None if next_meeting is None else _aware(next_meeting.starts_at).date()
+                    None if next_meeting is None else _office_day(next_meeting.starts_at)
                 ),
                 "carried_from": carried,
             },
@@ -832,7 +839,9 @@ class MeetingApplication:
                 for block in blocks
             ],
             "covered_ms": (0, max((block.end_ms for block in blocks), default=0)),
-            "next_meeting_starts_on": None if next_meeting is None else _aware(next_meeting.starts_at).date(),
+            # 날짜는 **KST** 다 (SPEC-010 §4.8) — UTC `.date()` 는 KST 09시 전 회의를 하루 당겼다(BE §5.5 (c)).
+            "next_meeting_starts_on": None if next_meeting is None else _office_day(next_meeting.starts_at),
+            "meeting_starts_on": _office_day(meeting.starts_at),
         }
 
     # ------------------------------------------------------------------ 종료 뒤 재전사 (D44)
@@ -939,6 +948,17 @@ class MeetingApplication:
                     }
                 )
         self._repository.replace_todos(meeting, drafts)
+        # 용어 보정 표 — **같은 트랜잭션**에서 통째로 갈아 끼우고 「정정이 돌았다」 시각을 찍는다 (SPEC-010 §4.7-4 · N-1).
+        # 0개여도 찍는다 — 「돌았는데 바로잡을 것이 없었다」(`[]`)와 「돌지 않았다」(`null`)를 가른다. 모델이 표 칸을 아예 내지
+        # 않았으면(`None`) 정정 pass 를 건너뛴 것이라 표를 비우고 시각도 걷는다 → 응답 `null` (WP2 수정 1 W-2).
+        corrections = getattr(notes, "term_corrections", None)
+        self._repository.replace_term_corrections(
+            meeting,
+            None
+            if corrections is None
+            else [{"heard": row.heard, "corrected": row.corrected, "grade": row.grade} for row in corrections],
+            at=datetime.now(UTC),
+        )
         if not meeting.title and notes.title_candidate:
             # 사람이 저장해야 제목이 된다 — 그전까지는 「제목 없는 회의」다 (SPEC-004 §3.1-6 · D14).
             meeting.title_candidate = notes.title_candidate
@@ -1054,6 +1074,8 @@ class MeetingApplication:
             "status": meeting.status,
             "title_candidate": meeting.title_candidate,
             "agendas": [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)],
+            # 합성 잡이 돌려주는 투영에도 같은 보정 표를 싣는다 — 상세 모양을 내는 자리는 같은 값을 낸다.
+            "term_corrections": self._term_corrections_view(meeting),
         }
 
     # ------------------------------------------------------------------ 공유 (SCAX-WP-005 인계 예정)
@@ -1437,8 +1459,34 @@ class MeetingApplication:
             "carried_from": carried,
         }
 
-    def record_ai_session(self, meeting_id: UUID, *, session_ref: str, persona_id: str) -> None:
-        self._repository.record_ai_session(meeting_id, provider_session_ref=session_ref, persona_id=persona_id)
+    def ai_track_material(self, meeting_id: UUID) -> list[dict[str, Any]]:
+        """AI 벌의 안건과 줄(근거 포함) — **새 세션 배치만** 「앞 배치까지 네 벌」로 싣는다(새 세션은 앞 구간을 기억하지 못한다).
+
+        이어 쓰는 배치는 부르지 않는다 — 매 배치마다 조립하지 않게 새 세션 갈래에서만 읽는다(WP2 수정 1 W-4).
+        """
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None:
+            return []
+        lines = self._grouped_lines(meeting)
+        return [
+            {
+                "title": agenda.title,
+                "lines": [
+                    {"text": line.text, "evidence": list(line.evidence or [])}
+                    for line in lines.get(agenda.id, [])
+                    if line.track == TRACK_AI
+                ],
+            }
+            for agenda in self._repository.agendas(meeting, track=TRACK_AI)
+        ]
+
+    def record_ai_session(
+        self, meeting_id: UUID, *, session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None:
+        """세션 참조를 **기대한 값일 때만** 기록한다(CAS) — 돌려주는 값 = 원장에 남은 참조."""
+        return self._repository.record_ai_session(
+            meeting_id, provider_session_ref=session_ref, persona_id=persona_id, expected=expected
+        )
 
     def ai_session_ref(self, meeting_id: UUID) -> str | None:
         """SCAX-WP-004 의 종료 합성이 **같은 세션**을 이어 쓸 때 읽는 자리다 (SPEC §8-3)."""
@@ -1453,15 +1501,14 @@ class MeetingApplication:
     def batch_input(self, meeting_id: UUID) -> dict[str, Any] | None:
         """제출할 것이 있으면 증분, 없으면 `None`.
 
-        세션이 없으면 제출하지 않는다 — 트리거만 평가하고 구간은 미처리로 남는다 (SPEC §7.1 세션 행).
+        세션이 없으면(웜스타트가 끝내 못 열었다) `session_ref` 가 `None` 이고 그 회차가 **새 세션으로 연다** (SPEC-010 §4.6
+        — 웜스타트 새 세션 1회도 실패하면 「다음 배치에 합친다」). 도구는 회의를 만든 사람으로 선다.
         「진행 중」이 아니면 새 배치가 없다 — 종료 뒤 합성은 SCAX-WP-004 의 다른 진입점이다.
         """
         meeting = self._repository.meeting(meeting_id)
         if meeting is None or parse_status(meeting.status) is not MeetingStatus.IN_PROGRESS:
             return None
         session = self._repository.ai_session(meeting_id)
-        if session is None:
-            return None
         cursor = self._repository.succeeded_batch_cursor(meeting_id)
         blocks = self._repository.transcript_blocks_after(meeting_id, cursor)
         if not blocks:
@@ -1473,8 +1520,8 @@ class MeetingApplication:
         ]
         return {
             "seq": self._repository.next_batch_seq(meeting_id),
-            "session_ref": session.provider_session_ref,
-            "persona_id": session.persona_id,
+            "session_ref": None if session is None else session.provider_session_ref,
+            "persona_id": meeting.owner_id if session is None else session.persona_id,
             "blocks": [
                 {
                     "speakerLabel": block.speaker_label,
@@ -1520,6 +1567,8 @@ class MeetingApplication:
             raise MeetingNotFound("meeting was not found")
         self._repository.replace_track(meeting, TRACK_AI)
         drafts: list[dict[str, Any]] = []
+        # 잠정 후보의 기한도 최종과 같은 하한을 탄다 — 회의일보다 이르면 비운다 (SPEC-010 §4.8 · OQ-1014).
+        meeting_day = _office_day(meeting.starts_at)
         for output in agendas:
             if self._repository.agenda_count(meeting, track=TRACK_AI) >= MAX_AGENDAS_PER_TRACK:
                 continue
@@ -1545,7 +1594,7 @@ class MeetingApplication:
                         "order_index": order,
                         "title": todo.title,
                         "description": todo.description,
-                        "due_candidate": todo.due_candidate,
+                        "due_candidate": floor_due(todo.due_candidate, meeting_starts_on=meeting_day),
                         "checklist_candidate": list(todo.checklist_candidate),
                         "reference": {
                             "meeting_id": str(meeting.id),
@@ -1813,7 +1862,18 @@ class MeetingApplication:
                 "transcript_source": meeting.transcript_source,
             },
             "agendas": [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)],
+            # 용어 보정 표 — **최상위**(meeting·agendas 옆 · 코디 판정 (A)). 정정이 돌지 않았으면 `null`, 돌았으면 행 목록
+            # (0개면 `[]`) · 행 = `{heard, corrected, grade}` (SPEC-010 §4.7-4). 상세 모양을 돌려주는 응답 전부가 이 자리를 지난다.
+            "term_corrections": self._term_corrections_view(meeting),
         }
+
+    def _term_corrections_view(self, meeting: Any) -> list[dict[str, str]] | None:
+        if getattr(meeting, "term_corrected_at", None) is None:
+            return None
+        return [
+            {"heard": row.heard, "corrected": row.corrected, "grade": row.grade}
+            for row in self._repository.term_corrections(meeting)
+        ]
 
     # ------------------------------------------------------------------ 회의실 예약 (SCAX-WP-007)
 
@@ -1877,6 +1937,81 @@ class MeetingApplication:
             "outside": [str(name) for name in (meeting.external_attendees or [])],
             "reservation": RoomReservation.restored(meeting.room_reservation),
         }
+
+    def _editable_for_room(self, principal: Principal, meeting_id: UUID, *, lock: bool = False) -> Any:
+        """회의실을 고르거나 바꿀 수 있는 회의 — `update_info` 와 같은 판정이다(읽기 · 참석자 · 「예정」·「완료」).
+
+        읽을 수 없거나 참석자가 아니면 **없는 것처럼 404**(SPEC-010 Validation 「`meeting_id` 는 수정할 수 있는 회의여야 —
+        아니면 그 인자를 무시하지 않고 404」), 상태가 맞지 않으면 409.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=lock)
+        view = self._view_plan(principal, meeting)
+        if not view.is_attendee:
+            raise MeetingNotFound("meeting was not found")
+        if not view.can_edit_info:
+            raise MeetingStateConflict("meeting information may be edited only while scheduled or done")
+        return meeting
+
+    def room_context(self, principal: Principal, meeting_id: UUID) -> RoomReservation | None:
+        """회의실 목록의 `meeting_id` — 그 회의의 **지금 예약**(점유에서 뺄 자기 예약 · `current` 줄). 수정할 수 있어야 한다."""
+        meeting = self._editable_for_room(principal, meeting_id)
+        return RoomReservation.restored(meeting.room_reservation)
+
+    def room_change_input(self, principal: Principal, meeting_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+        """회의 수정이 회의실을 다시 확인하는 데 필요한 것 — **바뀐 뒤의** 시각·참석자·인원과 지금 예약 (SPEC-010 §4.3).
+
+        읽기만 한다(트랜잭션 밖에서 예약 시스템을 부른다). 권한은 `update_info` 와 같다 — 계획이 그보다 먼저 돌아도 남의 회의를
+        엿보지 못한다. 참석자는 생성과 같은 규칙으로 풀고(합치기 · 만든 사람 포함), 인원 = 사내 + 사외.
+        """
+        meeting = self._editable_for_room(principal, meeting_id)
+        starts_at = _aware(changes.get("starts_at") or meeting.starts_at)
+        ends_at = _aware(changes.get("ends_at") or meeting.ends_at)
+        validate_meeting_schedule(starts_at, ends_at)
+        attendee_ids = (
+            set(self._resolved_attendees(principal, list(changes["attendee_ids"] or []), owner_id=meeting.owner_id))
+            if "attendee_ids" in changes
+            else set(self._repository.attendee_ids(meeting))
+        ) | {meeting.owner_id}
+        outside = (
+            list(normalize_external_attendees(list(changes["external_attendees"] or [])))
+            if "external_attendees" in changes
+            else [str(name) for name in (meeting.external_attendees or [])]
+        )
+        before_people = headcount(
+            inside=len(set(self._repository.attendee_ids(meeting)) | {meeting.owner_id}),
+            outside=len(meeting.external_attendees or []),
+        )
+        people = headcount(inside=len(attendee_ids), outside=len(outside))
+        return {
+            "meeting_id": meeting.id,
+            "title": changes["title"] if "title" in changes else meeting.title,
+            "starts_at": starts_at,
+            "ends_at": ends_at,
+            "owner_name": self._repository.member_display_name(meeting.owner_id) or meeting.owner_id,
+            "inside": [
+                Attendee(
+                    name=self._repository.member_display_name(member_id) or member_id,
+                    email=self._repository.member_email(member_id),
+                )
+                for member_id in sorted(attendee_ids)
+            ],
+            "outside": outside,
+            "people": people,
+            "attendee_ids": sorted(attendee_ids),
+            "times_changed": (starts_at, ends_at) != (_aware(meeting.starts_at), _aware(meeting.ends_at)),
+            "people_changed": people != before_people,
+            "reservation": RoomReservation.restored(meeting.room_reservation),
+        }
+
+    def clear_reservation(self, meeting_id: UUID) -> None:
+        """「회의실 예약 없음」 — 쥔 자리가 없던 회의의 예약 표지와 장소 글자를 걷는다 (SPEC-010 §2.2 마지막 줄)."""
+        meeting = self._repository.meeting(meeting_id, lock=True)
+        if meeting is None:
+            raise MeetingNotFound("meeting was not found")
+        meeting.room_reservation = None
+        meeting.location = None
+        self._repository.touch(meeting)
 
     def attach_reservation(self, meeting_id: UUID, reservation: RoomReservation, *, location: str | None) -> None:
         """예약을 부른 **뒤** 그 결과를 회의에 붙인다. 실패도 붙인다 — 화면이 사유를 읽어야 한다."""
@@ -1989,6 +2124,11 @@ def _iso(value: datetime | None) -> str | None:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _office_day(value: datetime) -> date:
+    """그 순간의 **KST 날짜** — 회의일·다음 회의일·기한 하한이 모두 이 하나로 뽑힌다 (SPEC-010 §4.8)."""
+    return _aware(value).astimezone(OFFICE_TIMEZONE).date()
 
 
 def _place_of(row: dict[str, Any]) -> str:

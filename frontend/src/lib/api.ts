@@ -1221,11 +1221,12 @@ export async function bookMeeting(input: {
   purpose?: string | null;
   starts_at: string;
   ends_at: string;
-  /** 사옥 회의실 번호. **`null` 이면 예약 시스템을 부르지 않는다** — 「회의실 선택 안 함」이다. */
+  /** 사옥 회의실 번호. **`null` 이면 예약 시스템을 부르지 않는다** — 「회의실 예약 없음」이다. */
   room_id?: number | null;
   attendee_ids: string[];
   external_attendees?: string[];
-  agendas?: Array<{ title: string }>;
+  /** 안건마다 출처(SPEC-010 §4.2) — `carried` 는 `carried_from_meeting_id` 가 있어야 한다(없으면 422). 주지 않으면 서버가 `manual`. */
+  agendas?: Array<{ title: string; source?: "manual" | "carried" }>;
   carried_from_meeting_id?: string | null;
 }, idempotencyKey: string): Promise<MeetingRecord> {
   return request<MeetingRecord>("/api/meetings", {
@@ -1250,9 +1251,19 @@ export async function updateMeetingInfo(
     location?: string | null;
     attendee_ids?: string[];
     external_attendees?: string[];
+    /**
+     * 회의실(SPEC-010 §4.3) — **안 보내면 방은 그대로**(시각이 바뀌면 서버가 같은 방을 다시 확인) · `{room_id: null}` = 「회의실 예약 없음」
+     * (예약 취소 · 장소 비움) · `{room_id: n}` = 그 방으로 변경(기존 예약이 없으면 새 예약 — `Idempotency-Key` 필수).
+     */
+    room?: { room_id: number | null };
   },
+  idempotencyKey?: string,
 ): Promise<MeetingRecord> {
-  return request<MeetingRecord>(`/api/meetings/${meetingId}`, { body: JSON.stringify(patch), method: "PATCH" });
+  return request<MeetingRecord>(`/api/meetings/${meetingId}`, {
+    body: JSON.stringify(patch),
+    ...(idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : {}),
+    method: "PATCH",
+  });
 }
 
 /** 두 갈래 삭제 — `meeting` 은 회의를 취소하고, `note` 는 회의록만 지운다. */
@@ -1465,9 +1476,20 @@ export async function revokeMeetingShare(meetingId: string, memberId: string): P
  * 고를 수 있는 사옥 회의실. 예약 시스템이 없거나 닿지 않으면 **빈 목록**이 온다 — 없는 방을 지어내지 않는다.
  * 시간대를 주면 **그 시간에 쓸 수 있는 방만** 온다 — 못 잡을 방을 고르게 두지 않는다.
  */
-export async function readMeetingRooms(range?: { starts_at: string; ends_at: string }): Promise<MeetingRoom[]> {
-  const query = range ? `?starts_at=${encodeURIComponent(range.starts_at)}&ends_at=${encodeURIComponent(range.ends_at)}` : "";
-  return request<MeetingRoom[]>(`/api/meetings/rooms${query}`);
+/**
+ * 회의실 목록(SPEC-010 §4.1). `people` = 참석 인원(사내+사외 — 정원 조건) · `meeting_id` = 수정 중인 회의(그 회의 자신의 예약을
+ * 점유에서 빼고, 지금 방을 `current` 로 함께 낸다). Connect 에 닿지 않으면 `503 ROOM_SERVICE_UNAVAILABLE` — 부르는 쪽이 「조회 실패」로 가른다.
+ */
+export async function readMeetingRooms(query?: { starts_at: string; ends_at: string; people?: number; meeting_id?: string | null }): Promise<MeetingRoom[]> {
+  const params = new URLSearchParams();
+  if (query) {
+    params.set("starts_at", query.starts_at);
+    params.set("ends_at", query.ends_at);
+    if (query.people !== undefined) params.set("people", String(query.people));
+    if (query.meeting_id) params.set("meeting_id", query.meeting_id);
+  }
+  const text = params.toString();
+  return request<MeetingRoom[]>(`/api/meetings/rooms${text ? `?${text}` : ""}`);
 }
 
 /* ---- 캘린더 시간 배정 (SPEC-004) — 합본 조회 · 배정 CRUD ---- */
@@ -1676,6 +1698,20 @@ export function inboxMailAttachmentUrl(messageId: string, aid: string): string {
 export function inboxRoomAttachmentUrl(roomId: string, aid: string, variant?: "thumb"): string {
   const base = `/api/inbox/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(aid)}`;
   return variant ? `${base}?variant=${variant}` : base;
+}
+
+/**
+ * **받기** 주소 — 같은 첨부 주소에 `?download=1`(SPEC-008 §2.2 · §4.4). 서버는 형식과 무관하게 언제나 `attachment` 로 답한다.
+ * 받기 링크는 `download` 속성도 `target="_blank"` 도 없는 **같은 탭 링크**다 — 데스크톱 셸이 회의록 내보내기와 같은 가로채기 길로
+ * 받아 다운로드 폴더에 저장한다(SPEC-006 U-5). 미리보기(`<img>` · 썸네일)는 위의 `download` 없는 주소를 그대로 쓴다.
+ */
+export function inboxMailAttachmentDownloadUrl(messageId: string, aid: string): string {
+  return `${inboxMailAttachmentUrl(messageId, aid)}?download=1`;
+}
+
+/** 방 첨부의 **받기** 주소 — 원본(variant 없이)에 `?download=1`. 썸네일 주소와 섞지 않는다. */
+export function inboxRoomAttachmentDownloadUrl(roomId: string, aid: string): string {
+  return `${inboxRoomAttachmentUrl(roomId, aid)}?download=1`;
 }
 
 /** 메일 본문의 원격 이미지 — 처음부터 보이되 **서버 프록시**로만 받는다(보낸 쪽 서버에 직접 붙지 않음 · N-5 · FE 수정 판 2). */

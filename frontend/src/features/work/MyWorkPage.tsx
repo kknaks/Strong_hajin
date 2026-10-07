@@ -4,7 +4,7 @@ import { useRemembered } from "../../lib/screenCache";
 import { CalendarRail } from "../../shell/CalendarRail";
 import { Chip } from "../../ds/Chip";
 import { ActionItemDrawer } from "../action/ActionCenter";
-import { AxDraftModal, axDraftAgeDays, axDraftFromEnvelope, isAxDraftKind } from "../action/AxDraftCard";
+import { AxDraftModal, axDraftAgeDays, axDraftFromEnvelope, isAxTaskDraftKind } from "../action/AxDraftCard";
 import { InboxRail } from "../../shell/InboxRail";
 import { Tabs } from "../../ds/SegmentedControl";
 
@@ -57,6 +57,7 @@ import {
   type TaskState,
   type WorkRequest,
 } from "../../lib/viewModels";
+import type { TaskOriginMessage } from "../../lib/viewModels";
 import {
   CompletionReportModal,
   CreateWorkModal,
@@ -106,6 +107,8 @@ type MyWorkPageProps = {
   onNotice: (message: string) => void;
   /** Settles every projection an approved effect may have changed. Never throws; returns false when a read failed. */
   onDecided: () => Promise<boolean>;
+  /** 업무 상세 출처 행의 「원래 메시지」 링크(SPEC-008 §2.9 ④) — App 이 메시지함으로 가 그 메시지를 짚는다. */
+  onOpenInboxMessage?: (message: TaskOriginMessage) => void;
   onError: (message: string | null) => void;
   /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
@@ -186,6 +189,7 @@ export function MyWorkPage({
   canDecideWorkRequests,
   onNotice,
   onDecided,
+  onOpenInboxMessage,
   onError,
   onRegisterRefresh,
   canReadActions,
@@ -339,7 +343,8 @@ export function MyWorkPage({
             .catch(() => [] as ActionItemEnvelope[])
         : Promise.resolve([] as ActionItemEnvelope[]),
     ]);
-    setAxDrafts((judgements ?? []).filter((item) => isAxDraftKind(item.kind) && item.status !== "resolved"));
+    /* 내 업무의 「AX 제안」 은 업무 초안 둘뿐 — AX 회의 생성 초안(SPEC-010 §2.4)은 이 자리에 서지 않는다 */
+    setAxDrafts((judgements ?? []).filter((item) => isAxTaskDraftKind(item.kind) && item.status !== "resolved"));
     // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own section,
     // never mixed into their own list.
     const held = new Set(work.map((task) => task.task_id));
@@ -1316,6 +1321,7 @@ export function MyWorkPage({
              이 값이 있든 없든 아무것도 안 그린다. `openSource` 는 자기가 모르는 종류를
              조용히 되돌린다 — 그 갈래는 예전부터 있었다(회의 출처 등). */
           onOpenSource={(source) => void openSource(source)}
+          onOpenInboxMessage={onOpenInboxMessage}
           onUpdate={detail.manage ? updateTaskFields : async () => undefined}
           ownerName={detail.task.assignee ? personName(detail.task.assignee.display_name) : detail.manage ? me : "미할당"}
           personaId={personaId}

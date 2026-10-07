@@ -1,6 +1,7 @@
 import json
 import threading
 
+from ax_workspace.modules.meetings.batch import AiCallTimedOut
 from ax_workspace.modules.meetings.finalize import FinalizeSessionLost
 from ax_workspace.modules.meetings.finalize_service import (
     FAILURE_UNFINISHED,
@@ -73,6 +74,9 @@ class _Gateway:
 
     def existing_task_titles(self, _persona_id):
         return set()
+
+    def ai_context_catalog(self):
+        return "## 조직 맥락 목록(시험)\n{}"
 
     def commit_success(self, _meeting_id, notes, *, cold_start):
         self.commit_attempts += 1
@@ -170,8 +174,8 @@ def test_finalize_falls_back_to_cold_start_when_the_session_cannot_be_resumed() 
 
     assert service.run("meeting-1") is True
     assert [call["session_ref"] for call in agent.calls] == ["session-from-another-pod", None]
-    assert "다시 들은 말" not in agent.calls[0]["prompt"], "resume 은 세션이 기억하는 원문을 다시 싣지 않는다"
-    assert "다시 들은 말" in agent.calls[1]["prompt"], "콜드 스타트는 저장된 원문 전량을 싣는다"
+    # 재전사 전체 발화는 **이어 쓰든 새로 열든 매번** 실린다 (SPEC-010 §4.7-1 · OQ-904 — 0.6.x 는 콜드에서만 실었다).
+    assert all("다시 들은 말" in call["prompt"] for call in agent.calls)
     assert service.cold_starts == 1
     assert len(gateway.committed) == 1 and gateway.committed[0][1] is True
     assert gateway.failures == []
@@ -224,3 +228,111 @@ def test_retranscription_failures_stop_before_final_generation() -> None:
         assert service.run("meeting-1") is False
         assert gateway.failures == [expected]
         assert agent.calls == []
+
+
+# ── WORK-012 WP2-BE — timeout 은 새 세션 1회 · 전사 전량과 맥락 목록은 매번 (SPEC-010 §4.6 · §4.7-1 · §4.5) ──────────
+
+
+class _TimeoutAgent(_Agent):
+    """앞의 `timeouts` 번은 상한을 넘긴다(`AiCallTimedOut`). 그 뒤 `then` 이 있으면 그것을 던지고, 없으면 정상 출력."""
+
+    def __init__(self, *, timeouts: int, then: Exception | None = None) -> None:
+        super().__init__()
+        self.timeouts = timeouts
+        self.then = then
+
+    def run_final(self, **request):
+        self.calls.append(request)
+        if self.timeouts:
+            self.timeouts -= 1
+            raise AiCallTimedOut("Codex CLI conversation timed out")
+        if self.then is not None:
+            raise self.then
+        return VALID_OUTPUT
+
+
+def test_a_timeout_retries_once_in_a_new_session_instead_of_resuming_the_same_one() -> None:
+    gateway = _Gateway(session_ref="session-1")
+    agent = _TimeoutAgent(timeouts=1)
+
+    assert _service(gateway, agent).run("meeting-1") is True
+    assert [call["session_ref"] for call in agent.calls] == ["session-1", None]
+    assert gateway.failures == [] and len(gateway.committed) == 1
+
+
+def test_a_second_timeout_ends_in_failure_without_three_resumes_of_the_same_session() -> None:
+    """운영 3abe9f9b — 같은 세션 resume 이 세 번 90초씩 돌던 일이 없다: 첫 시도 + 새 세션 1회, 그리고 「실패」."""
+    gateway = _Gateway(session_ref="session-1")
+    agent = _TimeoutAgent(timeouts=99)
+
+    assert _service(gateway, agent).run("meeting-1") is False
+    assert [call["session_ref"] for call in agent.calls] == ["session-1", None]
+    assert gateway.failures == [FAILURE_UNFINISHED]
+
+
+def test_any_failure_of_the_new_session_after_a_timeout_ends_in_failure() -> None:
+    """「그 1회도 실패하면 회의는 「실패」」 — timeout 이 아닌 실패여도 남은 시도를 더 쓰지 않는다."""
+    gateway = _Gateway(session_ref="session-1")
+    agent = _TimeoutAgent(timeouts=1, then=RuntimeError("provider failed"))
+
+    assert _service(gateway, agent).run("meeting-1") is False
+    assert len(agent.calls) == 2
+    assert gateway.failures == [FAILURE_UNFINISHED]
+
+
+def test_every_attempt_carries_the_full_transcript_and_the_context_catalog() -> None:
+    gateway = _Gateway(session_ref="session-1")
+    agent = _TimeoutAgent(timeouts=1)
+    _service(gateway, agent).run("meeting-1")
+
+    for call in agent.calls:
+        assert "다시 들은 말" in call["prompt"]
+        assert "조직 맥락 목록(시험)" in call["prompt"]
+        assert "① 정정" in call["prompt"] and "term_corrections" in call["prompt"]
+
+
+def test_non_timeout_failures_keep_the_attempt_limit() -> None:
+    """timeout 이 아닌 실패(스키마 위반 등)는 지금 규칙 — 시도 3회."""
+    gateway = _Gateway(session_ref=None)
+    agent = _TimeoutAgent(timeouts=0, then=RuntimeError("provider failed"))
+
+    assert _service(gateway, agent).run("meeting-1") is False
+    assert len(agent.calls) == 3
+
+
+# ── WORK-012 WP2 수정 1 F-1 — 루프의 실제 최대 호출 수와 lease 셈을 대조한다 ────────────────────────────────────────
+
+
+class _WorstCaseAgent(_Agent):
+    """한 배달에서 provider 를 가장 많이 부르게 만드는 대본 — resume 은 「세션 없음」, 콜드는 형식 위반 둘, 그다음 timeout,
+    timeout 뒤 새 세션도 형식 위반. 형식 위반·timeout 은 둘 다 **상한까지 걸린 뒤** 나는 실패로 본다(최악)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cold_calls = 0
+
+    def run_final(self, **request):
+        self.calls.append(request)
+        if request["session_ref"] is not None:
+            raise FinalizeSessionLost("session not here")
+        self.cold_calls += 1
+        if self.cold_calls == 3:
+            raise AiCallTimedOut("timed out")
+        return "형식이 아닌 답"
+
+
+def test_the_worst_delivery_never_calls_the_provider_more_than_the_lease_budget() -> None:
+    """F-1 — 루프를 최악 경로로 **실제로 돌려** 센 호출 수가 `FINAL_MAX_PROVIDER_CALLS` 이고, lease 바닥이 그 수를 담는다."""
+    from ax_workspace.bootstrap.settings import RuntimeProfile, Settings
+    from ax_workspace.modules.meetings.finalize import FINAL_ATTEMPTS, FINAL_MAX_PROVIDER_CALLS
+    from ax_workspace.modules.meetings.retranscribe import TIMEOUT_SECONDS
+
+    gateway = _Gateway(session_ref="session-from-another-pod")
+    agent = _WorstCaseAgent()
+    assert _service(gateway, agent).run("meeting-1") is False
+    observed = len(agent.calls)
+    assert observed == FINAL_MAX_PROVIDER_CALLS == FINAL_ATTEMPTS + 2
+
+    settings = Settings(RuntimeProfile.TEST, "sqlite://", ai_timeout_final_seconds=900)
+    worst_seconds = TIMEOUT_SECONDS + observed * settings.ai_timeout_final_seconds
+    assert settings.effective_meeting_finalize_lease_seconds >= worst_seconds

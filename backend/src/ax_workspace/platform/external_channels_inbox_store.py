@@ -17,6 +17,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ax_workspace.modules.external_channels.message_context import message_reference
 from ax_workspace.platform import user_events
 from ax_workspace.platform.persistence import (
     AuthSessionRecord,
@@ -28,6 +29,7 @@ from ax_workspace.platform.persistence import (
     ExternalSentReplyRecord,
     MemberCredentialRecord,
     ProfileImageRecord,
+    TaskRecord,
 )
 
 M = ExternalMessageRecord
@@ -219,6 +221,90 @@ class SqlAlchemyInboxStore:
         if condition is not None:
             statement = statement.where(condition)
         return list(self._session.scalars(statement.order_by(M.sent_at.desc(), M.id.desc()).limit(limit)))
+
+    # ── AX 맥락 조합(SPEC-008 §4.8 ② · `modules/external_channels/message_context.py`) — **내부 조회 · 공개 API 아님** ──
+    def owned_message(self, member_id: str, message_id: UUID) -> tuple[Any, Any | None, Any] | None:
+        """그 회원 소유 연동의 메시지(메일·방) — 연동·방이 소프트 딜리트됐으면 `None`(404 로 가린다)."""
+        row = self._session.execute(
+            select(M, ExternalRoomRecord, ExternalIntegrationRecord)
+            .join(ExternalIntegrationRecord, ExternalIntegrationRecord.id == M.integration_id)
+            .outerjoin(ExternalRoomRecord, ExternalRoomRecord.id == M.room_id)
+            .where(
+                M.id == message_id,
+                ExternalIntegrationRecord.member_id == member_id,
+                ExternalIntegrationRecord.removed_at.is_(None),
+                or_(M.room_id.is_(None), ExternalRoomRecord.removed_at.is_(None)),
+            )
+        ).first()
+        return (row[0], row[1], row[2]) if row else None
+
+    def message_origins(self, member_id: str, message_ids: set[UUID]) -> dict[UUID, dict[str, Any]]:
+        """업무 상세 `origin.message` (SPEC-008 §4.8 ③ · `MessageOriginPort`). 주인이고 연동·방이 살아 있으면 이름 붙은 글자,
+        아니면 이름 없는 글자 — 남의 채널 이름·메일 제목을 업무를 든 다른 사람에게 흘리지 않는다."""
+        if not message_ids:
+            return {}
+        rows = self._session.execute(
+            select(M, ExternalRoomRecord, ExternalIntegrationRecord)
+            .join(ExternalIntegrationRecord, ExternalIntegrationRecord.id == M.integration_id)
+            .outerjoin(ExternalRoomRecord, ExternalRoomRecord.id == M.room_id)
+            .where(M.id.in_(list(message_ids)))
+        ).all()
+        found: dict[UUID, dict[str, Any]] = {}
+        for message, room, integration in rows:
+            alive = integration.removed_at is None and (room is None or room.removed_at is None)
+            if alive and integration.member_id == member_id:
+                label = message_reference(message, room).origin_label
+            else:
+                label = "원래 메일" if message.source_kind == "mail" else "원래 메시지"
+            found[message.id] = {
+                "message_id": str(message.id),
+                "source_kind": message.source_kind,
+                "room_id": str(message.room_id) if message.room_id is not None else None,
+                "label": label,
+            }
+        for message_id in message_ids - set(found):
+            found[message_id] = {"message_id": str(message_id), "source_kind": None, "room_id": None, "label": "원래 메시지"}
+        return found
+
+    def made_task_counts(self, message_ids: Sequence[UUID]) -> dict[UUID, int]:
+        """「업무 만듦」 수(SPEC-008 §4.8 ④) — 그 메시지를 원래 메시지로 남긴 업무 수. 요청은 보내는 때 업무가 함께 서므로
+        업무만 센다(요청과 그 업무를 두 번 세지 않는다)."""
+        if not message_ids:
+            return {}
+        rows = self._session.execute(
+            select(TaskRecord.source_inbox_message_id, func.count(TaskRecord.id))
+            .where(TaskRecord.source_inbox_message_id.in_(list(message_ids)))
+            .group_by(TaskRecord.source_inbox_message_id)
+        ).all()
+        return {message_id: int(count) for message_id, count in rows}
+
+    def room_neighbors(
+        self, room_id: UUID, *, at: datetime, message_id: UUID, before: int, after: int
+    ) -> tuple[list[ExternalMessageRecord], list[ExternalMessageRecord]]:
+        """기준 메시지 앞·뒤의 **최상위** 메시지(가까운 것부터). 순서는 방 메시지 조회와 같은 `(sent_at, id)` 다 —
+        인덱스 `ix_external_messages_room_sent_at` 를 탄다. 기준 메시지가 스레드 답글이어도 최상위 흐름에서 잰다."""
+        base = select(M).where(M.room_id == room_id, _top_level(), M.id != message_id)
+        older = self._session.scalars(
+            base.where(or_(M.sent_at < at, and_(M.sent_at == at, M.id < message_id)))
+            .order_by(M.sent_at.desc(), M.id.desc())
+            .limit(before)
+        )
+        newer = self._session.scalars(
+            base.where(or_(M.sent_at > at, and_(M.sent_at == at, M.id > message_id)))
+            .order_by(M.sent_at.asc(), M.id.asc())
+            .limit(after)
+        )
+        return list(older), list(newer)
+
+    def thread_messages(self, room_id: UUID, thread_key: str, *, limit: int) -> list[ExternalMessageRecord]:
+        return list(
+            self._session.scalars(
+                select(M)
+                .where(M.room_id == room_id, or_(M.thread_key == thread_key, M.external_key == thread_key))
+                .order_by(M.sent_at.asc(), M.id.asc())
+                .limit(limit)
+            )
+        )
 
     def message_in_room(self, room_id: UUID, key: str) -> ExternalMessageRecord | None:
         return self._session.scalar(select(M).where(M.room_id == room_id, M.external_key == key))

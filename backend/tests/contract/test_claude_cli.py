@@ -48,7 +48,7 @@ def test_conversation_returns_elements_without_exposing_unvalidated_json() -> No
         def accept(self, event):
             events.append(event)
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         on_line(json.dumps({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "c1", "name": "StructuredOutput", "input": payload},
         ]}}))
@@ -66,7 +66,7 @@ def test_conversation_returns_elements_without_exposing_unvalidated_json() -> No
     {"body": "답변", "elements": [{"type": "execute", "command": "approve"}], "follow_up_candidates": []},
 ])
 def test_invalid_conversation_output_is_a_provider_failure(payload) -> None:
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         on_line(_result_line(payload))
         return ProcessResult("", "", 0)
 
@@ -75,7 +75,7 @@ def test_invalid_conversation_output_is_a_provider_failure(payload) -> None:
 
 
 def test_a_returncode_failure_without_any_result_event_is_a_provider_failure() -> None:
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         return ProcessResult("", "claude: internal error", 1)
 
     with pytest.raises(ProviderRequestFailed):
@@ -104,7 +104,7 @@ def test_a_conversation_that_asked_for_its_own_schema_gets_that_structure_back()
         ]
     }
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         on_line(_result_line(produced))
         return ProcessResult("", "", 0)
 
@@ -144,7 +144,7 @@ def test_a_conversation_that_asked_for_the_final_notes_schema_parses_as_final_no
         ],
     }
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         on_line(_result_line(produced))
         return ProcessResult("", "", 0)
 
@@ -172,7 +172,7 @@ def test_an_invalid_response_says_something_the_reader_of_that_turn_can_use() ->
     from ax_workspace.modules.ax_execution.ai import ProviderResponseInvalid
     from ax_workspace.modules.meetings.batch import OUTPUT_SCHEMA as BATCH_OUTPUT_SCHEMA
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         # 스키마가 요구한 키가 없다 — 부르는 쪽 스키마로도 읽히지 않는 답이다.
         on_line(_result_line({"something": "else"}))
         return ProcessResult("", "", 0)

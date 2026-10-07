@@ -37,6 +37,9 @@ _INTEGRATION_FIELDS = frozenset({
     "token_expires_at", "last_error", "account_meta",
 })
 _ROOM_FIELDS = frozenset({"status", "backfill_cursor", "backfill_done_at", "room_type", "name", "member_count", "room_meta"})
+#: 설정 연동 화면의 숫자(적재 건수 · 마지막 수집 · 「과거 메일 채우는 중 · N건」)를 바꾸는 진행 칸 — 이것이 바뀌면 상태가
+#: 그대로여도 `integration.changed` 를 낸다(SPEC-008 §4.4 v0.6.0 · DEC-009 D-25 · 커서만 바뀌어도).
+_PROGRESS_FIELDS = frozenset({"status", "backfill_cursor", "backfill_done_at"})
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -63,6 +66,7 @@ def _room_state(room: ExternalRoomRecord, integration: ExternalIntegrationRecord
         backfill_cursor=room.backfill_cursor, backfill_count=room.backfill_count or 0,
         backfill_done_at=_aware(room.backfill_done_at), access_token_encrypted=integration.access_token_encrypted,
         verified=bool((room.room_meta or {}).get("verified_at")), access_lost=(room.room_meta or {}).get("access_lost"),
+        slack_user_id=(integration.account_meta or {}).get("user_id"),
     )
 
 
@@ -125,6 +129,14 @@ class SqlAlchemyExternalChannelsSyncStore:
             ExternalRoomRecord.external_id == channel,
         )
         return [room for room in rooms if room.verified and not room.access_lost]
+
+    def slack_channel_rooms(self, team_id: str, channel: str) -> list[RoomState]:
+        """그 `(team, channel)` 을 고른 **모든** 연동의 방 — 확인·접근 여부와 무관하다(나간 방·보관·삭제 이벤트가 쓴다 · S8 §5)."""
+        return self._rooms(
+            ExternalIntegrationRecord.kind == "slack",
+            ExternalIntegrationRecord.account_key == team_id,
+            ExternalRoomRecord.external_id == channel,
+        )
 
     def _rooms(self, *conditions) -> list[RoomState]:
         with self._sessions() as session:
@@ -211,8 +223,8 @@ class SqlAlchemyExternalChannelsSyncStore:
                     message_id=str(record.id), source_kind=integration.kind,
                 )
                 user_events.publish(session, USER_EVENTS_CHANNEL, event.to_payload())
-            return
-        # 백필 한 쪽·큰 메우기 = 진행 한 건(「채우는 중 · N건」을 다시 읽게).
+        # 적재 건수·마지막 수집이 바뀌었다 — 실시간 1건이어도 설정 화면이 다시 읽게 연동 변경 한 건을 함께 낸다
+        # (SPEC-008 §4.4 v0.6.0 · D-25). 백필 한 쪽·큰 메우기는 이 한 건만(「채우는 중 · N건」). 몰리면 듣는 쪽이 묶는다.
         event = UserEvent(
             UserEventType.INTEGRATION_CHANGED, member, integration_id=str(integration.id), room_id=room_id,
             source_kind=integration.kind, data={"saved": len(inserted), "mode": mode},
@@ -252,13 +264,13 @@ class SqlAlchemyExternalChannelsSyncStore:
             row = session.get(ExternalIntegrationRecord, UUID(integration_id), with_for_update=True)
             if row is None:
                 return
-            status_before = row.status
+            before = {key: getattr(row, key) for key in _PROGRESS_FIELDS}
             for key, value in fields.items():
                 if key == "account_meta":
                     value = {**(row.account_meta or {}), **value}  # 연결이 남긴 team·user 정보를 지우지 않는다
                 setattr(row, key, value)
             row.updated_at = self._clock()
-            if row.status != status_before:
+            if any(getattr(row, key) != before[key] for key in _PROGRESS_FIELDS):
                 self._changed(session, row)
             session.commit()
 
@@ -270,13 +282,13 @@ class SqlAlchemyExternalChannelsSyncStore:
             room = session.get(ExternalRoomRecord, UUID(room_id), with_for_update=True)
             if room is None:
                 return
-            status_before = room.status
+            before = {key: getattr(room, key) for key in _PROGRESS_FIELDS}
             for key, value in fields.items():
                 if key == "room_meta":
                     value = {**(room.room_meta or {}), **value}  # 확인 표지(verified_at)를 지우지 않는다
                 setattr(room, key, value)
             room.updated_at = self._clock()
-            if room.status != status_before:
+            if any(getattr(room, key) != before[key] for key in _PROGRESS_FIELDS):
                 self._changed(session, session.get(ExternalIntegrationRecord, room.integration_id), room_id=room_id)
             session.commit()
 

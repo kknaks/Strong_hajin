@@ -23,6 +23,22 @@ OUTPUT_SCHEMA: dict[str, Any] = json.loads(SCHEMA_PATH.read_text(encoding="utf-8
 _validator = jsonschema.Draft202012Validator(OUTPUT_SCHEMA)
 
 
+class AiCallTimedOut(Exception):
+    """회의 AI 호출(웜스타트·배치·최종)이 **그 단계의 상한**을 넘겼다 (SPEC-010 §4.6 · OQ-902).
+
+    다른 실패와 다르게 다룬다 — 같은 세션을 다시 이어 쓰지 않고 **새 세션으로 1회** 다시 건다(맥락을 다시 싣는다).
+    provider 경계(조립층의 agent)가 provider 의 timeout 을 이것으로 옮긴다 — 이 모듈은 provider 를 모른다.
+    """
+
+
+class AiSessionLost(Exception):
+    """이어 쓰려던 회의 세션이 **이 자리에 없다**(다른 파드가 열었거나 재시작으로 사라졌다).
+
+    같은 resume 은 다시 걸어도 같다 — 배치는 timeout 과 같이 **새 세션**(웜스타트 맥락 + 맥락 목록)으로 간다(SPEC-010 §4.5
+    「세션 유실로 다시 시작할 때 다시 싣는다」). 최종 합성 쪽 이름은 `finalize.FinalizeSessionLost` 다.
+    """
+
+
 # --- 트리거 (SPEC §13 `OQ-307` 잠정값 — 실측으로 갈아 끼운다) ------------------------
 #: 미처리 확정 발화가 이만큼 쌓이면 낸다.
 BATCH_CHARS = 600
@@ -106,11 +122,17 @@ class BatchAgenda:
 
 
 def parse_output(body: str) -> list[BatchAgenda]:
-    """검증 1단 — JSON · 구조 · 타입 · enum · 길이. 어긋나면 `SchemaViolation` 하나이고 부분 통과가 없다."""
+    """검증 1단 — JSON · 구조 · 타입 · enum · 길이. 어긋나면 `SchemaViolation` 하나이고 부분 통과가 없다.
+
+    **용어 보정 표(`term_corrections`)가 오면 그 칸만 버린다** — 중간 배치는 정정하지 않는다(SPEC-010 §4.7-5 · D-16).
+    배치 전체를 폐기하지 않는다: 본문은 섰고, 정정은 최종 합성 한 번의 몫이다.
+    """
     try:
         data = json.loads(body)
     except json.JSONDecodeError as error:
         raise SchemaViolation(f"출력이 JSON 이 아닙니다: {error.msg}") from error
+    if isinstance(data, dict):
+        data.pop("term_corrections", None)
     problem = jsonschema.exceptions.best_match(_validator.iter_errors(data))
     if problem is not None:
         raise SchemaViolation(f"스키마 위반: {problem.message}")
@@ -177,13 +199,28 @@ def _dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def build_warm_start_prompt(context: dict[str, Any], tools: tuple[str, ...]) -> str:
-    """첫 turn — 맥락을 싣는다: 회의 정보 · 안건 · 참석자 · 이어진 이전 회의 (SPEC §7.1 첫 배치).
+WARM_START_CLOSING = "이번 요청에는 아무것도 만들지 말고 「준비됨」이라고만 답하라."
+
+
+def build_warm_start_prompt(
+    context: dict[str, Any], tools: tuple[str, ...], catalog: str | None = None, *, closing: str = WARM_START_CLOSING
+) -> str:
+    """첫 turn — 맥락을 싣는다: 회의 정보 · 안건 · 참석자 수 · 이어진 이전 회의 · **AI 맥락 목록**
+    (SPEC §7.1 첫 배치 · SPEC-010 §4.5 — 세션을 새로 열 때마다 다시 싣는다).
 
     응답은 버린다. 이 turn 이 남기는 것은 세션 참조 하나다.
-    참석자는 **이름을 싣지 않는다** — 화자는 익명이고 프롬프트에 실명을 흘리지 않는다 (WP Pre-deploy Check).
+    참석자는 **이 회의의 화자로 이름을 싣지 않는다** — 화자는 익명이다 (WP Pre-deploy Check). 맥락 목록의 구성원 표는
+    조직 명부이지 「누가 말했나」가 아니다 — 화자를 그 이름으로 짐작하지 않게 프롬프트가 못박는다.
     """
     listed = "\n".join(f"  {name}" for name in tools)
+    catalog_block = (
+        f"""
+
+{catalog}
+  - 구성원 표는 조직 명부다 — **화자가 누구인지 짐작하는 데 쓰지 마라.** 줄에 사람 이름을 쓰지 않는 규칙은 그대로다."""
+        if catalog
+        else ""
+    )
     return f"""너는 회의에 들어와 있는 또 하나의 참가자다. 사람과 네가 각자 회의록을 쓰고, 회의가 끝나면 합친다.
 사람이 모든 것을 다 칠 수 없고 너도 모든 것을 정확히 요약할 수 없다 — 그래서 둘 다 쓴다.
 
@@ -223,14 +260,14 @@ def build_warm_start_prompt(context: dict[str, Any], tools: tuple[str, ...]) -> 
 
 ## 이 회의
 
-{_dumps(context)}
+{_dumps(context)}{catalog_block}
 
 ## 앞으로 답하는 모양
 
 회의가 도는 동안 너에게 오는 요청은 **정해진 JSON 스키마 하나로만** 답한다. 스키마는 매 요청에 함께 온다 —
 설명도 인사도 코드블록 표시도 붙이지 말고 JSON 그것만 낸다.
 
-이번 요청에는 아무것도 만들지 말고 「준비됨」이라고만 답하라."""
+{closing}"""
 
 
 _OUTPUT_CONTRACT = """
@@ -255,6 +292,28 @@ _BATCH_INSTRUCTIONS = """회의 중 배치다. 아래는 아직 반영하지 않
 `evidence` 는 근거가 된 확정 발화의 [from_ms, to_ms] 구간이다(최대 3개). **회의 전체 발화 중 실제 구간**을
 적어라 — 앞 구간에서 나온 줄이면 그때의 구간을 그대로 다시 적는다. 이번 구간으로 옮겨 적지 마라.
 """
+
+
+_FRESH_BATCH_INTRO = """새 세션이다 — 앞 세션이 시간 안에 답하지 못했거나 이 자리에 없다. 위 맥락으로 회의에 다시 들어와,
+아래 「앞 배치까지 네 벌」을 출발점으로 이번 구간까지 반영한 네 벌 전체를 낸다(앞 배치의 안건·줄과 그 근거 구간을 잃지 마라).
+"""
+
+
+def build_fresh_batch_prompt(
+    context: dict[str, Any],
+    tools: tuple[str, ...],
+    catalog: str | None,
+    blocks: list[dict[str, Any]],
+    memos: list[dict[str, Any]],
+    ai_track: list[dict[str, Any]],
+) -> str:
+    """**새 세션 1회** 배치 (SPEC-010 §4.6) — 웜스타트 맥락 + 맥락 목록 + 지금까지의 AI 벌 + 그 배치의 미처리 구간을 한 turn 에.
+
+    새 세션은 앞 구간을 기억하지 못한다. 배치는 AI 벌을 통째로 갈아 끼우므로, 지금까지의 AI 벌(안건·줄·근거)을 함께
+    싣지 않으면 새 세션의 첫 출력이 앞 구간의 요약을 지운다.
+    """
+    head = build_warm_start_prompt(context, tools, catalog, closing=_FRESH_BATCH_INTRO)
+    return f"{head}\n앞 배치까지 네 벌:\n{_dumps(ai_track)}\n\n{build_batch_prompt(blocks, memos)}"
 
 
 def build_batch_prompt(blocks: list[dict[str, Any]], memos: list[dict[str, Any]]) -> str:

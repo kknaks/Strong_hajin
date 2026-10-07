@@ -5,6 +5,15 @@ import { searchRoster } from "./roster";
 import { CheckboxBox } from "../../ds/FormControls";
 
 /**
+ * 고른 사람 목록에 **한 번만** 더한다 — 이미 있으면(같은 `member_id`) 목록을 그대로 돌려준다(SPEC-010 §2.1 · OQ-909).
+ * 검색·조직도는 `excluded` 로 고른 사람을 결과에서 빼지만, 결과가 다시 그려지기 전에 두 번 눌리면 같은 사람이 둘 담겼다.
+ * 담는 자리(수정 모달 · 공유 모달)가 이것을 거친다. 예약 모달은 `togglePerson` 이 이미 id 로 가른다.
+ */
+export function addPersonOnce<T extends { member_id: string }>(list: T[], person: T): T[] {
+  return list.some((one) => one.member_id === person.member_id) ? list : [...list, person];
+}
+
+/**
  * 이름으로 찾는 자리 — 예약(MOD-102) · 공유(MOD-105) · 상세 머리 편집이 같은 모양을 쓴다.
  * 부서를 넘어 전부에서 찾고, 고른 사람은 결과에서 빠진다.
  *

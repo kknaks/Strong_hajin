@@ -9,7 +9,7 @@ import { Icon } from "../../ds/icons/Icon";
 import { useEscape } from "../../ds/Modal";
 import { meetingScreen, personName } from "../../lib/labels";
 import type { MeetingInfo, MeetingViewer } from "../../lib/viewModels";
-import { OrgDirectory, PersonSearch, PickedTags } from "./PeoplePicker";
+import { addPersonOnce, OrgDirectory, PersonSearch, PickedTags } from "./PeoplePicker";
 import { useRoster, type RosterPerson } from "./roster";
 
 /**
@@ -106,7 +106,7 @@ export function ShareModal({ meeting, onClose, onNotice }: { meeting: MeetingInf
                 <PersonSearch
                   excluded={excluded}
                   onPick={(person) => {
-                    setPicks((current) => [...current, person]);
+                    setPicks((current) => addPersonOnce(current, person));
                     setQuery("");
                   }}
                   onQueryChange={setQuery}
@@ -120,7 +120,7 @@ export function ShareModal({ meeting, onClose, onNotice }: { meeting: MeetingInf
                   emptyText={meetingScreen.shareUnitEmpty}
                   excluded={excluded}
                   mode="add"
-                  onToggle={(person) => setPicks((current) => [...current, person])}
+                  onToggle={(person) => setPicks((current) => addPersonOnce(current, person))}
                   onUnitChange={setUnitId}
                   roster={roster}
                   selected={new Set()}

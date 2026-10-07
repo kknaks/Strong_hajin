@@ -33,6 +33,7 @@ from ax_workspace.modules.actions.confirmation import (
     AxReplayContext,
     decide_ax_confirmation,
     is_ax_replay,
+    merge_meeting_update_draft as _merge_meeting_update_draft,
     normalize_ax_draft as _normalize_ax_draft,
     required_base_submission_version as _required_base_submission_version,
     required_version as _required_version,
@@ -594,6 +595,16 @@ class AxProposalActionHandler:
                 if payload.get("draft") is not None
                 else recovery_payload or (dict(version.snapshot) if version else {})
             )
+            if (
+                item.action_type == "meeting.info.update"
+                and isinstance(draft, dict)
+                and "changes" not in draft
+            ):
+                # AX 회의 수정 카드는 **바뀐 칸만** 보낸다(WP3 계약 고정 1) — 지금 회차의 제안 위에 겹쳐 정본 모양으로.
+                draft = _merge_meeting_update_draft(
+                    _normalize_ax_draft(item.action_type, dict(version.snapshot) if version else {}),
+                    draft,
+                )
             if item.action_type in SUPPORTED_ACTION_TYPES:
                 # 초안의 필수·검증은 생성 명령의 것뿐이다 — AX 경로에만 거는 필수(예: 기한)를 두지 않는다
                 # (SPEC-001 S-9 6 · WORK-008 P-1). 정규화가 곧 「새 업무 추가」와 같은 입력 모델이다.
@@ -759,6 +770,7 @@ class AxProposalActionHandler:
                     assignment_status=str(assignment.status) if assignment is not None else None,
                     assigned_by=str(assignment.assigned_by) if assignment is not None else None,
                     allow_reject=recovery_payload is None,
+                    allow_save=recovery_payload is None,
                 ),
                 principal,
             ),

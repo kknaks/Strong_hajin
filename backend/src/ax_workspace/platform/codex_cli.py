@@ -26,6 +26,7 @@ from ax_workspace.platform.cli_process import (
     ProcessRunner,
     ScaxMcpServer,
     invalid_response_message as _invalid_response_message,
+    invoke_plain_runner as _invoke_plain_runner,
     invoke_runner as _invoke_runner,
     structured_body as _structured_body,
     subprocess_runner as _subprocess_runner,
@@ -53,6 +54,7 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
     ProviderResponseInvalid,
     ProviderSessionUnavailable,
+    ProviderTimedOut,
     ProviderUnavailable,
 )
 from ax_workspace.modules.ax_execution.answer_documents import AnswerDocument
@@ -85,6 +87,11 @@ _CONVERSATION_OUTPUT_SCHEMA: dict[str, Any] = {
     },
     "required": ["body", "follow_up_candidates", "elements"],
 }
+
+
+#: 프롬프트 자리의 `-` — `codex exec [PROMPT]`·`codex exec resume [ID] [PROMPT]` 가 `-` 이면 **stdin 에서 읽는다**
+#: (codex-cli 0.160.1 `--help`). 프롬프트를 argv 에 싣지 않는다 — 리눅스 한 인자 128KiB 상한(WORK-012 WP2 수정 1 W-1).
+STDIN_PROMPT = "-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,15 +140,17 @@ class CodexCliProviderAdapter:
             schema_path.write_text(json.dumps(request.output_schema), encoding="utf-8")
             started = perf_counter()
             try:
-                result = self._runner(
+                result = _invoke_plain_runner(
+                    self._runner,
                     command,
                     self._arguments(schema_path, output_path, request.prompt),
                     work_dir,
                     {**os.environ, "CODEX_HOME": str(runtime_home)},
                     self._profile.timeout_seconds,
+                    request.prompt,
                 )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Codex CLI generation timed out") from error
+                raise ProviderTimedOut("Codex CLI generation timed out") from error
             except OSError as error:
                 raise ProviderUnavailable("Codex CLI could not start") from error
 
@@ -222,9 +231,10 @@ class CodexCliProviderAdapter:
                     self._profile.timeout_seconds,
                     ingest.consume_line,
                     (lambda: cancel.is_set()) if cancel is not None else None,
+                    stdin_text=prompt,
                 )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Codex CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
+                raise ProviderTimedOut("Codex CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
             except EventIngestFailed as error:
                 # Persisting an observed event failed: the execution was stopped; the turn must not look complete.
                 raise ProviderRequestFailed("Codex CLI events could not be persisted", ingest.provenance(request, started, self._profile)) from error
@@ -321,9 +331,9 @@ class CodexCliProviderAdapter:
                 "-c",
                 'sandbox_mode="read-only"',
                 *common,
-                prompt,
+                STDIN_PROMPT,
             ]
-        return ["exec", "--sandbox", "read-only", "--color", "never", *common, prompt]
+        return ["exec", "--sandbox", "read-only", "--color", "never", *common, STDIN_PROMPT]
 
     def _mcp_overrides(self, request: AiConversationRequest) -> list[str]:
         server = self._scax_mcp_server
@@ -437,7 +447,18 @@ class CodexCliProviderAdapter:
         "회의 생성 권한이 닿는 곳이 하나일 때만 선택하며, 여러 곳이라 확정할 수 없으면 임의 조직을 만들지 않는다.\n"
         "- 별도 지속시간이 없을 때 기본 지속시간은 1시간이다. 종료 시각만 있으면 1시간 전을 시작 시각으로, "
         "시작 시각만 있으면 1시간 뒤를 종료 시각으로 삼는다. 시작·종료를 모두 말했으면 명시한 값을 보존한다.\n"
-        "- 날짜와 시작·종료 시각을 모두 새로 추정해야 하는 경우에는 임의 일정을 만들지 말고 필요한 시간 정보를 묻는다."
+        "- 날짜와 시작·종료 시각을 모두 새로 추정해야 하는 경우에는 임의 일정을 만들지 말고 필요한 시간 정보를 묻는다.\n"
+        "- 회의 생성안을 만들기 전에도 **업무 생성과 같은 기준으로 관련 회의·자료를 찾는다** — 회의 주제의 **짧은 핵심어**로 "
+        "`my_meeting_list`(내 회의)·`material_search`(회의록을 포함한 자료 본문)를 도구마다 한 번 부르고, 가장 관련 높은 것만 읽는다. "
+        "찾아 읽은 자료는 카드의 **근거 자료**로 남는다. 회의 목적·안건 제안의 근거로 쓰되, 없는 사실을 지어내지 않는다.\n"
+        "- 지난 회의를 이어 가는 회의면 `carried_from_meeting_id`에 그 회의 id를 넣고, 그 회의(`meeting_get`)의 **최종 안건 중 "
+        "결론이 나지 않은 것(`concluded=false`)**을 `agendas`에 **`source:\"carried\"`** 로 담는다. 사용자가 새로 말한 안건은 "
+        "`source:\"manual\"`(생략하면 manual)이다. 이어온 회의 없이 `carried`를 쓰지 않는다.\n"
+        "- 장소는 **회의실(`room_id`)로만** 정한다 — 사용자가 회의실을 원하면 `meeting_room_list`(시작·종료와 `people`=사내+사외 인원)로 "
+        "그 시간·인원에 쓸 수 있는 방을 확인해 고른다. 사외 장소·주소를 글자(`location`)로 넣지 않는다 — 카드가 저장하지 않는다.\n"
+        "- **이미 만들어진 회의**의 시간·참석자·회의실을 바꾸자는 요청이면 `meeting_update`로 사람이 확정할 수정 카드를 준비한다. "
+        "회의실은 `request.room = {room_id}`(「회의실 예약 없음」은 `{room_id: null}`, 안 바꾸면 생략)이고, 방을 고르거나 시간·인원을 "
+        "바꾸기 전에 `meeting_room_list`에 `meeting_id`와 새 시각·인원을 넣어 그 조건에서 쓸 수 있는 방을 확인한다."
     )
 
     TASK_PROGRESS_POLICY = (
@@ -472,6 +493,8 @@ class CodexCliProviderAdapter:
         "- 같은 초안에서 **연결할 프로젝트와 관련 기존 업무를 찾는다** — "
         "사람이 「새 업무 추가」 창에서 프로젝트·상위·선행·참고 업무를 고르듯이. 프로젝트는 `list_projects`(참여 프로젝트) 또는 "
         "이름으로 `graph_search`, 그 프로젝트의 업무는 `graph_neighbors(node='project:<id>')` 또는 `task_list`로 찾는다. "
+        "**프로젝트·업무·사람은 먼저 이 대화의 「조직 맥락 목록」(조직 전체 프로젝트 · 완료·취소 안 된 업무 · 구성원 — 세션을 연 턴에 실린 것)에서 찾는다** — 목록에 없으면(그 뒤에 생겼을 수 있다) 도구로 찾는다. "
+        "목록에서 한 후보로 확정되면 그 id 를 쓰고, 내용·체크리스트·선후행 같은 **상세가 필요할 때만 도구로** 조회한다(목록에서 먼저, 상세는 도구로). "
         "대화에 나온 이름이나 업무 주제와 **한 후보로 확정될 때만** `project_id`·`parent_task_id`·`preceding_task_ids`(같은 프로젝트의 업무)·"
         "`reference_task_ids`를 채운다. 못 찾았거나 후보가 여럿이면 비워 두고, 답변에 「연결할 프로젝트를 찾지 못했습니다」처럼 "
         "무엇을 비웠는지(후보가 여럿이면 그 이름들)를 말한다. 조회 결과에 없는 ID를 지어내지 않는다.\n"
@@ -534,6 +557,9 @@ class CodexCliProviderAdapter:
             cls.ANSWER_PRESENTATION_POLICY,
             cls.FOLLOW_UP_POLICY,
         ]
+        if request.context_catalog:
+            # AI 맥락 목록 — 조직 전체(프로젝트 · 열린 업무 · 구성원). 새 세션을 여는 턴에만 실려 온다 (SPEC-010 §4.5 · 검수 W-3).
+            sections.append(request.context_catalog)
         if request.asked_at is not None:
             # 지금이 언제인지는 모델이 짐작할 것이 아니다. 큐에서 기다리다 달이 바뀌어도 물은 때는 물은 때다.
             local = request.asked_at.astimezone(ZoneInfo(request.timezone_name))
@@ -561,6 +587,13 @@ class CodexCliProviderAdapter:
                 for item in request.context_references
             )
             sections.append(f"Context references authorized for this turn:\n{references}")
+            # 메시지함 메시지는 서버가 조합한 맥락 JSON 을 **덩어리로** 따로 싣는다(SPEC-008 §4.8 ② · 한 줄 요약과 별도).
+            blocks = [item["context"] for item in request.context_references if item.get("context")]
+            if blocks:
+                sections.append(
+                    "Inbox message context (server-composed from this person's own inbox; `target: true` marks the "
+                    "message they picked — read it, then follow the user message):\n" + "\n".join(blocks)
+                )
         sections.append(f"User message:\n{request.prompt}")
         return "\n\n".join(sections)
 
@@ -605,7 +638,7 @@ class CodexCliProviderAdapter:
             str(schema_path),
             "--output-last-message",
             str(output_path),
-            rendered_prompt,
+            STDIN_PROMPT,
         ]
 
     @staticmethod

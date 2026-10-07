@@ -166,11 +166,22 @@ class TaskOriginSource(TypedDict):
     title: str | None
 
 
+class TaskOriginMessage(TypedDict):
+    """원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③)."""
+
+    message_id: str
+    source_kind: str | None
+    room_id: str | None
+    label: str
+
+
 class TaskOriginView(TypedDict):
     kind: str
     actor_role: str | None
     actor: TaskMemberView | None
     source: TaskOriginSource | None
+    #: 메시지함 메시지를 참고 자료로 받은 AX 대화에서 확정된 업무면 그 메시지 — 아니면 null.
+    message: TaskOriginMessage | None
 
 
 class TaskProgressView(TypedDict):
