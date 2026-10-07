@@ -100,7 +100,7 @@
                   "maxLength": 4000
                 },
                 "due_candidate": {
-                  "description": "말에 날짜가 있을 때만. 없으면 null — 회의 중에는 다음 회의를 보고 채우지 않는다.",
+                  "description": "말에 날짜가 있을 때만. 없으면 null — 회의 중에는 다음 회의를 보고 채우지 않는다. 회의일보다 이른 날짜는 서버가 비운다.",
                   "type": [
                     "string",
                     "null"

@@ -46,6 +46,7 @@ from ax_workspace.modules.meetings.finalize import (
     FinalTodo,
     build_final_prompt,
     finalize_notes,
+    floor_due,
     is_already_work,
     parse_final_output,
     resolve_due,
@@ -166,6 +167,22 @@ def test_follow_up_due_date_uses_spoken_date_then_next_meeting_then_nothing() ->
     assert resolve_due(spoken, next_meeting_starts_on=date(2026, 9, 30)) == date(2026, 9, 20)
     assert resolve_due(empty, next_meeting_starts_on=date(2026, 9, 30)) == date(2026, 9, 29)
     assert resolve_due(empty, next_meeting_starts_on=None) is None
+
+
+def test_a_due_before_the_meeting_day_is_cleared_and_the_same_day_is_kept() -> None:
+    """SPEC-010 §4.8 — ①이든 ②든 회의일(KST)보다 이르면 비운다. 같은 날은 허용."""
+    meeting_day = date(2026, 10, 7)
+    early = FinalTodo("a", "d", date(2026, 10, 6), ["x", "y"], [])
+    same = FinalTodo("a", "d", date(2026, 10, 7), ["x", "y"], [])
+    empty = FinalTodo("a", "d", None, ["x", "y"], [])
+
+    assert resolve_due(early, next_meeting_starts_on=None, meeting_starts_on=meeting_day) is None
+    assert resolve_due(same, next_meeting_starts_on=None, meeting_starts_on=meeting_day) == meeting_day
+    # ② 다음 회의가 같은 날이면 그 전날은 회의일보다 이르다 → 비운다 · 다음 날이면 전날 = 회의일 → 허용.
+    assert resolve_due(empty, next_meeting_starts_on=date(2026, 10, 7), meeting_starts_on=meeting_day) is None
+    assert resolve_due(empty, next_meeting_starts_on=date(2026, 10, 8), meeting_starts_on=meeting_day) == meeting_day
+    assert floor_due(None, meeting_starts_on=meeting_day) is None
+    assert floor_due(date(2026, 10, 1), meeting_starts_on=None) == date(2026, 10, 1)
 
 
 def test_existing_work_match_is_conservative_and_title_normalized() -> None:

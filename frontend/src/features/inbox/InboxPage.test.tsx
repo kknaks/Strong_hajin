@@ -263,7 +263,8 @@ describe("메일 본문 — 샌드박스 iframe · 답장", () => {
     expect(screen.queryByText("일정표 본문")).toBeNull();
     expect(body().getByText("받은 계정")).toBeTruthy();
     expect(body().getByText("haram@company.example", { selector: "dd" })).toBeTruthy();
-    expect(body().getByRole("link", { name: "범위.pdf 받기" }).getAttribute("href")).toBe("/api/inbox/mail/m1/attachments/a1");
+    // 받기는 `?download=1` 같은 탭 링크다(SPEC-008 §2.2 · SH-IMP-014 — 옛 `download`·`_blank` 링크는 앱에서 아무 일도 없었다)
+    expect(body().getByRole("link", { name: "범위.pdf 받기" }).getAttribute("href")).toBe("/api/inbox/mail/m1/attachments/a1?download=1");
     expect(body().getByRole("region", { name: "보낸 답장" }).textContent).toContain("지난 답장");
     await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/inbox/mail/m1/read")).toBe(true));
     await waitFor(() => expect(card("mail:m1").className).toContain("scax-inbox-card--read"));
@@ -333,13 +334,13 @@ describe("슬랙·카톡 본문 — 대화방 · 스레드 3열 · 조회 전용
     expect(body().queryByRole("complementary")).toBeNull();
   });
 
-  it("방 안 이미지는 썸네일(?variant=thumb)로 그리고, 누르기·받기는 원본(FE 수정 판 5)", async () => {
+  it("방 안 이미지는 썸네일(?variant=thumb)로 그리고, (웹의) 누르기는 원본 · 받기는 `?download=1`(FE 수정 판 5 · SH-IMP-014)", async () => {
     render(<Harness />);
     fireEvent.click(await rail().findByText("#pilot-launch"));
     const image = (await body().findByAltText("현장.png")) as HTMLImageElement;
     expect(image.getAttribute("src")).toBe("/api/inbox/rooms/r1/attachments/img1?variant=thumb");
     expect(image.closest("a")?.getAttribute("href")).toBe("/api/inbox/rooms/r1/attachments/img1");
-    expect(body().getByRole("link", { name: "범위.pdf 받기" }).getAttribute("href")).toBe("/api/inbox/rooms/r1/attachments/doc1");
+    expect(body().getByRole("link", { name: "범위.pdf 받기" }).getAttribute("href")).toBe("/api/inbox/rooms/r1/attachments/doc1?download=1");
   });
 
   it("javascript: 링크는 링크로 서지 않고 눌러도 새 창이 열리지 않는다(검수 F-1)", async () => {

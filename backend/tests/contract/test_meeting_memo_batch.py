@@ -786,7 +786,7 @@ def test_the_batch_brings_follow_up_candidates_and_they_land_as_provisional(tmp_
     agent.script = [
         _output([
             _agenda("AI 가 가른 화제", [_line("AI 가 낸 줄")],
-                    todos=[_todo("계약서를 검토한다", due="2026-09-20"), _todo("일정을 잡는다")]),
+                    todos=[_todo("계약서를 검토한다", due="2099-09-20"), _todo("일정을 잡는다")]),
         ])
     ]
     assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
@@ -795,10 +795,25 @@ def test_the_batch_brings_follow_up_candidates_and_they_land_as_provisional(tmp_
     [agenda] = _agendas_of(client, meeting_id)
     assert [row["title"] for row in agenda["todos"]] == ["계약서를 검토한다", "일정을 잡는다"]
     assert all(row["provisional"] is True for row in agenda["todos"])
-    assert agenda["todos"][0]["due_candidate"] == "2026-09-20"
+    assert agenda["todos"][0]["due_candidate"] == "2099-09-20"
     assert agenda["todos"][1]["due_candidate"] is None
     # 담당자 칸은 없다 — AI 가 고르지 않는다.
     assert all("assignee" not in row for row in agenda["todos"])
+
+
+def test_a_provisional_due_before_the_meeting_day_is_cleared(tmp_path) -> None:
+    """회의 중 잠정 후보의 기한도 최종과 같은 하한을 탄다 — 회의일보다 이르면 비운다 (SPEC-010 §4.8 · OQ-1014)."""
+    client, application, agent = _stack(tmp_path)
+    made = _running(client)
+    meeting_id = made["meeting"]["meeting_id"]
+    application.meeting_batch.drain()
+    _blocks(application, meeting_id, count=3, chars=BATCH_CHARS)
+    agent.script = [_output([_agenda("AI 가 가른 화제", [_line("AI 가 낸 줄")], todos=[_todo("지난 날짜의 일", due="2020-01-02")])])]
+    assert application.meeting_batch.evaluate(meeting_id, CAUSE_TRANSCRIPT) is True
+    application.meeting_batch.drain()
+
+    [agenda] = _agendas_of(client, meeting_id)
+    assert agenda["todos"][0]["due_candidate"] is None
 
 
 def test_the_next_batch_replaces_the_candidates_whole(tmp_path) -> None:

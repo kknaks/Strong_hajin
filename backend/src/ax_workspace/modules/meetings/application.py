@@ -27,6 +27,7 @@ from ax_workspace.modules.meetings.domain import (
     TRACK_MEMO,
     ensure_agenda_capacity,
     ensure_agenda_source,
+    ensure_reservation_agenda_sources,
     ensure_agenda_track,
     ensure_line_track,
     ensure_transition,
@@ -39,7 +40,7 @@ from ax_workspace.modules.meetings.domain import (
     validate_meeting_schedule,
 )
 from ax_workspace.modules.time_blocks import TimeBlockRepository
-from ax_workspace.modules.meetings.finalize import describe_day
+from ax_workspace.modules.meetings.finalize import describe_day, floor_due
 from ax_workspace.modules.meetings.policy import (
     MeetingActorContext,
     MeetingView,
@@ -310,7 +311,7 @@ class MeetingApplication:
         organization_id: str | None = None,
     ) -> dict[str, Any]:
         """예약. 회의를 세우는 사람은 그 회의의 참석자이기도 하다 — 목록에서 자기 회의를 잃지 않는다."""
-        values, drafts, source = self._validated_creation(
+        values, drafts = self._validated_creation(
             principal,
             title=title,
             starts_at=starts_at,
@@ -325,7 +326,8 @@ class MeetingApplication:
         )
         meeting = self._repository.create(**values)
         # 예약 모달이 준 안건은 **사람 벌**에 선다 — 사람이 세운 것이라 출처를 갖는다 (SPEC §4.0 표 · §4.1-2).
-        for order, agenda_title in enumerate(drafts, start=1):
+        # 출처는 **안건마다** 받은 값이다 (SPEC-010 §4.2 · D-11) — 불러온 미결 안건만 `carried`.
+        for order, (agenda_title, source) in enumerate(drafts, start=1):
             self._create_agenda(
                 meeting, track=TRACK_MEMO, title=agenda_title, source=source, order_index=order
             )
@@ -401,7 +403,7 @@ class MeetingApplication:
         carried_from_meeting_id: UUID | None = None,
         organization_id: str | None = None,
         ignore_meeting_id: UUID | None = None,
-    ) -> tuple[dict[str, Any], list[str], str]:
+    ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
         self._require(principal, MEETING_MANAGE)
         organization_id = organization_id or self._repository.primary_organization(str(principal.id))
         if organization_id is None or organization_id not in principal.organization_scope:
@@ -410,9 +412,11 @@ class MeetingApplication:
         validate_meeting_schedule(starts_at, ends_at)
         attendees = self._resolved_attendees(principal, attendee_ids or [])
         carried = self._carried_source(principal, carried_from_meeting_id)
-        drafts = [normalize_agenda_title(row.get("title")) for row in (agendas or [])]
-        ensure_agenda_capacity(max(len(drafts) - 1, 0))
-        source = "carried" if carried is not None else "manual"
+        rows = list(agendas or [])
+        titles = [normalize_agenda_title(row.get("title")) for row in rows]
+        ensure_agenda_capacity(max(len(titles) - 1, 0))
+        sources = ensure_reservation_agenda_sources([row.get("source") for row in rows], carried_from=carried)
+        drafts = list(zip(titles, sources, strict=True))
         # **겹침은 마지막 409 다** — 입력이 틀린 것(422)과 읽을 수 없는 것(404)이 먼저 답한다.
         # **`quick_start` 는 이 함수를 지나지 않으므로 자연히 안 탄다** — 제외 분기를 두지 않았다.
         self._require_free_time(frozenset(attendees), starts_at, ends_at, ignoring=ignore_meeting_id)
@@ -431,7 +435,6 @@ class MeetingApplication:
                 "carried_from_meeting_id": carried,
             },
             drafts,
-            source,
         )
 
     def quick_start(self, principal: Principal) -> dict[str, Any]:
@@ -813,9 +816,9 @@ class MeetingApplication:
                 "title": meeting.title,
                 "purpose": meeting.purpose,
                 # 기준일 — 「이번 주 금요일」을 ISO 로 환산하려면 이 회의가 언제 열렸는지가 있어야 한다.
-                "starts_on": describe_day(_aware(meeting.starts_at).date()),
+                "starts_on": describe_day(_office_day(meeting.starts_at)),
                 "next_meeting_on": describe_day(
-                    None if next_meeting is None else _aware(next_meeting.starts_at).date()
+                    None if next_meeting is None else _office_day(next_meeting.starts_at)
                 ),
                 "carried_from": carried,
             },
@@ -832,7 +835,9 @@ class MeetingApplication:
                 for block in blocks
             ],
             "covered_ms": (0, max((block.end_ms for block in blocks), default=0)),
-            "next_meeting_starts_on": None if next_meeting is None else _aware(next_meeting.starts_at).date(),
+            # 날짜는 **KST** 다 (SPEC-010 §4.8) — UTC `.date()` 는 KST 09시 전 회의를 하루 당겼다(BE §5.5 (c)).
+            "next_meeting_starts_on": None if next_meeting is None else _office_day(next_meeting.starts_at),
+            "meeting_starts_on": _office_day(meeting.starts_at),
         }
 
     # ------------------------------------------------------------------ 종료 뒤 재전사 (D44)
@@ -1520,6 +1525,8 @@ class MeetingApplication:
             raise MeetingNotFound("meeting was not found")
         self._repository.replace_track(meeting, TRACK_AI)
         drafts: list[dict[str, Any]] = []
+        # 잠정 후보의 기한도 최종과 같은 하한을 탄다 — 회의일보다 이르면 비운다 (SPEC-010 §4.8 · OQ-1014).
+        meeting_day = _office_day(meeting.starts_at)
         for output in agendas:
             if self._repository.agenda_count(meeting, track=TRACK_AI) >= MAX_AGENDAS_PER_TRACK:
                 continue
@@ -1545,7 +1552,7 @@ class MeetingApplication:
                         "order_index": order,
                         "title": todo.title,
                         "description": todo.description,
-                        "due_candidate": todo.due_candidate,
+                        "due_candidate": floor_due(todo.due_candidate, meeting_starts_on=meeting_day),
                         "checklist_candidate": list(todo.checklist_candidate),
                         "reference": {
                             "meeting_id": str(meeting.id),
@@ -1989,6 +1996,11 @@ def _iso(value: datetime | None) -> str | None:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _office_day(value: datetime) -> date:
+    """그 순간의 **KST 날짜** — 회의일·다음 회의일·기한 하한이 모두 이 하나로 뽑힌다 (SPEC-010 §4.8)."""
+    return _aware(value).astimezone(OFFICE_TIMEZONE).date()
 
 
 def _place_of(row: dict[str, Any]) -> str:

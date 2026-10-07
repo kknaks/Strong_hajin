@@ -384,7 +384,8 @@ def test_a_meeting_may_continue_the_one_before_it(tmp_path) -> None:
             "starts_at": starts.isoformat().replace("+00:00", "Z"),
             "ends_at": (starts + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
             "attendee_ids": ["jiho"],
-            "agendas": [{"title": "결론 안 난 안건"}],
+            # 출처는 안건마다다 (SPEC-010 §4.2) — 불러온 미결 안건은 화면이 `carried` 를 실어 보낸다.
+            "agendas": [{"title": "결론 안 난 안건", "source": "carried"}],
             "carried_from_meeting_id": first_id,
         },
     )
@@ -639,7 +640,7 @@ def test_the_places_a_meeting_actually_builds_agendas_from_are_still_three(tmp_p
             "starts_at": (datetime.now(UTC) + timedelta(days=4)).isoformat().replace("+00:00", "Z"),
             "ends_at": (datetime.now(UTC) + timedelta(days=4, hours=1)).isoformat().replace("+00:00", "Z"),
             "attendee_ids": ["jiho"],
-            "agendas": [{"title": "지난 회의에서"}],
+            "agendas": [{"title": "지난 회의에서", "source": "carried"}],
             "carried_from_meeting_id": scheduled["meeting"]["meeting_id"],
         },
     )

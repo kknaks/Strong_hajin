@@ -55,6 +55,16 @@ class MeetingTimeOverlap(MeetingError):
     """
 
 
+class MeetingAgendaSourceInvalid(MeetingError):
+    """생성 안건의 출처가 말이 안 된다 (SPEC-010 §4.2 `AGENDA_SOURCE_INVALID`, 422).
+
+    `carried`(지난 회의에서 넘어옴)는 **이어온 회의가 있을 때만** 선다 — 넘어올 회의가 없는데 넘어왔다는
+    출처는 없는 사실이다. 조용히 `manual` 로 바꾸지 않고 거절한다: 화면이 출처를 잘못 보낸 것이다.
+    """
+
+    code = "AGENDA_SOURCE_INVALID"
+
+
 class MeetingRangeIncomplete(MeetingError):
     """회의 목록에 `from`·`to` 중 하나만 왔다 (SPEC-004 `MEETING_RANGE_INCOMPLETE`, 422).
 
@@ -138,6 +148,26 @@ ORIGIN_TRACKS: frozenset[str] = frozenset({TRACK_MEMO, TRACK_AI})
 #: 그 값이 있던 이유는 AI 가 사람과 같은 목록에 안건을 세웠기 때문이고, 벌이 갈렸으므로 「AI 가 세웠다」는
 #: 출처가 아니라 **벌 자체**가 말한다. 어디서 왔는지를 말하는 것은 최종 벌에서 계보(§4.1-3)다.
 AGENDA_SOURCES: frozenset[str] = frozenset({"manual", "set", "carried", "derived"})
+#: 회의 **생성**이 안건마다 받는 출처 — 사람이 고를 수 있는 둘뿐이다 (SPEC-010 §4.2 · D-11).
+RESERVATION_AGENDA_SOURCES: frozenset[str] = frozenset({"manual", "carried"})
+
+
+def ensure_reservation_agenda_sources(sources: list[str], *, carried_from: object | None) -> list[str]:
+    """생성 안건의 출처를 **안건마다** 확정한다 (SPEC-010 §4.2 · DEC-009 D-11).
+
+    안 준 출처는 `manual`. `carried` 는 이어온 회의가 있어야 한다 — 없으면 `MeetingAgendaSourceInvalid`(422).
+    0.6.x 는 이어온 회의가 있으면 **그 요청의 안건 전부**를 `carried` 로 적었다(손으로 쓴 안건까지) — 그 회의 단위
+    판정이 사라졌다.
+    """
+    resolved: list[str] = []
+    for value in sources:
+        source = str(value or "manual")
+        if source not in RESERVATION_AGENDA_SOURCES:
+            raise MeetingAgendaSourceInvalid(f"agenda source must be one of {sorted(RESERVATION_AGENDA_SOURCES)}")
+        if source == "carried" and carried_from is None:
+            raise MeetingAgendaSourceInvalid("carried agendas need carried_from_meeting_id")
+        resolved.append(source)
+    return resolved
 
 
 def parse_status(value: object) -> MeetingStatus:

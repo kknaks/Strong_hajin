@@ -259,6 +259,7 @@ class MeetingFinalizeService:
                     self._gateway.existing_task_titles(source["persona_id"])
                 ),
                 next_meeting_starts_on=source.get("next_meeting_starts_on"),
+                meeting_starts_on=source.get("meeting_starts_on"),
             ),
         )
         return outcome.notes, cold_start

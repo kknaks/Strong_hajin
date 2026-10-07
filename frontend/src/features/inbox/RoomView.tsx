@@ -3,7 +3,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { Button, IconButton } from "../../ds/Button";
 import { Empty } from "../../ds/Empty";
 import { Icon } from "../../ds/icons/Icon";
-import { getInboxRoomMessages, inboxRoomAttachmentUrl, replyToInboxRoom } from "../../lib/api";
+import { getInboxRoomMessages, inboxRoomAttachmentDownloadUrl, inboxRoomAttachmentUrl, replyToInboxRoom } from "../../lib/api";
 import { createIdempotencyKey } from "../../lib/idempotency";
 import { inboxScreen as copy } from "../../lib/labels";
 import type { InboxAttachment, InboxPeople, InboxRoomCard, InboxRoomMessage, InboxRoomPage } from "../../lib/viewModels";
@@ -295,6 +295,7 @@ function Message({
   line,
   grouped,
   hrefOf,
+  downloadOf,
   thumbOf,
   onResend,
   threadOpen,
@@ -304,8 +305,11 @@ function Message({
 }: {
   line: ChatLine;
   grouped: boolean;
+  /** 원본 주소 — 웹의 원본 보기(새 탭 · `inline`). */
   hrefOf: (aid: string) => string;
-  /** 대화 안 이미지 미리보기 — 썸네일(`?variant=thumb`). 누르기·받기는 `hrefOf`(원본). */
+  /** 받기 주소(`?download=1`) — 받기 단추 · 「모두 다운로드」 · 앱의 원본 보기(SPEC-008 §2.2). `hrefOf` 와 같은 길로 내린다. */
+  downloadOf: (aid: string) => string;
+  /** 대화 안 이미지 미리보기 — 썸네일(`?variant=thumb`). */
   thumbOf: (aid: string) => string;
   onResend: (line: LocalLine) => void;
   threadOpen?: boolean;
@@ -338,7 +342,7 @@ function Message({
         {line.unfurls.map((unfurl, index) => (
           <UnfurlCard key={index} unfurl={unfurl} />
         ))}
-        <AttachmentList attachments={line.attachments} hrefOf={hrefOf} thumbOf={thumbOf} />
+        <AttachmentList attachments={line.attachments} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} />
         {line.localFiles.length ? (
           <div className="scax-attach">
             <div className="scax-fcard-row">
@@ -434,6 +438,7 @@ function ThreadPanel({
   meName,
   hub,
   hrefOf,
+  downloadOf,
   thumbOf,
   onClose,
   nameOf,
@@ -444,8 +449,11 @@ function ThreadPanel({
   people: InboxPeople;
   meName: string;
   hub: InboxEventHub;
+  /** 원본 주소 — 웹의 원본 보기(새 탭 · `inline`). */
   hrefOf: (aid: string) => string;
-  /** 대화 안 이미지 미리보기 — 썸네일(`?variant=thumb`). 누르기·받기는 `hrefOf`(원본). */
+  /** 받기 주소(`?download=1`) — 받기 단추 · 「모두 다운로드」 · 앱의 원본 보기(SPEC-008 §2.2). `hrefOf` 와 같은 길로 내린다. */
+  downloadOf: (aid: string) => string;
+  /** 대화 안 이미지 미리보기 — 썸네일(`?variant=thumb`). */
   thumbOf: (aid: string) => string;
   onClose: () => void;
   nameOf: (id: string) => string;
@@ -485,14 +493,14 @@ function ThreadPanel({
         <IconButton label={copy.threadClose} name="close" onClick={onClose} />
       </header>
       <div className="scax-thread-panel__log">
-        <Message grouped={false} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={parent} nameOf={nameOf} onResend={sender.resend} />
+        <Message grouped={false} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={parent} nameOf={nameOf} onResend={sender.resend} />
         <div className="scax-thread-panel__count">
           <span>{copy.replies(Math.max(replies.length, parent.thread?.count ?? 0))}</span>
         </div>
         {state === "error" ? (
           <Empty actionLabel={copy.retry} description={copy.retryDesc} onAction={() => void load()} title={copy.threadError} variant="error" />
         ) : (
-          <Log dividers={false} lines={lines} render={(line, grouped) => <Message grouped={grouped} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={line} nameOf={nameOf} onResend={sender.resend} />} />
+          <Log dividers={false} lines={lines} render={(line, grouped) => <Message grouped={grouped} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={line} nameOf={nameOf} onResend={sender.resend} />} />
         )}
       </div>
       <div className="scax-thread-panel__compose">
@@ -536,6 +544,7 @@ export function RoomView({
   const people = useMemo<InboxPeople>(() => page?.users ?? {}, [page]);
   const nameOf = useCallback((id: string) => people[id]?.name ?? id, [people]);
   const hrefOf = useCallback((aid: string) => inboxRoomAttachmentUrl(roomId, aid), [roomId]);
+  const downloadOf = useCallback((aid: string) => inboxRoomAttachmentDownloadUrl(roomId, aid), [roomId]);
   const thumbOf = useCallback((aid: string) => inboxRoomAttachmentUrl(roomId, aid, "thumb"), [roomId]);
 
   const load = useCallback(
@@ -703,7 +712,7 @@ export function RoomView({
                 render={(line, grouped) => (
                   <Message
                     grouped={grouped}
-                    hrefOf={hrefOf} thumbOf={thumbOf}
+                    downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf}
                     line={line}
                     nameOf={nameOf}
                     onOpenThread={kakao ? undefined : () => setThreadKey(line.key)}
@@ -739,7 +748,7 @@ export function RoomView({
       </div>
       {parent && !kakao ? (
         <ThreadPanel
-          hrefOf={hrefOf} thumbOf={thumbOf}
+          downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf}
           hub={hub}
           key={parent.key}
           meName={meName}

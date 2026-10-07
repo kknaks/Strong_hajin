@@ -169,7 +169,7 @@ describe("회의 한 화면 4칸 (바퀴 6a)", () => {
     /** 왼쪽 목록 칸 — 상세 칸에도 같은 제목·같은 상태 낱말이 서므로 «이 안에서만» 본다. */
     const railEl = () => document.querySelector(".scax-meeting-list") as HTMLElement;
     const listRail = () => within(railEl());
-    /** 상세 머리의 단추 — 셸 머리의 [회의 시작]과 이름이 같아서 자리로 가른다. */
+    /** 상세 머리의 단추 — 셸 머리의 주 단추는 이제 [빠른 회의](SH-IMP-020)라 이름이 다르지만, 자리로 가르는 것은 그대로 둔다. */
     const titleRow = () => within(document.querySelector(".scax-detail__title-row") as HTMLElement);
 
     it("회의를 시작하면 **카드 배지와 구획이 함께** 바뀐다", async () => {
@@ -222,9 +222,10 @@ describe("회의 한 화면 4칸 (바퀴 6a)", () => {
       vi.mocked(api.quickStartMeeting).mockResolvedValue({ meeting: info({ meeting_id: "q1", status: "in_progress" }), agendas: [] } as MeetingRecord);
       vi.mocked(api.readMeeting).mockResolvedValue({ meeting: info({ meeting_id: "q1", status: "in_progress" }), agendas: [] } as MeetingRecord);
       render(<ShellHost />);
-      await screen.findByRole("button", { name: /회의 시작/ });
+      // 목록 머리의 주 단추 — 문구는 「빠른 회의」다(SH-IMP-020 · 옛 「회의 시작」)
+      await screen.findByRole("button", { name: meetingScreen.quickStart });
 
-      fireEvent.click(screen.getByRole("button", { name: /회의 시작/ }));
+      fireEvent.click(screen.getByRole("button", { name: meetingScreen.quickStart }));
 
       await waitFor(() => expect(listRail().getByText("빠르게 시작한 회의")).toBeTruthy());
     });

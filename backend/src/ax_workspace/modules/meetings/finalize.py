@@ -100,6 +100,8 @@ class FinalizationContext:
     meeting_title: str | None
     existing_task_titles: frozenset[str]
     next_meeting_starts_on: date | None
+    #: 회의일 — 이 회의 시작 시각의 **KST 날짜**. 기한의 하한이다 (SPEC-010 §4.8). 모르면 하한을 걸지 않는다.
+    meeting_starts_on: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,16 +202,32 @@ def _stamp_source_lines(notes: FinalNotes, *, meeting_title: str | None) -> None
             todo.description = f"{todo.description.rstrip()}\n{stamp}"
 
 
-def resolve_due(todo: FinalTodo, *, next_meeting_starts_on: date | None) -> date | None:
-    """기한 세 갈래 (§8.2 `due_candidate`) — ① 말의 날짜 ② 이어진 다음 회의 전날 ③ 없음.
+def floor_due(due: date | None, *, meeting_starts_on: date | None) -> date | None:
+    """**회의일보다 이른 기한은 비운다** (SPEC-010 §4.8 · DEC-009 D-19). 같은 날은 허용한다.
 
-    ①은 AI 가 채워 온다. 여기서 더하는 것은 ②뿐이고, 근거 없이 지어내지 않는 것이 ③이다.
+    회의 중 잠정 후보(배치)와 최종 결과가 같은 하한을 탄다(OQ-1014). 비운 이유는 남기지 않는다(H-10).
+    """
+    if due is None or meeting_starts_on is None:
+        return due
+    return None if due < meeting_starts_on else due
+
+
+def resolve_due(
+    todo: FinalTodo, *, next_meeting_starts_on: date | None, meeting_starts_on: date | None = None
+) -> date | None:
+    """기한 세 갈래 (SPEC-010 §4.8) — ① 말의 날짜 ② 다음 회의 전날 ③ 없음 — 그리고 **회의일 하한**.
+
+    ①은 AI 가 채워 온다. 여기서 더하는 것은 ②뿐이고, 근거 없이 지어내지 않는 것이 ③이다. 「다음 회의」 는 **이 회의에서
+    이월된 회의**만이고(저장소 `next_meeting_after`) 날짜는 모두 KST 다(부르는 쪽이 뽑는다). ①이든 ②든 회의일보다 이르면
+    비운다 — 모델이 옛 규칙으로 전날을 셈해 ①로 내는 경로(BE §5.5 (d))도 여기서 막힌다.
     """
     if todo.due_candidate is not None:
-        return todo.due_candidate
-    if next_meeting_starts_on is not None:
-        return next_meeting_starts_on - timedelta(days=1)
-    return None
+        due: date | None = todo.due_candidate
+    elif next_meeting_starts_on is not None:
+        due = next_meeting_starts_on - timedelta(days=1)
+    else:
+        due = None
+    return floor_due(due, meeting_starts_on=meeting_starts_on)
 
 
 _NORMALIZE = re.compile(r"[\s\W_]+", re.UNICODE)
@@ -243,6 +261,7 @@ def _prepare_final_notes_in_place(
     meeting_title: str | None,
     existing_task_titles: set[str],
     next_meeting_starts_on: date | None,
+    meeting_starts_on: date | None = None,
 ) -> FinalNotes:
     """Apply the Meeting-owned rules to parsed provider output before persistence.
 
@@ -263,6 +282,7 @@ def _prepare_final_notes_in_place(
             todo.due_candidate = resolve_due(
                 todo,
                 next_meeting_starts_on=next_meeting_starts_on,
+                meeting_starts_on=meeting_starts_on,
             )
             kept.append(todo)
             seen_titles.add(normalize_title(todo.title))
@@ -277,6 +297,7 @@ def finalize_notes(notes: FinalNotes, context: FinalizationContext) -> Finalizat
         meeting_title=context.meeting_title,
         existing_task_titles=set(context.existing_task_titles),
         next_meeting_starts_on=context.next_meeting_starts_on,
+        meeting_starts_on=context.meeting_starts_on,
     )
     return FinalizationOutcome(notes=prepared)
 
@@ -326,7 +347,8 @@ _FINAL_INSTRUCTIONS = """회의가 끝났다. **재료를 보고 최종 회의�
 - `checklist_candidate` 는 **언제나** 2~5단계로 제안한다. 말에 단계가 없어도 네가 쪼갠다.
 - `due_candidate` 는 **말에 날짜가 있을 때만** 채운다. 「이번 주 금요일」·「다음 주 목요일」 같은 상대 표현도
   **아래 기준일로 환산해 YYYY-MM-DD 로** 적어라 — 환산이 서지 않으면 null 로 둔다.
-  말에 아무 날짜도 없으면 null 이다. 서버가 이어진 다음 회의를 보고 채운다.
+  말에 아무 날짜도 없으면 null 이다 — **다음 회의 전날을 네가 셈해 넣지 마라.** 서버가 이 회의에서 이월된 다음 회의를
+  보고 채운다. **기준일(회의일)보다 이른 날짜는 서버가 비운다.**
 - `line_ids` 에 그 후보가 딛는 줄들을 적는다.
 
 ## 제목
@@ -371,7 +393,7 @@ def build_final_prompt(
     next_day = meeting.get("next_meeting_on")
     when = [f"\n**기준일: {base_day}**" if base_day else ""]
     if next_day:
-        when.append(f" · 이어진 다음 회의: {next_day}")
+        when.append(f" · 이월된 다음 회의: {next_day}")
     sections = [
         _FINAL_INSTRUCTIONS.format(schema=_dumps(FINAL_OUTPUT_SCHEMA)),
         "".join(when) + " — 상대 날짜 표현은 이 날을 기준으로 환산한다.\n" if base_day else "",

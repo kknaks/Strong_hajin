@@ -251,3 +251,82 @@ def test_redirects_are_followed_with_an_ssrf_check_on_every_hop(monkeypatch) -> 
     assert content_type == "image/png" and data.startswith(b"\x89PNG")  # 이름이 틀린 type 도 바이트로 판별
     with pytest.raises(RemoteImageRejected):
         fetcher.fetch("https://hop.example/x")  # 리다이렉트가 사설 주소로 가면 그 홉에서 거절
+
+
+# ── WORK-012 WP1-BE — 원격 SVG 는 받고 HTML 은 거절 (SPEC-008 §4.4 · §5 원격 이미지 프록시 v0.6.0 · DEC-009 D-24) ──
+
+GITHUB_CAMO_SVG = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<!-- badge -->\n'
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="90" height="20"><text>build</text></svg>'
+)
+
+
+@pytest.mark.parametrize(
+    ("body", "is_svg"),
+    [
+        (b'<svg xmlns="http://www.w3.org/2000/svg"/>', True),
+        (GITHUB_CAMO_SVG, True),
+        (b'\xef\xbb\xbf  <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x">\n<svg>', True),
+        (b"<SVG width='1'></SVG>", True),
+        (b"<!DOCTYPE html><html><svg></svg></html>", False),
+        (b"<html><body><svg/></body></html>", False),
+        (b"<svgfoo>", False),
+        (b"GIF89a", False),
+    ],
+)
+def test_svg_is_judged_by_its_bytes(body: bytes, is_svg: bool) -> None:
+    from ax_workspace.platform.external_inbox_upstream import sniff_raster, sniff_svg
+
+    assert sniff_svg(body) is is_svg
+    assert sniff_raster(body) is None or body == b"GIF89a"
+
+
+def _single_response_fetcher(monkeypatch, body: bytes, content_type: str):
+    from ax_workspace.platform import external_inbox_upstream as upstream
+
+    class Response:
+        status = 200
+
+        def getheader(self, name, default=None):
+            return {"Content-Type": content_type}.get(name, default)
+
+        def read(self, limit):
+            return body[:limit]
+
+    class Connection:
+        def __init__(self, host, address, port, *, timeout):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(upstream, "_PinnedHTTPSConnection", Connection)
+    return SafeImageFetcher(resolver=lambda host, port, type: [(0, 0, 0, "", ("93.184.216.34", port))])
+
+
+def test_a_remote_svg_is_relayed_as_svg_and_not_rasterized(monkeypatch) -> None:
+    """운영 「remote image refused … 이미지가 아닙니다」(GitHub camo 배지) — 이제 `image/svg+xml` 그대로 받는다."""
+    fetcher = _single_response_fetcher(monkeypatch, GITHUB_CAMO_SVG, "image/svg+xml;charset=utf-8")
+    data, content_type = fetcher.fetch("https://camo.githubusercontent.com/abc")
+    assert content_type == "image/svg+xml" and data == GITHUB_CAMO_SVG
+
+
+def test_a_remote_html_page_is_still_refused_even_if_it_claims_to_be_an_image(monkeypatch) -> None:
+    fetcher = _single_response_fetcher(monkeypatch, b"<!DOCTYPE html><html><svg/></html>", "image/svg+xml")
+    with pytest.raises(RemoteImageRejected):
+        fetcher.fetch("https://evil.example/fake.svg")
+
+
+def test_inline_svg_tags_and_svg_data_urls_are_still_removed_from_the_mail_body() -> None:
+    """D-24 는 **프록시로 받는 원격 SVG** 만 연다 — 본문 안의 인라인 `<svg>` 와 `data:image/svg+xml` 은 지금처럼 지운다."""
+    safe = sanitize_mail_html(
+        '<p>본문</p><svg onload="alert(1)"><circle/></svg>'
+        '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">'
+    )
+    assert "<svg" not in safe and "image/svg+xml" not in safe

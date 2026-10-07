@@ -233,7 +233,9 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     await screen.findByText("DB ax 전략");
     // 완료된 회의에서도 출처는 사라지지 않는다 (E21 「상태와 무관하게 늘 낸다」)
     expect(screen.queryByText("AI 정리")).toBeNull();
-    for (const label of ["직접 입력", "세트", "지난 회의에서 넘어옴", "다른 회의에서 파생"]) {
+    // `manual` 문구는 「새로 추가된 안건」 이다(SPEC-010 §2.3 — 옛 「직접 입력」)
+    expect(screen.queryByText("직접 입력")).toBeNull();
+    for (const label of ["새로 추가된 안건", "세트", "지난 회의에서 넘어옴", "다른 회의에서 파생"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     expect(screen.queryByText("sideways")).toBeNull();
@@ -473,6 +475,32 @@ describe("SCR-106 회의 뒤 — 실계약 배선", () => {
     expect(within(modal).queryByText("AI 가 세운 안건")).toBeNull();
     // 결론 난 최종 안건도 안 넘어간다 (끝난 일이다)
     expect(within(modal).queryByText("토큰 수요 전망")).toBeNull();
+  });
+
+  it("[다음 회의 예약]도 안건마다 출처를 보낸다 — 넘어온 안건 = carried · 손으로 더한 안건 = manual (SPEC-010 §2.3 · AC-10)", async () => {
+    const carryable: MeetingAgenda = { ...agenda, agenda_id: "f-2", title: "이어서 볼 최종 안건", concluded: false, lines: [], todos: [] };
+    renderAfter({}, [agenda, carryable]);
+    await screen.findByText("DB ax 전략");
+
+    fireEvent.click(screen.getByRole("button", { name: "다음 회의 예약" }));
+    const modal = await screen.findByRole("dialog", { name: /회의 예약/ });
+    expect(within(modal).getByText("지난 회의에서 넘어옴")).toBeTruthy();
+
+    fireEvent.change(within(modal).getByPlaceholderText("안건을 적으세요"), { target: { value: "새로 쓴 안건" } });
+    fireEvent.click(within(modal).getByRole("button", { name: "안건 추가" }));
+    expect(within(modal).getByText("새로 추가된 안건")).toBeTruthy();
+    fireEvent.change(within(modal).getByRole("combobox"), { target: { value: "한서린" } });
+    fireEvent.click(within(modal).getByRole("button", { name: "한서린 사외 참석자로 추가" }));
+
+    vi.mocked(api.bookMeeting).mockResolvedValue({ meeting: meeting(), agendas: [] });
+    fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
+    await waitFor(() => expect(api.bookMeeting).toHaveBeenCalled());
+    const input = vi.mocked(api.bookMeeting).mock.calls[0][0];
+    expect(input.agendas).toEqual([
+      { title: "이어서 볼 최종 안건", source: "carried" },
+      { title: "새로 쓴 안건", source: "manual" },
+    ]);
+    expect(input.carried_from_meeting_id).toBeTruthy();
   });
 
   it("저장은 **최종 벌 안건만** 보낸다 — 임시 벌로 나가면 서버가 409 다", async () => {

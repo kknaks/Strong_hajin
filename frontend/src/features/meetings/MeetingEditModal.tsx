@@ -22,7 +22,7 @@ import {
   weekdayNames,
 } from "../../lib/labels";
 import type { MeetingRecord } from "../../lib/viewModels";
-import { PersonSearch, PickedTags } from "./PeoplePicker";
+import { addPersonOnce, PersonSearch, PickedTags } from "./PeoplePicker";
 import { useRoster, type RosterPerson } from "./roster";
 
 /** 참석자 한 줄 — 상세가 쓰던 것과 같은 모양이다 (`MeetingInfo.attendees` 의 원소). */
@@ -227,7 +227,8 @@ export function MeetingEditModal({
                     <PersonSearch
                       excluded={pickedIds}
                       onPick={(person: RosterPerson) => {
-                        setHead({ ...head, people: [...head.people, { member_id: person.member_id, display_name: person.name }] });
+                        /* 이미 담긴 사람은 다시 담지 않는다(SPEC-010 §2.1 · OQ-909) */
+                        setHead({ ...head, people: addPersonOnce(head.people, { member_id: person.member_id, display_name: person.name }) });
                         setQuery("");
                       }}
                       onQueryChange={setQuery}

@@ -7,7 +7,9 @@ BE-2 의 수집 어댑터(Socket Mode·Pub/Sub·백필)와 파일을 가른다 �
   올리기 → `files.completeUploadExternal` — 옛 `files.upload` 는 닫혔다)
 - 원격 이미지: **SSRF 규칙** — http(s) 만 · 이름을 풀어 **모든** 주소가 공인이어야 하고(사설·루프백·링크로컬(=클라우드
   메타데이터 169.254.169.254)·CGNAT·멀티캐스트·예약 거절) · **푼 그 주소로 바로 붙는다**(다시 풀어 바뀌는 DNS rebinding
-  차단) · 리다이렉트는 따라가지 않는다 · 래스터 이미지 MIME 만(SVG 거절 — 같은 origin 에서 스크립트가 된다) · 5MB 상한.
+  차단) · 리다이렉트는 **3번까지 따르되 홉마다 같은 검사를 다시 한다** · **바이트로 판정한** 래스터(PNG·JPEG·GIF·WebP·BMP·ICO)
+  또는 SVG 만(SPEC-008 §4.4 v0.6.0 · DEC-009 D-24 — SVG 는 `image/svg+xml` 그대로 내주고, 스크립트가 되지 못하게 하는 것은
+  응답 머리(샌드박스 CSP·nosniff·CORP)다) · HTML 은 거절 · 5MB 상한.
 
 토큰·본문은 로그·예외 메시지에 싣지 않는다 — 상류 이름과 오류 코드만.
 """
@@ -20,6 +22,7 @@ import http.client
 import ipaddress
 import json
 import logging
+import re
 import socket
 import ssl
 from typing import Any
@@ -48,7 +51,7 @@ REMOTE_IMAGE_MAX_REDIRECTS = 3
 
 
 def sniff_raster(data: bytes) -> str | None:
-    """바이트 머리로 본 래스터 형식. 받을 수 있는 것만 — SVG·HTML 은 None."""
+    """바이트 머리로 본 래스터 형식. 래스터만 — SVG·HTML 은 None(SVG 는 `sniff_svg` 가 따로 본다)."""
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith(b"\xff\xd8\xff"):
@@ -64,7 +67,28 @@ def sniff_raster(data: bytes) -> str | None:
     return None
 
 
-REMOTE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "image/vnd.microsoft.icon"})
+#: SVG 판정에서 앞머리로 건너뛰는 것 — XML 선언 · 처리 지시 · 주석 · `<!DOCTYPE svg …>`.
+_SVG_PROLOG = re.compile(rb"\A(?:\s+|<\?.*?\?>|<!--.*?-->|<!DOCTYPE\s+svg\b[^>]*>)*", re.DOTALL | re.IGNORECASE)
+_SVG_ROOT = re.compile(rb"<svg[\s>/]", re.IGNORECASE)
+#: 앞머리를 훑을 최대 바이트 — 판정은 문서 머리로 충분하다.
+_SVG_SNIFF_BYTES = 4096
+
+
+def sniff_svg(data: bytes) -> bool:
+    """**바이트가 SVG 문서인가** (SPEC-008 §5 원격 이미지 프록시 v0.6.0) — 선언 `Content-Type` 이 아니라 바이트로 본다.
+
+    BOM · 공백 · XML 선언 · 주석 · `<!DOCTYPE svg …>` 뒤 첫 요소가 `<svg` 면 SVG. HTML(`<html`·`<!DOCTYPE html`)은 False 다.
+    """
+    head = data[:_SVG_SNIFF_BYTES]
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    prolog = _SVG_PROLOG.match(head)
+    rest = head[prolog.end():] if prolog else head
+    return _SVG_ROOT.match(rest) is not None
+
+
+SVG_MEDIA_TYPE = "image/svg+xml"
+REMOTE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "image/vnd.microsoft.icon", SVG_MEDIA_TYPE})
 #: 토큰 자체가 죽었다는 슬랙 오류만. `missing_scope`(권한 하나 부족)는 **그 호출만** 실패다 — 연동을 끊지 않는다(BE 수정 판 4).
 SLACK_AUTH_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive"})
 
@@ -354,8 +378,9 @@ class SafeImageFetcher:
             if len(data) > self._limit:
                 raise RemoteImageRejected("이미지가 너무 큽니다")
             # 선언된 type 이 아니라 **바이트**로 가른다 — 없는 type · octet-stream · `image/jpg` 같은 틀린 이름도 실제 래스터면
-            # 받고, 래스터가 아니면(SVG·HTML 포함) 이름이 image/* 여도 받지 않는다. 내려보내는 type 도 바이트가 정한다.
-            sniffed = sniff_raster(data)
+            # 받고, 래스터도 SVG 도 아니면(HTML 포함) 이름이 image/* 여도 받지 않는다. 내려보내는 type 도 바이트가 정한다.
+            # SVG 는 래스터로 바꾸지 않고 `image/svg+xml` 그대로다(SPEC-008 §4.4 v0.6.0 · D-24 — GitHub camo 배지 등).
+            sniffed = sniff_raster(data) or (SVG_MEDIA_TYPE if sniff_svg(data) else None)
             if sniffed is None:
                 raise RemoteImageRejected("이미지가 아닙니다")
             return data, sniffed

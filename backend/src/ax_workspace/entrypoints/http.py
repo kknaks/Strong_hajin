@@ -162,6 +162,7 @@ from ax_workspace.modules.meetings.rooms import (
     RoomCreationIdempotencyRequired,
 )
 from ax_workspace.modules.meetings.domain import (
+    MeetingAgendaSourceInvalid,
     MeetingAccessDenied,
     MeetingError,
     MeetingNotFound,
@@ -556,6 +557,12 @@ def _runtime_error(error: Exception) -> HTTPException:
                 "available_rooms": error.available_rooms,
             },
         )
+    if isinstance(error, MeetingAgendaSourceInvalid):
+        # 생성 안건 출처 (SPEC-010 §4.2) — 화면이 고칠 수 있게 코드를 싣는다. `MeetingError` 의 422 보다 먼저 본다.
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": error.code, "message": str(error)},
+        )
     if isinstance(error, RoomCreationIdempotencyRequired):
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -920,7 +927,7 @@ def create_app(
                 location=request.location,
                 attendee_ids=request.attendee_ids,
                 external_attendees=request.external_attendees,
-                agendas=[{"title": row.title} for row in request.agendas],
+                agendas=[{"title": row.title, "source": row.source} for row in request.agendas],
                 carried_from_meeting_id=request.carried_from_meeting_id,
                 room_id=request.room_id,
                 idempotency_key=idempotency_key,

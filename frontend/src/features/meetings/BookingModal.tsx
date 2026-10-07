@@ -10,7 +10,7 @@ import { Icon } from "../../ds/icons/Icon";
 import { Select } from "../../ds/Select";
 import { TimeRangeField } from "../../ds/TimeField";
 import { useEscape } from "../../ds/Modal";
-import { addDays, datePickerLabel, emptyActionLabel, formatMonthLong, meetingAgendaSourceText, meetingClock, meetingDateInput, meetingIsoAt, meetingScreen, meetingTimeOptions, meetingWhen, selectLabel, seoulToday, timeFieldLabel, weekdayNames } from "../../lib/labels";
+import { addDays, datePickerLabel, emptyActionLabel, formatMonthLong, meetingAgendaSourceText, meetingIsoAt, meetingScreen, meetingTimeOptions, meetingWhen, selectLabel, seoulToday, timeFieldLabel, weekdayNames } from "../../lib/labels";
 import type { MeetingRecord, MeetingRoom, MeetingRow } from "../../lib/viewModels";
 import { OrgDirectory, PersonSearch, PickedTags } from "./PeoplePicker";
 import { useRoster, type RosterPerson } from "./roster";
@@ -196,16 +196,14 @@ export function BookingModal({
     );
   }
 
-  /* E21 [불러오기] — 일시 · 장소 · 참석자 · 목적을 넣고 **결론 안 난 안건만** 넘겨 담는다 (X-121) */
+  /* E21 [불러오기] — 장소 · 참석자 · 목적을 넣고 **결론 안 난 안건만** 넘겨 담는다 (X-121).
+     **날짜·시작·종료는 건드리지 않는다**(SPEC-010 §2.3 · D-10) — 새 회의에서 정한(또는 비어 있는) 시간을 그대로 둔다 */
   async function applySuggestion() {
     if (!picked) return;
     setBusy(true);
     try {
       const record = suggestion?.meeting.meeting_id === picked.meeting_id ? suggestion : await readMeeting(picked.meeting_id);
       setSuggestion(record);
-      setDate(meetingDateInput(record.meeting.starts_at));
-      setFrom(meetingClock(record.meeting.starts_at));
-      setTo(meetingClock(record.meeting.ends_at));
       setPurpose((current) => current || (record.meeting.purpose ?? ""));
       setRoom(String(rooms.find((one) => one.name === record.meeting.location)?.room_id ?? ""));
       setPeople(
@@ -248,7 +246,8 @@ export function BookingModal({
       room_id: room === "" ? null : Number(room),
       attendee_ids: people.map((person) => person.member_id),
       external_attendees: guests,
-      agendas: agendas.map((agenda) => ({ title: agenda.title })),
+      /* 출처는 **안건마다** 보낸다(SPEC-010 §2.3 · §4.2) — 불러온 미결 안건 = `carried` · 손으로 쓴 안건 = `manual` */
+      agendas: agendas.map((agenda) => ({ title: agenda.title, source: agenda.source })),
       carried_from_meeting_id: carried,
     };
     const fingerprint = JSON.stringify(input);

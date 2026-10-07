@@ -192,6 +192,19 @@ def test_collector_events_reach_the_members_inbox_stream(tmp_path) -> None:
                          "source_kind": "kakao", "data": {"count": 1}}
 
 
+def test_a_live_collector_save_also_announces_the_integration_change(tmp_path) -> None:
+    """한 건 저장에도 `integration.changed` 가 함께 나간다 — 설정 화면의 적재 건수·마지막 수집이 새로고침 없이 바뀐다
+    (SPEC-008 §4.4 v0.6.0 · DEC-009 D-25 · WORK-012 WP1-BE). 같은 연동은 1초에 한 번으로 묶여 늦어도 1초 안에 온다."""
+    client, _, _ = _stack(tmp_path)
+    token, integration, rooms = _collector(client)
+    with client.websocket_connect("/api/inbox/stream", headers=MINA) as stream:
+        assert stream.receive_json() == {"type": "ready"}
+        client.post("/api/integrations/kakao/messages", headers=_bearer(token), json=_batch(rooms["18200"], 7))
+        events = [stream.receive_json(), stream.receive_json()]
+        assert [event["type"] for event in events] == ["inbox.message_arrived", "integration.changed"]
+        assert events[1]["integration_id"] == integration and events[1]["source_kind"] == "kakao"
+
+
 # ── 프로필 ────────────────────────────────────────────────────────────────────────────────
 
 

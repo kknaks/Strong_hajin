@@ -145,9 +145,16 @@
 .meeting-meta-edit label { font-size: 12px; }
 .meeting-room { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface); cursor: pointer; }
 .meeting-room input[type="radio"] { width: 16px; height: 16px; flex: none; accent-color: var(--scax-color-accent); }
-.meeting-when { display: flex; align-items: center; gap: 8px; }
-.meeting-when .date-field { flex: none; width: 200px; }
+.meeting-when { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* SH-IMP-002·004(SPEC-010 §2.1) — 날짜 칸은 고정 200px 이 아니라 **남는 폭까지만** 선다(최대 200).
+   고정 폭이던 때 수정 모달의 왼쪽 열(≈277px)을 ≈125px 넘쳐 종료 시각 칸이 오른쪽 열 검색 입력 밑에 깔렸다 */
+.meeting-when .date-field { flex: 0 1 200px; min-width: 0; }
 .meeting-when .time-range { flex: none; }
+/* 수정 모달은 두 열이라 왼쪽 열이 좁다 — 시각 한 쌍을 AX 회의 카드처럼 줄인다(ax.css `.action-meeting-fields .time-range`).
+   날짜는 남는 폭을 받고, 세 칸이 왼쪽 열 안에 든다 */
+.meeting-meta-edit .meeting-when .time-range { gap: 5px; }
+.meeting-meta-edit .meeting-when .time-range .select-trigger { min-width: 0; padding: 0 7px; }
+.meeting-meta-edit .meeting-when .time-range .select-trigger svg { display: none; }
 .meeting-suggest { margin-top: 8px; padding: 16px 20px; border: 1px solid var(--scax-color-line); border-radius: var(--scax-radius-sm); background: var(--scax-color-surface-alt); }
 /* 폼 여덟 칸이 들어가는 예약 모달과 조직도가 들어가는 공유 모달만 DS 기본 600 보다 넓다.
    머리·푸터는 고정하고 본문만 스크롤한다 */

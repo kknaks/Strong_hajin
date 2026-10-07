@@ -1220,12 +1220,23 @@ def test_a_name_that_is_not_a_working_person_is_still_refused(tmp_path) -> None:
 
 
 def test_a_spoken_date_survives_as_the_due_candidate(tmp_path) -> None:
+    # 회의는 「지금」 열린다 — 말의 날짜는 회의일 뒤여야 하한(SPEC-010 §4.8)을 지난다.
     client, application, agent = _stack(tmp_path)
     meeting_id, memo = _finalized(
-        client, application, agent, todos=[_todo("초안을 낸다", due="2026-09-18")]
+        client, application, agent, todos=[_todo("초안을 낸다", due="2099-09-18")]
     )
     [todo] = _the_final(client, meeting_id)["todos"]
-    assert todo["due_candidate"] == "2026-09-18"
+    assert todo["due_candidate"] == "2099-09-18"
+
+
+def test_a_spoken_date_before_the_meeting_day_is_cleared(tmp_path) -> None:
+    """① 말의 날짜도 **회의일보다 이르면 비운다** (SPEC-010 §4.8 · BE §5.5 경로 (d)) — 모델이 옛 규칙으로 전날을 셈해도."""
+    client, application, agent = _stack(tmp_path)
+    meeting_id, memo = _finalized(
+        client, application, agent, todos=[_todo("초안을 낸다", due="2020-01-02")]
+    )
+    [todo] = _the_final(client, meeting_id)["todos"]
+    assert todo["due_candidate"] is None
 
 
 def test_the_evidence_a_screen_reads_is_named_the_way_the_contract_names_it(tmp_path) -> None:

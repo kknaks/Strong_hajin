@@ -127,7 +127,7 @@
                   "maxLength": 4000
                 },
                 "due_candidate": {
-                  "description": "① 말에 날짜가 있으면 그 날짜 ② 없고 이어진 다음 회의가 있으면 그 전날 ③ 둘 다 없으면 null.",
+                  "description": "말에 날짜가 있을 때만 그 날짜(YYYY-MM-DD). 없으면 null — 다음 회의 전날은 서버가 이월된 다음 회의를 보고 채운다. 회의일보다 이른 날짜는 서버가 비운다.",
                   "type": [
                     "string",
                     "null"

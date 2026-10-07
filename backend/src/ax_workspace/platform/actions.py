@@ -28,7 +28,7 @@ from ax_workspace.modules.actions.policy import (
 from ax_workspace.modules.organization_access.application import OrganizationApplication
 from ax_workspace.modules.organization_access.domain import ACTION_DECIDE, DAILY_REPORT_READ, DAILY_REPORT_SUBMIT, PROJECT_READ, TASK_ASSIGN, Principal
 from ax_workspace.modules.meetings.application import MeetingApplication
-from ax_workspace.modules.meetings.domain import MeetingError
+from ax_workspace.modules.meetings.domain import MeetingError, ensure_reservation_agenda_sources
 from ax_workspace.modules.meetings.commands import (
     MeetingFollowupCommand,
     MeetingMaterialDetachCommand,
@@ -314,9 +314,14 @@ class SqlAlchemyActionRepository:
         """Freeze the current reservation contract before a person reviews it."""
         del owner_id, turn
         try:
-            return MeetingReservationInput.model_validate(payload).model_dump(mode="json")
+            request = MeetingReservationInput.model_validate(payload)
         except (TypeError, ValueError) as error:
             raise MeetingError(str(error)) from error
+        # 출처 규칙은 확정 때도 다시 걸리지만, 이어온 회의 없는 `carried` 는 제안부터 세우지 않는다 (SPEC-010 §4.2).
+        ensure_reservation_agenda_sources(
+            [row.source for row in request.agendas], carried_from=request.carried_from_meeting_id
+        )
+        return request.model_dump(mode="json")
 
     def _meeting_source_label(self, owner_id: str, source_type: str, source_id: str) -> str | None:
         """Re-authorize a previously observed resource before freezing it into a MeetingNote."""

@@ -1225,7 +1225,8 @@ export async function bookMeeting(input: {
   room_id?: number | null;
   attendee_ids: string[];
   external_attendees?: string[];
-  agendas?: Array<{ title: string }>;
+  /** 안건마다 출처(SPEC-010 §4.2) — `carried` 는 `carried_from_meeting_id` 가 있어야 한다(없으면 422). 주지 않으면 서버가 `manual`. */
+  agendas?: Array<{ title: string; source?: "manual" | "carried" }>;
   carried_from_meeting_id?: string | null;
 }, idempotencyKey: string): Promise<MeetingRecord> {
   return request<MeetingRecord>("/api/meetings", {
@@ -1676,6 +1677,20 @@ export function inboxMailAttachmentUrl(messageId: string, aid: string): string {
 export function inboxRoomAttachmentUrl(roomId: string, aid: string, variant?: "thumb"): string {
   const base = `/api/inbox/rooms/${encodeURIComponent(roomId)}/attachments/${encodeURIComponent(aid)}`;
   return variant ? `${base}?variant=${variant}` : base;
+}
+
+/**
+ * **받기** 주소 — 같은 첨부 주소에 `?download=1`(SPEC-008 §2.2 · §4.4). 서버는 형식과 무관하게 언제나 `attachment` 로 답한다.
+ * 받기 링크는 `download` 속성도 `target="_blank"` 도 없는 **같은 탭 링크**다 — 데스크톱 셸이 회의록 내보내기와 같은 가로채기 길로
+ * 받아 다운로드 폴더에 저장한다(SPEC-006 U-5). 미리보기(`<img>` · 썸네일)는 위의 `download` 없는 주소를 그대로 쓴다.
+ */
+export function inboxMailAttachmentDownloadUrl(messageId: string, aid: string): string {
+  return `${inboxMailAttachmentUrl(messageId, aid)}?download=1`;
+}
+
+/** 방 첨부의 **받기** 주소 — 원본(variant 없이)에 `?download=1`. 썸네일 주소와 섞지 않는다. */
+export function inboxRoomAttachmentDownloadUrl(roomId: string, aid: string): string {
+  return `${inboxRoomAttachmentUrl(roomId, aid)}?download=1`;
 }
 
 /** 메일 본문의 원격 이미지 — 처음부터 보이되 **서버 프록시**로만 받는다(보낸 쪽 서버에 직접 붙지 않음 · N-5 · FE 수정 판 2). */

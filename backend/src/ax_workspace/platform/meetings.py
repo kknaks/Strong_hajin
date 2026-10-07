@@ -784,21 +784,17 @@ class SqlAlchemyMeetingRepository:
         self._session.flush()
 
     def next_meeting_after(self, meeting: MeetingRecord) -> MeetingRecord | None:
-        """이어진 다음 회의 — 이 회의를 이월한 회의이거나, 같은 조직의 다음 예약이다 (SPEC-004 §8.2 기한 ②)."""
-        carried = self._session.scalar(
-            select(MeetingRecord)
-            .where(MeetingRecord.carried_from_meeting_id == meeting.id)
-            .order_by(MeetingRecord.starts_at)
-        )
-        if carried is not None:
-            return carried
+        """다음 회의 — **이 회의에서 이월된 회의만**이다 (SPEC-010 §4.8 기한 ② · DEC-009 D-19).
+
+        취소된 회의는 빼고, **이 회의보다 뒤에 시작하는 것** 중 가장 이른 것. 0.6.x 는 이월 회의가 없으면 같은 owner 의
+        아무 다음 예약을 잡았다 — 같은 날 오후의 다른 회의가 「다음 회의」 가 되어 기한이 회의 전날로 떨어졌다(BE §5.5).
+        """
         return self._session.scalar(
             select(MeetingRecord)
             .where(
-                MeetingRecord.organization_id == meeting.organization_id,
-                MeetingRecord.owner_id == meeting.owner_id,
+                MeetingRecord.carried_from_meeting_id == meeting.id,
+                MeetingRecord.status != "cancelled",
                 MeetingRecord.starts_at > meeting.starts_at,
-                MeetingRecord.status == "scheduled",
             )
             .order_by(MeetingRecord.starts_at)
         )

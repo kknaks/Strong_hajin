@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 
 import { Icon } from "../../ds/icons/Icon";
 import { inboxScreen as copy } from "../../lib/labels";
+import { hasShell } from "../../lib/shell";
 import type { InboxAttachment } from "../../lib/viewModels";
 import { fileTypeOf, fmtSize, isPdf, type Reaction, type Unfurl } from "./inboxModel";
 
@@ -11,6 +12,10 @@ import { fileTypeOf, fmtSize, isPdf, type Reaction, type Unfurl } from "./inboxM
  * 받기는 **API 중계**다(§2.2 · D-29): 메일·슬랙은 누를 때 서버가 그 사람 토큰으로 받아 넘기고, 카톡은 저장본이다.
  * 그래서 받기 단추는 우리 `/api/inbox/…/attachments/{aid}` 주소를 가리키는 링크일 뿐 — 여기서 fetch 하지 않는다.
  * 데스크톱 셸은 같은 origin `/api/` 이동을 가로채 다운로드 폴더에 저장한다(SPEC-006 U-5).
+ *
+ * **받기와 미리보기는 주소로 가른다**(SPEC-008 §2.2 · SH-IMP-014): 받기 = `?download=1` 주소의 **같은 탭 링크**(`download` 속성 ·
+ * `target="_blank"` 없음 — 있으면 데스크톱 앱의 웹뷰가 셸 훅 전에 스스로 내려받기로 넘겨 아무 일도 일어나지 않았다) ·
+ * 미리보기(썸네일 `<img>`) = `download` 없는 주소. 그래서 항목은 주소를 둘(`href` 원본 · `downloadHref` 받기) 갖는다.
  */
 
 const FILE_TYPE: Record<string, { label: string; mark: string }> = {
@@ -33,17 +38,20 @@ export function FileMark({ type, size = "md" }: { type: string; size?: "md" | "s
   );
 }
 
-/** 받기 — 아이콘 단추 모양의 링크. 주소가 없으면(보낸 답장의 첨부처럼 받을 길이 없는 것) 그리지 않는다. */
+/**
+ * 받기 — 아이콘 단추 모양의 링크. 주소가 없으면(보낸 답장의 첨부처럼 받을 길이 없는 것) 그리지 않는다.
+ * `href` 는 **받기 주소**(`?download=1`)다 — 같은 탭 링크라 웹은 `attachment` 응답을 받아도 화면을 떠나지 않고, 앱은 셸이 가로챈다.
+ */
 function DownloadLink({ href, name }: { href?: string | null; name: string }) {
   if (!href) return null;
   return (
-    <a aria-label={copy.download(name)} className="scax-icon-button" download={name} href={href} rel="noreferrer" target="_blank" title={copy.download(name)}>
+    <a aria-label={copy.download(name)} className="scax-icon-button" href={href} rel="noreferrer" title={copy.download(name)}>
       <Icon name="arrow-down" size={20} />
     </a>
   );
 }
 
-/** 파일 카드 — 유형 색 표식 · 굵은 이름(말줄임) · 아래 유형명·크기 · 받기. */
+/** 파일 카드 — 유형 색 표식 · 굵은 이름(말줄임) · 아래 유형명·크기 · 받기. `href` = 받기 주소(`?download=1`). */
 export function FileCard({ name, mime, size, href }: { name: string; mime?: string | null; size?: number | null; href?: string | null }) {
   const type = fileTypeOf(name, mime);
   const sizeText = fmtSize(size);
@@ -76,13 +84,12 @@ function FoldHead({ label, open, onToggle, end }: { label: string; open: boolean
   );
 }
 
-/** 「모두 다운로드」 — 받기 링크를 차례로 누른다(하나씩 내려받는다). */
-function downloadAll(list: Array<{ name: string; href: string }>) {
+/** 「모두 다운로드」 — 받기 링크(`?download=1` · 같은 탭 · `download` 속성 없음)를 차례로 누른다(하나씩 내려받는다). */
+function downloadAll(list: Array<{ href: string }>) {
   list.forEach((item, index) => {
     window.setTimeout(() => {
       const anchor = document.createElement("a");
       anchor.href = item.href;
-      anchor.download = item.name;
       anchor.rel = "noreferrer";
       document.body.appendChild(anchor);
       anchor.click();
@@ -91,12 +98,18 @@ function downloadAll(list: Array<{ name: string; href: string }>) {
   });
 }
 
-/** `href` = 원본(누르기·받기) · `thumb` = 대화 안에 그리는 주소(썸네일이 있으면 그것, 없으면 원본). */
-type Linked = InboxAttachment & { href: string | null; thumb: string | null };
+/**
+ * `href` = 원본(웹에서 누르기 — 새 탭 · `inline`) · `downloadHref` = 받기(`?download=1` — 받기 단추 · 「모두 다운로드」 ·
+ * 앱에서 누르기) · `thumb` = 대화 안에 그리는 주소(썸네일이 있으면 그것, 없으면 원본). 셋을 한 주소로 쓰지 않는다(SPEC-008 §2.2).
+ */
+type Linked = InboxAttachment & { href: string | null; downloadHref: string | null; thumb: string | null };
 
 function FileGroup({ files }: { files: Linked[] }) {
   const [open, setOpen] = useState(true);
-  const linked = files.filter((file): file is Linked & { href: string } => Boolean(file.href));
+  const linked = files
+    .map((file) => file.downloadHref)
+    .filter((href): href is string => Boolean(href))
+    .map((href) => ({ href }));
   return (
     <div className="scax-attach">
       <FoldHead
@@ -115,7 +128,7 @@ function FileGroup({ files }: { files: Linked[] }) {
       {open ? (
         <div className="scax-fcard-row">
           {files.map((file) => (
-            <FileCard href={file.href} key={file.aid} mime={file.mime} name={file.name} size={file.size} />
+            <FileCard href={file.downloadHref} key={file.aid} mime={file.mime} name={file.name} size={file.size} />
           ))}
         </div>
       ) : null}
@@ -143,7 +156,7 @@ function PdfBlock({ file }: { file: Linked }) {
                 {file.size ? ` · ${fmtSize(file.size)}` : ""}
               </span>
             </span>
-            <DownloadLink href={file.href} name={file.name} />
+            <DownloadLink href={file.downloadHref} name={file.name} />
           </div>
         </div>
       ) : null}
@@ -152,14 +165,37 @@ function PdfBlock({ file }: { file: Linked }) {
 }
 
 /**
- * 그림 — 받은 이미지가 선다(중계·저장본 주소). 누르면 새 탭에서 **원본**을 크게 본다.
+ * 그림 — 받은 이미지가 선다(중계·저장본 주소). 누르면 **원본**을 연다.
  * `src` 는 그리는 주소(방 첨부는 썸네일), `href` 는 누를 때 여는 원본 — 주지 않으면 `src` 와 같다.
+ *
+ * **원본 보기는 앱과 웹이 다르다**(SPEC-008 §2.2 · OQ-812): 웹 = 지금처럼 새 탭에서 원본(`inline`) ·
+ * 앱(셸 전역이 있음 — `hasShell()`) = `download`(받기 주소 `?download=1`)를 **같은 탭 링크**로 — 셸이 받아 다운로드 폴더에 저장하고
+ * 토스트를 띄운다. 앱에서 원본 주소(`inline`)를 열면 셸이 가로챈 뒤 아무 일 없이 끝났다(FE 조사 §1-1).
  */
-export function Thumb({ src, href, alt, size = "lg" }: { src: string | null; href?: string | null; alt: string; size?: "lg" | "md" | "sm" | "cell" }) {
+export function Thumb({
+  src,
+  href,
+  download,
+  alt,
+  size = "lg",
+}: {
+  src: string | null;
+  href?: string | null;
+  /** 받기 주소. 앱에서 누르면 이 주소로 받는다 — 없으면 앱에서도 원본 주소를 새 탭으로 연다(지금 동작). */
+  download?: string | null;
+  alt: string;
+  size?: "lg" | "md" | "sm" | "cell";
+}) {
+  const saveInApp = Boolean(download) && hasShell();
   return (
     <span className={`scax-thumb scax-thumb--${size}`}>
       {src ? (
-        <a className="scax-thumb__link" href={href ?? src} rel="noreferrer" target="_blank">
+        <a
+          className="scax-thumb__link"
+          href={saveInApp ? (download as string) : href ?? src}
+          rel="noreferrer"
+          target={saveInApp ? undefined : "_blank"}
+        >
           <img alt={alt} className="scax-thumb__img" loading="lazy" src={src} />
         </a>
       ) : (
@@ -174,7 +210,7 @@ function ImageBlock({ file }: { file: Linked }) {
   return (
     <div className="scax-attach">
       <FoldHead label={file.name} onToggle={() => setOpen((value) => !value)} open={open} />
-      {open ? <Thumb alt={file.name} href={file.href} src={file.thumb} /> : null}
+      {open ? <Thumb alt={file.name} download={file.downloadHref} href={file.href} src={file.thumb} /> : null}
     </div>
   );
 }
@@ -191,7 +227,7 @@ function AlbumBlock({ files }: { files: Linked[] }) {
         <div className={`scax-album scax-album--${Math.min(files.length, 4)}`}>
           {shown.map((file, index) => (
             <span className="scax-album__cell" key={file.aid}>
-              <Thumb alt={file.name} href={file.href} size="cell" src={file.thumb} />
+              <Thumb alt={file.name} download={file.downloadHref} href={file.href} size="cell" src={file.thumb} />
               {index === shown.length - 1 && rest > 0 ? <span className="scax-album__more">+{rest}</span> : null}
             </span>
           ))}
@@ -238,10 +274,14 @@ function ExpiredCard({ file }: { file: InboxAttachment }) {
 export function AttachmentList({
   attachments,
   hrefOf,
+  downloadOf,
   thumbOf,
 }: {
   attachments: InboxAttachment[];
+  /** 원본 주소(웹의 원본 보기 · `inline`). */
   hrefOf: (aid: string) => string;
+  /** 받기 주소(`?download=1`) — 받기 단추 · 「모두 다운로드」 · 앱의 원본 보기(SPEC-008 §2.2). */
+  downloadOf: (aid: string) => string;
   /** 이미지 미리보기 주소(썸네일). 없으면 원본 주소로 그린다. */
   thumbOf?: (aid: string) => string;
 }) {
@@ -249,7 +289,7 @@ export function AttachmentList({
   const blocked = (item: InboxAttachment) => item.state === "expired" || item.state === "too_large";
   const linked: Linked[] = attachments.map((item) => {
     const href = blocked(item) || item.state === "not_stored" || item.state === "pending" ? null : hrefOf(item.aid);
-    return { ...item, href, thumb: href && thumbOf ? thumbOf(item.aid) : href };
+    return { ...item, href, downloadHref: href ? downloadOf(item.aid) : null, thumb: href && thumbOf ? thumbOf(item.aid) : href };
   });
   const out: ReactNode[] = [];
   const album = linked.filter((item) => item.kind === "album" && !blocked(item));
@@ -262,7 +302,7 @@ export function AttachmentList({
   else if (files.length === 1)
     out.push(
       <div className="scax-attach" key={files[0].aid}>
-        <FileCard href={files[0].href} mime={files[0].mime} name={files[0].name} size={files[0].size} />
+        <FileCard href={files[0].downloadHref} mime={files[0].mime} name={files[0].name} size={files[0].size} />
       </div>,
     );
   else if (files.length > 1) out.push(<FileGroup files={files} key="files" />);

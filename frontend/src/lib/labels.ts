@@ -747,7 +747,7 @@ export const meetingCardBadgeTone: Record<MeetingStatus, "accent" | "neutral" | 
  * (`agenda.track === "ai"`), 그 벌의 안건은 `source` 가 `null` 로 온다. 출처는 사람 벌만 갖는다.
  */
 const agendaSourceLabel: Record<string, string> = {
-  manual: "직접 입력",
+  manual: "새로 추가된 안건",
   set: "세트",
   carried: "지난 회의에서 넘어옴",
   derived: "다른 회의에서 파생",
@@ -773,7 +773,10 @@ export const shellNav = {
 export const meetingScreen = {
   /* 목록 (SCR-105) */
   title: "회의 목록",
+  /** 상세 머리 — 예정 회의를 지금 시작한다(`MeetingDetailPage`). */
   start: "회의 시작",
+  /** 목록 머리의 주 단추 — 값을 묻지 않고 지금 회의를 하나 연다(`quickStartMeeting`). SH-IMP-020: 옛 「회의 시작」 */
+  quickStart: "빠른 회의",
   book: "회의 생성",
   upcoming: "예정",
   past: "지난",

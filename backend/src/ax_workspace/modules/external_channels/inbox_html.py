@@ -5,8 +5,9 @@
 
 1. `<script>`·`on*` 이벤트 속성·`<form>`·`<iframe>`·`<object>`·`<embed>`·`<style>`·`<link>`·`<meta>` 를 지운다 — 허용
    목록(nh3/ammonia)만 남긴다. 링크는 `http(s)`·`mailto`·`tel` 만, `data:` 는 `<img>` 의 이미지 MIME 만.
-2. **원격 이미지는 기본 차단**(추적 픽셀) — `src` 를 걷고 원래 주소를 `data-ax-remote-src` 에 남긴다. 「이미지 보기」를
-   누르면 프론트가 `GET /api/inbox/mail/{id}/remote-image?u=` (서버 프록시, SSRF 규칙) 로 바꿔 단다.
+2. **원격 이미지는 원래 주소로 직접 붙지 않는다**(추적 픽셀이 우리 사용자 IP·시각을 못 본다) — `src` 를 걷고 원래 주소를
+   `data-ax-remote-src` 에 남긴다. 화면이 본문을 그릴 때 **자동으로** `GET /api/inbox/mail/{id}/remote-image?u=`(서버 프록시 ·
+   SSRF 규칙 · 래스터와 SVG)로 바꿔 단다(SPEC-008 §4.4 v0.6.0 — 옛 「기본 차단 · 이미지 보기」 단추는 없다).
 3. 인라인 `cid:` 이미지는 첨부 중계 경로(`/api/inbox/mail/{id}/attachments/{aid}`)로 바꾼다.
 4. **인용은 `<details>` 로 감싼다** — 스크립트 없이 접힌다(N-4). Gmail `div.gmail_quote` · Outlook `#divRplyFwdMsg` 뒤 ·
    맨 바깥 `<blockquote>`.

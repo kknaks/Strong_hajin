@@ -187,7 +187,7 @@ export function MeetingListPage({
           {meetingScreen.book}
         </Button>
         <Button disabled={busy} onClick={() => void quickStart()} size="sm" tone="primary" type="button" variant="solid">
-          <Icon name="play" size={14} /> {meetingScreen.start}
+          <Icon name="play" size={14} /> {meetingScreen.quickStart}
         </Button>
       </>,
     );

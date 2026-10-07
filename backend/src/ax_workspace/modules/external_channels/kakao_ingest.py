@@ -263,7 +263,8 @@ class KakaoIngestApplication:
                     data={"count": accepted},
                 ).to_payload(),
             )
-        if status_changed:
+        # 적재 건수·마지막 수집이 바뀌어도 설정 화면이 다시 읽는다 (SPEC-008 §4.4 v0.6.0 · D-25) — 상태가 그대로여도.
+        if status_changed or accepted:
             self._changed(integration)
         return {"accepted": accepted, "attachment_upload": uploads}
 

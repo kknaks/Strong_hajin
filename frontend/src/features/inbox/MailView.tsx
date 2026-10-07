@@ -5,7 +5,7 @@ import { DropZone } from "../../ds/DropZone";
 import { Empty } from "../../ds/Empty";
 import { FileList } from "../../ds/FileList";
 import { Icon } from "../../ds/icons/Icon";
-import { getInboxMail, inboxMailAttachmentUrl, replyToInboxMail } from "../../lib/api";
+import { getInboxMail, inboxMailAttachmentDownloadUrl, inboxMailAttachmentUrl, replyToInboxMail } from "../../lib/api";
 import { createIdempotencyKey } from "../../lib/idempotency";
 import { inboxScreen as copy } from "../../lib/labels";
 import type { InboxMail, InboxMailCard, InboxSentReply } from "../../lib/viewModels";
@@ -388,17 +388,20 @@ export function MailView({
             {images.length ? (
               <div className="scax-mail__images">
                 {images.map((image) => {
-                  const href = inboxMailAttachmentUrl(mail.message_id, image.aid);
+                  /* 미리보기(`src` · 웹의 원본 보기)와 받기(`?download=1`)는 주소가 다르다(SPEC-008 §2.2) —
+                     받기 주소는 받기 단추와 **앱의 원본 보기**(`Thumb` 의 `download`)가 쓴다 */
+                  const src = inboxMailAttachmentUrl(mail.message_id, image.aid);
+                  const download = inboxMailAttachmentDownloadUrl(mail.message_id, image.aid);
                   return (
                     <figure className="scax-mail__image" key={image.aid}>
-                      <Thumb alt={image.name} size="md" src={href} />
+                      <Thumb alt={image.name} download={download} size="md" src={src} />
                       <figcaption className="scax-fcard">
                         <FileMark size="sm" type={fileTypeOf(image.name, image.mime)} />
                         <span className="scax-fcard__text">
                           <span className="scax-fcard__name">{image.name}</span>
                           <span className="scax-fcard__type">{fmtSize(image.size)}</span>
                         </span>
-                        <a aria-label={copy.download(image.name)} className="scax-icon-button" download={image.name} href={href} rel="noreferrer" target="_blank">
+                        <a aria-label={copy.download(image.name)} className="scax-icon-button" href={download} rel="noreferrer">
                           <Icon name="arrow-down" size={20} />
                         </a>
                       </figcaption>
@@ -410,7 +413,7 @@ export function MailView({
             {files.length ? (
               <div className="scax-fcard-row">
                 {files.map((file) => (
-                  <FileCard href={inboxMailAttachmentUrl(mail.message_id, file.aid)} key={file.aid} mime={file.mime} name={file.name} size={file.size} />
+                  <FileCard href={inboxMailAttachmentDownloadUrl(mail.message_id, file.aid)} key={file.aid} mime={file.mime} name={file.name} size={file.size} />
                 ))}
               </div>
             ) : null}
