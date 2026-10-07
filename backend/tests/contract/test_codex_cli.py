@@ -31,7 +31,7 @@ def test_conversation_returns_elements_without_exposing_unvalidated_json(tmp_pat
         def accept(self, event):
             events.append(event)
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         on_line(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}))
         Path(arguments[arguments.index("--output-last-message") + 1]).write_text(json.dumps(payload))
         return ProcessResult("", "", 0)
@@ -51,7 +51,7 @@ def test_conversation_returns_elements_without_exposing_unvalidated_json(tmp_pat
     {"body": "답변", "elements": [{"type": "execute", "command": "approve"}], "follow_up_candidates": []},
 ])
 def test_invalid_conversation_output_is_a_provider_failure(tmp_path, payload):
-    def runner(command, arguments, cwd, environment, timeout):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         Path(arguments[arguments.index("--output-last-message") + 1]).write_text(json.dumps(payload))
         return ProcessResult("", "", 0)
     auth = tmp_path / "auth.json"
@@ -114,7 +114,7 @@ def test_codex_cli_adapter_uses_an_isolated_ephemeral_structured_turn(tmp_path) 
     auth_file.write_text("{}", encoding="utf-8")
     captured: dict[str, object] = {}
 
-    def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int) -> ProcessResult:
+    def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int, on_line=None, should_cancel=None, stdin_text=None) -> ProcessResult:
         captured.update(
             command=command,
             arguments=arguments,
@@ -355,7 +355,7 @@ def test_a_structured_schema_comes_back_as_its_own_structure_not_a_report_body(t
     auth_file.write_text("{}", encoding="utf-8")
     produced = {"segments": [{"text": "안녕하세요.", "start_ms": 0, "end_ms": 900}]}
 
-    def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int) -> ProcessResult:
+    def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int, on_line=None, should_cancel=None, stdin_text=None) -> ProcessResult:
         schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
         assert schema["required"] == ["segments"]
         Path(arguments[arguments.index("--output-last-message") + 1]).write_text(
@@ -385,7 +385,7 @@ def test_a_structured_schema_comes_back_as_its_own_structure_not_a_report_body(t
 def _schema_runner(payload: dict, expected_required: list[str]):
     """A runner that behaves like Codex CLI under `--output-schema`: it writes exactly what the schema asked for."""
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
         assert schema["required"] == expected_required, "the caller's own schema must be the one enforced"
         if on_line is not None:
@@ -490,7 +490,7 @@ def test_a_schema_bearing_turn_that_returns_broken_json_is_still_an_invalid_resp
 
     다만 사유는 그 회차의 기록에만 남는 말이다: 채팅창에서 사람이 읽는 「다시 요청해 주세요」가 아니다.
     """
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         Path(arguments[arguments.index("--output-last-message") + 1]).write_text("not json", encoding="utf-8")
         return ProcessResult("", "", 0)
 
@@ -510,7 +510,7 @@ def test_a_schema_bearing_turn_that_returns_broken_json_is_still_an_invalid_resp
 
 
 def _failing_resume_runner(stderr: str):
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         assert arguments[:2] == ["exec", "resume"]
         return ProcessResult("", stderr, 1)
 
@@ -626,7 +626,7 @@ def test_a_conversation_timeout_is_classified_and_uses_the_profile_limit(tmp_pat
 
     seen: list[int] = []
 
-    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
         seen.append(timeout)
         raise subprocess.TimeoutExpired(command, timeout)
 

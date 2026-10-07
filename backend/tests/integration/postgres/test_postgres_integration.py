@@ -1670,7 +1670,7 @@ def test_postgres_room_create_fence_spans_two_application_instances() -> None:
         def rooms(self):
             return [MeetingRoom(room_id=3, name="회의실 3", capacity=6)]
 
-        def available(self, date, start, end):
+        def available(self, date, start, end, *, ignoring=None):
             return self.rooms()
 
         def members(self):

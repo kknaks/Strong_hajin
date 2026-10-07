@@ -891,7 +891,8 @@ export type ActionEditField = {
 };
 
 export type ActionEditContract = {
-  editor: "task" | "meeting" | "task_progress_batch" | "command";
+  /** `meeting_update` = AX 회의 수정 카드(SPEC-010 §2.4 · WP3 계약 고정 1 — `meeting.info.update` 에 새로 생긴 편집 계약). */
+  editor: "task" | "meeting" | "meeting_update" | "task_progress_batch" | "command";
   base_submission_version: number;
   values: Record<string, unknown>;
   fields: ActionEditField[];
@@ -1326,7 +1327,19 @@ export type MeetingMaterialFailure = { name: string; reason: "too_large" | "unsu
 export type MeetingMaterialUpload = { attached: MeetingMaterial[]; failed: MeetingMaterialFailure[] };
 
 /** 고를 수 있는 사옥 회의실 (SCAX-WP-007). 예약 시스템이 없거나 닿지 않으면 목록이 **빈다**. */
-export type MeetingRoom = { room_id: number; name: string; capacity: number };
+/**
+ * 회의실 목록 한 줄(SPEC-010 §4.1 · WP3 계약 고정 4). `available` = 그 시간·인원에 쓸 수 있음 ·
+ * `current` = 수정 중인 회의의 지금 방(쓸 수 없어도 목록에 온다 — 맨 위 「기존」 줄) · `unavailable_reason` ∈ `time_conflict`·`capacity`·`null`.
+ * 옛 응답·거절 응답(`available_rooms`)은 뒤 셋이 없을 수 있다 — 없으면 쓸 수 있는 방으로 본다.
+ */
+export type MeetingRoom = {
+  room_id: number;
+  name: string;
+  capacity: number | null;
+  available?: boolean;
+  current?: boolean;
+  unavailable_reason?: "time_conflict" | "capacity" | string | null;
+};
 
 /**
  * 회의실 예약이 어떻게 됐나. `booked` 면 회의의 `location` 이 그 방 이름으로 차 있다.

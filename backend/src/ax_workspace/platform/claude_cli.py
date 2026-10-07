@@ -324,6 +324,9 @@ class ClaudeCliProviderAdapter:
             cls.ANSWER_PRESENTATION_POLICY,
             cls.FOLLOW_UP_POLICY,
         ]
+        if request.context_catalog:
+            # AI 맥락 목록 — 새 세션을 여는 턴에만, Codex 와 같은 자리 (SPEC-010 §4.5 · 검수 W-3).
+            sections.append(request.context_catalog)
         if request.asked_at is not None:
             local = request.asked_at.astimezone(ZoneInfo(request.timezone_name))
             sections.append(

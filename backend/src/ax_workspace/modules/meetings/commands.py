@@ -172,6 +172,23 @@ class MeetingReservationInput(BaseModel):
         return values
 
 
+class MeetingRoomChoice(BaseModel):
+    """회의 수정의 회의실 고르기 (SPEC-010 §4.3) — `room_id: null` = 「회의실 예약 없음」 · `room_id: n` = 그 방으로 ·
+    `keep: true` = **기존 — 변경 안 함**(WP3 계약 고정 5 — AX 가 다른 방을 제안했어도 사람이 기존 방을 고른 것)."""
+
+    model_config = ConfigDict(extra="forbid")
+    room_id: int | None = Field(default=None, title="회의실 번호")
+    keep: bool = Field(default=False, title="기존 회의실 유지")
+
+    @model_validator(mode="after")
+    def validate_choice(self) -> Self:
+        if self.keep and self.room_id is not None:
+            raise ValueError("room.keep 과 room.room_id 를 함께 줄 수 없습니다")
+        if not self.keep and "room_id" not in self.model_fields_set:
+            raise ValueError("room 에는 room_id(없음은 null) 또는 keep: true 가 필요합니다")
+        return self
+
+
 class MeetingInfoPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     title: str | None = Field(default=None, max_length=300)
@@ -181,6 +198,8 @@ class MeetingInfoPatch(BaseModel):
     location: str | None = Field(default=None, max_length=300)
     attendee_ids: list[str] | None = None
     external_attendees: list[str] | None = None
+    #: 회의실(SPEC-010 §4.3) — **안 보내면 방은 그대로**(시각·인원이 바뀌면 같은 방을 다시 확인한다).
+    room: MeetingRoomChoice | None = None
 
     @model_validator(mode="after")
     def validate_times(self) -> Self:
@@ -211,7 +230,14 @@ class MeetingInfoPatch(BaseModel):
         return self
 
     def changes(self) -> dict:
-        return self.model_dump(exclude_unset=True)
+        """회의 정보의 바뀐 칸 — 회의실 고르기(`room`)는 빼고 `room_choice()` 가 따로 낸다."""
+        return self.model_dump(exclude_unset=True, exclude={"room"})
+
+    def room_choice(self) -> dict | None:
+        """`None` = 방 유지(`room` 없음 · `keep: true`) · `{"room_id": None}` = 예약 없음 · `{"room_id": n}` = 그 방."""
+        if self.room is None or self.room.keep:
+            return None
+        return {"room_id": self.room.room_id}
 
 
 class MeetingNoteLineInput(BaseModel):

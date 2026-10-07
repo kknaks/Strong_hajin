@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import inspect
 import os
 import re
 import signal
@@ -103,41 +104,49 @@ def summarize_stderr(stderr: str, *, limit: int = STDERR_SUMMARY_LIMIT) -> str:
     return text
 
 
+def _accepts(runner: Callable[..., Any], name: str) -> bool:
+    """러너가 그 키워드를 **시그니처로** 받는가 — `**kwargs` 도 받는 것으로 본다.
+
+    호출해 보고 `TypeError` 글자를 맞춰 다른 모양으로 다시 부르지 않는다(WORK-012 WP2 재검수 W-r2-3): 러너 안에서 다른
+    이유로 난 `TypeError` 가 같은 낱말을 품으면 **CLI 프로세스를 두 번 띄우고**, stdin 없는 되돌이는 Codex 를 빈 프롬프트로
+    돌린다. 부르기 **전에** 모양을 한 번 정한다.
+    """
+    try:
+        parameters = inspect.signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
+
+
 def invoke_runner(
     runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel, stdin_text: str | None = None
 ) -> ProcessResult:
-    """Call a streaming runner; fall back to the legacy 5-argument runner used by older tests.
+    """스트리밍 러너를 부른다 — 모양은 **러너 시그니처로 한 번 정하고** 한 번만 부른다.
 
-    `stdin_text` — **프롬프트는 argv 가 아니라 stdin 으로 넘긴다** (WORK-012 WP2 수정 1 W-1). 리눅스는 인자 하나에 128KiB
-    (`MAX_ARG_STRLEN`) 상한이 있고, 최종 합성 프롬프트(재전사 전량 + 맥락 목록)는 그보다 크다. 그 키워드를 모르는 옛 시험 러너는
-    stdin 없이 부른다(프롬프트를 보지 않는 시험들이다).
+    `stdin_text` — **프롬프트는 argv 가 아니라 stdin 으로 넘긴다** (WORK-012 WP2 수정 1 W-1 · 리눅스 한 인자 128KiB 상한).
+    제품 러너(`subprocess_runner`)는 셋 다 받는다. 프롬프트를 넘겨야 하는데 `stdin_text` 를 못 받는 러너면 **조용히 빼고 돌리지
+    않고** 오류로 끝낸다 — Codex 는 argv 의 `-` 를 보고 빈 stdin 을 프롬프트로 읽게 된다. `on_line` 을 모르는 옛 시험 러너는
+    5인자로 부른다(프롬프트가 없는 호출에만 해당).
     """
     if stdin_text is not None:
-        try:
-            return runner(
-                command, arguments, cwd, environment, timeout_seconds,
-                on_line=on_line, should_cancel=should_cancel, stdin_text=stdin_text,
-            )
-        except TypeError as error:
-            # 그 키워드를 모르는 러너다(옛 시험 러너는 `on_line` 부터 모른다) — 아래 옛 길로 다시 부른다.
-            if not any(name in str(error) for name in ("stdin_text", "on_line", "should_cancel", "positional")):
-                raise
-    try:
+        if not _accepts(runner, "stdin_text"):
+            raise TypeError("this runner cannot take the prompt on stdin (stdin_text)")
+        return runner(
+            command, arguments, cwd, environment, timeout_seconds,
+            on_line=on_line, should_cancel=should_cancel, stdin_text=stdin_text,
+        )
+    if _accepts(runner, "on_line"):
         return runner(command, arguments, cwd, environment, timeout_seconds, on_line=on_line, should_cancel=should_cancel)
-    except TypeError as error:
-        if "on_line" not in str(error) and "positional" not in str(error):
-            raise
-        return runner(command, arguments, cwd, environment, timeout_seconds)
+    return runner(command, arguments, cwd, environment, timeout_seconds)
 
 
 def invoke_plain_runner(runner, command, arguments, cwd, environment, timeout_seconds, stdin_text: str) -> ProcessResult:
-    """단발 생성(`generate`)용 — stdin 으로 프롬프트를 넘긴다. 키워드를 모르는 옛 시험 러너는 5인자로 부른다."""
-    try:
-        return runner(command, arguments, cwd, environment, timeout_seconds, stdin_text=stdin_text)
-    except TypeError as error:
-        if "stdin_text" not in str(error):
-            raise
-        return runner(command, arguments, cwd, environment, timeout_seconds)
+    """단발 생성(`generate`)용 — 프롬프트를 stdin 으로 넘긴다. 못 받는 러너면 오류다(조용히 빼고 돌리지 않는다 · W-r2-3)."""
+    if not _accepts(runner, "stdin_text"):
+        raise TypeError("this runner cannot take the prompt on stdin (stdin_text)")
+    return runner(command, arguments, cwd, environment, timeout_seconds, stdin_text=stdin_text)
 
 
 def subprocess_runner(
@@ -164,6 +173,9 @@ def subprocess_runner(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # 로케일과 무관하게 UTF-8 — 한국어 프롬프트를 stdin 에 쓰고 JSONL 을 읽는다(WP2 재검수 W-r2-4). 깨진 바이트는 대체한다.
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         start_new_session=True,
     )

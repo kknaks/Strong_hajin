@@ -94,7 +94,14 @@ class MeetingFinalizeWorker:
             if done:
                 work.result()
                 return
-            if not await asyncio.to_thread(self._heartbeat, job):
+            try:
+                extended = await asyncio.to_thread(self._heartbeat, job)
+            except Exception:  # noqa: BLE001 — 연장이 깨져도(DB 끊김) 루프는 이어 간다 (WP2 재검수 W-r2-2)
+                # 여기서 빠져나가면 도는 합성 스레드는 고아가 되고 워커는 다음 잡을 집어 한 워커에서 합성이 둘 겹친다.
+                # 끝까지 합성을 기다리며 다음 간격에 다시 연장을 시도한다.
+                logger.exception("회의 합성 잡 %s 의 lease 연장이 예외로 끝났습니다 — 다음 간격에 다시 시도합니다", job.job_id)
+                continue
+            if not extended:
                 logger.warning("회의 합성 잡 %s 의 lease 를 연장하지 못했습니다 — 이미 잃었을 수 있습니다", job.job_id)
 
     def _heartbeat(self, job: ClaimedJob) -> bool:

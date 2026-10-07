@@ -28,6 +28,7 @@ from ax_workspace.modules.meetings.rooms import (
     RoomAuthFailed,
     RoomGatewayUnavailable,
     RoomOutcomeUnknown,
+    RoomReservationGone,
     RoomUnavailable,
 )
 
@@ -94,12 +95,16 @@ class TheConnectGateway:
             self._rooms_read_at = now
             return list(self._rooms)
 
-    def available(self, date: str, start: str, end: str) -> list[MeetingRoom]:
-        """그 시간에 비어 있는 공용 회의실. **한 번의 예약 조회로 전부 가른다** — 방마다 묻지 않는다."""
+    def available(self, date: str, start: str, end: str, *, ignoring: str | None = None) -> list[MeetingRoom]:
+        """그 시간에 비어 있는 공용 회의실. **한 번의 예약 조회로 전부 가른다** — 방마다 묻지 않는다.
+
+        `ignoring` 예약(수정 중인 회의 자신의 예약 · 외부 번호)은 점유로 세지 않는다 (SPEC-010 §4.1 `meeting_id`).
+        """
         busy = {
             int(row.get("room_id") or 0)
             for row in self._json("GET", f"/api/reservations?date={date}")
             if _overlaps(start, end, str(row["start_time"]), str(row["end_time"]))
+            and not (ignoring and str(row.get("id") or "") == str(ignoring))
         }
         return [room for room in self.rooms() if room.room_id not in busy]
 
@@ -130,14 +135,23 @@ class TheConnectGateway:
 
         참고 구현의 실측(2026-08-07): PUT 에 `participants` 를 어떤 모양으로 실어도 200 을 주면서
         참석자를 지우거나 이메일을 비워 버린다. 실패 신호가 없어 더 위험하다 — 그래서 막는다.
+
+        생성처럼 **PUT 직전에 그 방이 그 시간에 비어 있는지 한 번 더 본다**(자기 예약은 점유로 세지 않는다 — 검수 W-5).
+        재확인과 PUT 사이에 남이 잡았으면 겹쳐 옮기지 않고 가능한 방을 실어 거절한다. `room_id` 가 없으면(시간만)
+        지금 방을 모르므로 이 확인을 건너뛴다 — 부르는 쪽은 언제나 방을 함께 준다.
         """
+        if room_id is not None:
+            free = self.available(date, start, end, ignoring=external_id)
+            if all(one.room_id != room_id for one in free):
+                raise RoomUnavailable("그 시간에 그 회의실은 이미 예약돼 있습니다", available=tuple(free))
         body: dict[str, Any] = {"date": date, "start_time": start, "end_time": end}
         if room_id is not None:
             body["room_id"] = room_id
-        self._json("PUT", f"/api/reservations/{external_id}", body)
+        self._json("PUT", f"/api/reservations/{external_id}", body, missing_is_gone=True)
 
     def cancel(self, external_id: str) -> None:
-        self._json("DELETE", f"/api/reservations/{external_id}")
+        """그 예약을 지운다. 이미 없으면(404) `RoomReservationGone` — 부르는 쪽은 「거둔 것」 으로 확정한다 (W-r2-2)."""
+        self._json("DELETE", f"/api/reservations/{external_id}", missing_is_gone=True)
 
     # ---- 내부 ----
 
@@ -169,7 +183,15 @@ class TheConnectGateway:
                 return room
         raise RoomUnavailable("고른 회의실이 예약 목록에 없습니다")
 
-    def _json(self, method: str, path: str, body: dict[str, Any] | None = None, *, expect: tuple[int, ...] = (200,)) -> Any:
+    def _json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        expect: tuple[int, ...] = (200,),
+        missing_is_gone: bool = False,
+    ) -> Any:
         self._authenticate()
         status, payload = self._call(method, path, body)
         if status == 401 or status == 403:
@@ -177,6 +199,8 @@ class TheConnectGateway:
             self._authenticated = False
             self._authenticate()
             status, payload = self._call(method, path, body)
+        if missing_is_gone and status == 404:
+            raise RoomReservationGone("예약 시스템에 그 예약이 없습니다")
         if status not in expect:
             # **응답 본문을 싣지 않는다** — 그쪽이 무엇을 돌려주든 계정·참석자가 섞여 있을 수 있다.
             raise RoomGatewayUnavailable(f"예약 시스템이 요청을 받지 않았습니다 (HTTP {status})")

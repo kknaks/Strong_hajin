@@ -22,6 +22,8 @@ CONFIRM_LABELS = {
     "task.assign": "이 내용으로 업무 요청",
     "work_request.create": "이 내용으로 업무 요청",
     "meeting.reservation.create": "이 내용으로 회의 생성",
+    # AX 회의 수정 카드 (SPEC-010 §2.4) — 고친 그 자리에서 [등록].
+    "meeting.info.update": "이 내용으로 회의 수정",
     "task.progress.batch": "이 내용으로 반영",
 }
 
@@ -32,7 +34,8 @@ CONFIRM_LABELS = {
 SAVE_DRAFT_COMMAND = "save_draft"
 SAVE_DRAFT_LABEL = "저장"
 #: 저장이 열리는 AX 초안 — 「새 업무 추가」를 AI 가 채운 두 kind 만이다 (SPEC-002 §4 · P-1).
-DRAFT_SAVE_ACTION_TYPES = frozenset({"task.create_self", "work_request.create"})
+#: 초안 저장(`save_draft` — 회차+1)을 갖는 종류. AX 회의 생성도 업무 생성과 같은 흐름이다(SPEC-010 §4.4 · OQ-1001).
+DRAFT_SAVE_ACTION_TYPES = frozenset({"task.create_self", "work_request.create", "meeting.reservation.create"})
 
 #: Action types whose execution path was withdrawn, and the reason a person sees instead.
 #: Rows left behind stay readable in history; nothing proposes them and nothing runs them again.
@@ -118,6 +121,8 @@ class AxProposalActionContext:
     assignment_status: str | None
     assigned_by: str | None
     allow_reject: bool = True
+    #: 초안 저장을 열지 — 회의실 예약 결과를 확인해야 하는 복구 중(이중 예약 울타리가 그 초안에 묶였다)에는 닫는다.
+    allow_save: bool = True
 
 
 def available_ax_proposal_commands(
@@ -132,7 +137,7 @@ def available_ax_proposal_commands(
                 if context.has_submission and context.action_type in CONFIRM_LABELS
                 else ActionCommand("approve", "승인", "primary")
             )
-            if context.has_submission and context.action_type in DRAFT_SAVE_ACTION_TYPES:
+            if context.has_submission and context.action_type in DRAFT_SAVE_ACTION_TYPES and context.allow_save:
                 # 확정하지 않는 저장 — 봉투가 내려 준 사람만 부른다(§5 「명령의 권한은 봉투 자체다」).
                 commands.append(ActionCommand(SAVE_DRAFT_COMMAND, SAVE_DRAFT_LABEL, "neutral"))
         if context.allow_reject:

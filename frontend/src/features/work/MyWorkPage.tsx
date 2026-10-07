@@ -4,7 +4,7 @@ import { useRemembered } from "../../lib/screenCache";
 import { CalendarRail } from "../../shell/CalendarRail";
 import { Chip } from "../../ds/Chip";
 import { ActionItemDrawer } from "../action/ActionCenter";
-import { AxDraftModal, axDraftAgeDays, axDraftFromEnvelope, isAxDraftKind } from "../action/AxDraftCard";
+import { AxDraftModal, axDraftAgeDays, axDraftFromEnvelope, isAxTaskDraftKind } from "../action/AxDraftCard";
 import { InboxRail } from "../../shell/InboxRail";
 import { Tabs } from "../../ds/SegmentedControl";
 
@@ -339,7 +339,8 @@ export function MyWorkPage({
             .catch(() => [] as ActionItemEnvelope[])
         : Promise.resolve([] as ActionItemEnvelope[]),
     ]);
-    setAxDrafts((judgements ?? []).filter((item) => isAxDraftKind(item.kind) && item.status !== "resolved"));
+    /* 내 업무의 「AX 제안」 은 업무 초안 둘뿐 — AX 회의 생성 초안(SPEC-010 §2.4)은 이 자리에 서지 않는다 */
+    setAxDrafts((judgements ?? []).filter((item) => isAxTaskDraftKind(item.kind) && item.status !== "resolved"));
     // 할일 is what this person holds. Someone who may read the organization's work sees the rest in its own section,
     // never mixed into their own list.
     const held = new Set(work.map((task) => task.task_id));

@@ -1831,20 +1831,53 @@ def test_confirming_a_saved_draft_without_a_draft_creates_the_saved_values_in_th
     assert after.status_code == 422
 
 
-def test_save_is_offered_only_on_the_two_task_draft_kinds(tmp_path) -> None:
+def test_a_meeting_draft_can_be_saved_as_a_new_round_like_the_task_drafts(tmp_path) -> None:
+    """AX 회의 생성도 「수정 → 저장」 이 초안 저장이다 — 회차가 오르고 카드가 새 회차로 선다 (SPEC-010 §4.4 · OQ-1001)."""
     client, application = _stack(tmp_path)
     meeting = _ax_proposal(
         client, application, JIHO, "jiho", "meeting.reservation.create", "회의 생성 확인",
         {"title": "주간 회의", "starts_at": "2026-10-05T10:00:00+09:00", "ends_at": "2026-10-05T11:00:00+09:00"},
     )
     [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == meeting["action_id"]]
-    assert "save_draft" not in [command["id"] for command in item["allowed_commands"]]
-    assert "save_command" not in (item.get("edit_contract") or {})
-    refused = _command(
+    assert [command["id"] for command in item["allowed_commands"]] == ["confirm", "save_draft", "reject"]
+    contract = item["edit_contract"]
+    assert contract["editor"] == "meeting" and contract["save_command"] == "save_draft"
+    assert "location" not in contract["values"] and "location" not in {field["id"] for field in contract["fields"]}
+    draft = {**contract["values"], "title": "고친 주간 회의", "agendas": [{"title": "새 안건", "source": "manual"}]}
+    saved = _command(
         client, JIHO, item["action_item_id"], "save_draft",
-        expected_version=item["expected_version"], base_submission_version=1, draft={"title": "x"},
+        expected_version=item["expected_version"], base_submission_version=1, draft=draft,
     )
-    assert refused.status_code == 422
+    assert saved.status_code == 200, saved.text
+    [after] = [row for row in _pending(client, JIHO) if row["action_item_id"] == meeting["action_id"]]
+    assert after["submission_version"] == 2
+    assert after["edit_contract"]["values"]["title"] == "고친 주간 회의"
+
+
+def test_a_meeting_draft_can_be_rejected(tmp_path) -> None:
+    client, application = _stack(tmp_path)
+    meeting = _ax_proposal(
+        client, application, JIHO, "jiho", "meeting.reservation.create", "회의 생성 확인",
+        {"title": "주간 회의", "starts_at": "2026-10-05T10:00:00+09:00", "ends_at": "2026-10-05T11:00:00+09:00"},
+    )
+    [item] = [row for row in _pending(client, JIHO) if row["action_item_id"] == meeting["action_id"]]
+    rejected = _command(client, JIHO, item["action_item_id"], "reject", expected_version=item["expected_version"])
+    assert rejected.status_code == 200, rejected.text
+
+
+def test_save_is_not_offered_on_other_editable_kinds(tmp_path) -> None:
+    """회의 수정 카드는 그 자리에서 고치고 [등록]한다 — 초안 저장·회차가 없다 (SPEC-010 §2.4)."""
+    from test_meeting_rooms import _book, _stack as rooms_stack
+
+    rooms_client, rooms_application, _ = rooms_stack(tmp_path)
+    meeting_id = _book(rooms_client, room_id=None).json()["meeting"]["meeting_id"]
+    proposal = _ax_proposal(
+        rooms_client, rooms_application, {"X-Demo-Persona": "mina"}, "mina", "meeting.info.update", "회의 수정 확인",
+        {"meeting_id": meeting_id, "changes": {"title": "바뀐 제목"}},
+    )
+    item = rooms_client.get(f"/api/action-items/{proposal['action_id']}", headers={"X-Demo-Persona": "mina"}).json()
+    assert "save_draft" not in [command["id"] for command in item["allowed_commands"]]
+    assert "save_command" not in item["edit_contract"]
 
 
 def test_a_saved_draft_keeps_its_staged_materials_so_confirming_opens_no_third_round(tmp_path) -> None:

@@ -101,6 +101,50 @@ class RoomOutcomeUnknown(RoomReservationError):
         self.requested_room_name = requested_room_name
 
 
+class RoomChangeRefused(RoomReservationError):
+    """**수정**에서 고른 방(또는 유지하는 기존 방)을 새 시간·새 인원에 쓸 수 없다 (SPEC-010 §4.3 · 계약 고정 2).
+
+    생성과 달리 **자동 대체하지 않는다**(OQ-1004) — 회의를 바꾸지 않고 `409 ROOM_BOOKING_REFUSED` + 그 시간에 가능한 방 목록.
+    """
+
+    reason = "ROOM_BOOKING_REFUSED"
+
+
+class RoomNotFound(RoomReservationError):
+    """고른 `room_id` 가 회의실 목록(§4.1)에 없다 — `422 ROOM_NOT_FOUND`."""
+
+    reason = "ROOM_NOT_FOUND"
+
+
+class RoomReservationGone(RoomReservationError):
+    """예약 시스템이 그 예약이 **없다**(404)고 답했다 — 이미 지워진 예약이다 (검수 W-r2-2).
+
+    결과를 모르던 취소가 실제로 반영됐던 경우다. 취소라면 끝난 것이고, 이동이라면 자리를 비운 것으로 확정한다 —
+    없는 예약에 PUT 을 되풀이하지 않는다.
+    """
+
+    reason = "reservation_gone"
+
+
+class RoomReservationUnconfirmed(RoomReservationError):
+    """앞 예약의 결과를 **아직 모른다**(`needs_verification` · 외부 번호 없음) — 회의실에 닿는 수정을 막는다 (검수 W-1).
+
+    그 예약이 실제로 잡혔을 수 있으므로 새 예약을 또 잡으면 이중 예약이고, 시각만 옮기면 Connect 쪽 예약이 옛 시각에 남는다.
+    확인(복구)이 끝난 뒤 다시 바꾼다 — `409 ROOM_RESERVATION_UNCONFIRMED`.
+    """
+
+    reason = "ROOM_RESERVATION_UNCONFIRMED"
+
+
+class RoomServiceUnavailable(RoomReservationError):
+    """회의실 **목록 조회**가 예약 시스템에 닿지 않았다 — `503 ROOM_SERVICE_UNAVAILABLE` (SPEC-010 §4.1 · 계약 고정 4).
+
+    「가용 없음」(`200 []` 이나 빈 가용)과 화면이 가를 수 있게 빈 목록으로 삼키지 않는다. 계정 미설정은 이것이 아니다(`200 []`).
+    """
+
+    reason = "ROOM_SERVICE_UNAVAILABLE"
+
+
 class RoomCreationIdempotencyRequired(RoomReservationError):
     """A room-create mutation needs a stable caller key before it can leave the service."""
 
@@ -212,8 +256,11 @@ class MeetingRoomGateway(Protocol):
     def rooms(self) -> list[MeetingRoom]:
         """고를 수 있는 회의실 목록."""
 
-    def available(self, date: str, start: str, end: str) -> list[MeetingRoom]:
-        """그 시간에 **비어 있는** 공용 회의실만. 정원 판정은 하지 않는다 — 그것은 도메인의 몫이다."""
+    def available(self, date: str, start: str, end: str, *, ignoring: str | None = None) -> list[MeetingRoom]:
+        """그 시간에 **비어 있는** 공용 회의실만. 정원 판정은 하지 않는다 — 그것은 도메인의 몫이다.
+
+        `ignoring` = 점유에서 뺄 예약 하나의 외부 번호 — 수정 중인 회의 **자신의** 예약이다(빼지 않으면 기존 방이 늘 「겹침」).
+        """
 
     def members(self) -> list[dict[str, str]]:
         """예약 시스템이 아는 사람들 — `{"name", "email"}`. 사내 참석자를 계정에 잇는 근거다."""
@@ -222,10 +269,11 @@ class MeetingRoomGateway(Protocol):
         """자리를 잡는다. 잡히지 않으면 `RoomReservationError`."""
 
     def update(self, external_id: str, *, date: str, start: str, end: str, room_id: int | None = None) -> None:
-        """시간·회의실을 옮긴다. **참석자는 싣지 않는다** — 참고 구현의 실측(PUT 이 참석자를 망가뜨림)이다."""
+        """시간·회의실을 옮긴다. **참석자는 싣지 않는다** — 참고 구현의 실측(PUT 이 참석자를 망가뜨림)이다.
+        그 예약이 없으면 `RoomReservationGone`."""
 
     def cancel(self, external_id: str) -> None:
-        """자리를 거둔다."""
+        """자리를 거둔다. 이미 없으면 `RoomReservationGone`(거둔 것으로 본다)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +361,40 @@ def headcount(*, inside: int, outside: int) -> int:
     더하면 방이 한 자리씩 커진다.
     """
     return max(1, inside + outside)
+
+
+#: 쓸 수 없는 이유 (SPEC-010 §4.1 `unavailable_reason`).
+UNAVAILABLE_TIME = "time_conflict"
+UNAVAILABLE_CAPACITY = "capacity"
+
+
+def room_options(
+    rooms: list[MeetingRoom],
+    *,
+    free_room_ids: set[int] | None,
+    people: int | None,
+    current_room_id: int | None = None,
+) -> list[dict[str, object]]:
+    """회의실 셀렉트의 선택지 (SPEC-010 §4.1 · §2.2) — `{room_id, name, capacity, available, current, unavailable_reason}`.
+
+    - `free_room_ids` = 그 시간에 비어 있는 방(시간을 모르면 `None` — 시간 조건을 걸지 않는다)
+    - 정원 조건 = `capacity ≥ people` · 정원을 모르는 방(0)은 정원으로 빼지 않는다(OQ-1011)
+    - **쓸 수 있는 방만** 내고, `current`(수정 중인 회의의 지금 방)는 쓸 수 없어도 낸다(비활성 줄 · 이유와 함께)
+    - 이유는 시간이 먼저다 — 시간도 정원도 안 맞으면 `time_conflict`
+    """
+    options: list[dict[str, object]] = []
+    for room in rooms:
+        reason: str | None = None
+        if free_room_ids is not None and room.room_id not in free_room_ids:
+            reason = UNAVAILABLE_TIME
+        elif people is not None and room.capacity and room.capacity < people:
+            reason = UNAVAILABLE_CAPACITY
+        current = current_room_id is not None and room.room_id == current_room_id
+        if reason is None or current:
+            options.append(
+                {**room.view(), "available": reason is None, "current": current, "unavailable_reason": reason}
+            )
+    return options
 
 
 def choose_replacement(available: list[MeetingRoom], *, people: int, exclude_room_id: int | None = None) -> MeetingRoom | None:

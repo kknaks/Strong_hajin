@@ -1938,6 +1938,81 @@ class MeetingApplication:
             "reservation": RoomReservation.restored(meeting.room_reservation),
         }
 
+    def _editable_for_room(self, principal: Principal, meeting_id: UUID, *, lock: bool = False) -> Any:
+        """회의실을 고르거나 바꿀 수 있는 회의 — `update_info` 와 같은 판정이다(읽기 · 참석자 · 「예정」·「완료」).
+
+        읽을 수 없거나 참석자가 아니면 **없는 것처럼 404**(SPEC-010 Validation 「`meeting_id` 는 수정할 수 있는 회의여야 —
+        아니면 그 인자를 무시하지 않고 404」), 상태가 맞지 않으면 409.
+        """
+        self._require(principal, MEETING_MANAGE)
+        meeting = self._readable(principal, meeting_id, lock=lock)
+        view = self._view_plan(principal, meeting)
+        if not view.is_attendee:
+            raise MeetingNotFound("meeting was not found")
+        if not view.can_edit_info:
+            raise MeetingStateConflict("meeting information may be edited only while scheduled or done")
+        return meeting
+
+    def room_context(self, principal: Principal, meeting_id: UUID) -> RoomReservation | None:
+        """회의실 목록의 `meeting_id` — 그 회의의 **지금 예약**(점유에서 뺄 자기 예약 · `current` 줄). 수정할 수 있어야 한다."""
+        meeting = self._editable_for_room(principal, meeting_id)
+        return RoomReservation.restored(meeting.room_reservation)
+
+    def room_change_input(self, principal: Principal, meeting_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+        """회의 수정이 회의실을 다시 확인하는 데 필요한 것 — **바뀐 뒤의** 시각·참석자·인원과 지금 예약 (SPEC-010 §4.3).
+
+        읽기만 한다(트랜잭션 밖에서 예약 시스템을 부른다). 권한은 `update_info` 와 같다 — 계획이 그보다 먼저 돌아도 남의 회의를
+        엿보지 못한다. 참석자는 생성과 같은 규칙으로 풀고(합치기 · 만든 사람 포함), 인원 = 사내 + 사외.
+        """
+        meeting = self._editable_for_room(principal, meeting_id)
+        starts_at = _aware(changes.get("starts_at") or meeting.starts_at)
+        ends_at = _aware(changes.get("ends_at") or meeting.ends_at)
+        validate_meeting_schedule(starts_at, ends_at)
+        attendee_ids = (
+            set(self._resolved_attendees(principal, list(changes["attendee_ids"] or []), owner_id=meeting.owner_id))
+            if "attendee_ids" in changes
+            else set(self._repository.attendee_ids(meeting))
+        ) | {meeting.owner_id}
+        outside = (
+            list(normalize_external_attendees(list(changes["external_attendees"] or [])))
+            if "external_attendees" in changes
+            else [str(name) for name in (meeting.external_attendees or [])]
+        )
+        before_people = headcount(
+            inside=len(set(self._repository.attendee_ids(meeting)) | {meeting.owner_id}),
+            outside=len(meeting.external_attendees or []),
+        )
+        people = headcount(inside=len(attendee_ids), outside=len(outside))
+        return {
+            "meeting_id": meeting.id,
+            "title": changes["title"] if "title" in changes else meeting.title,
+            "starts_at": starts_at,
+            "ends_at": ends_at,
+            "owner_name": self._repository.member_display_name(meeting.owner_id) or meeting.owner_id,
+            "inside": [
+                Attendee(
+                    name=self._repository.member_display_name(member_id) or member_id,
+                    email=self._repository.member_email(member_id),
+                )
+                for member_id in sorted(attendee_ids)
+            ],
+            "outside": outside,
+            "people": people,
+            "attendee_ids": sorted(attendee_ids),
+            "times_changed": (starts_at, ends_at) != (_aware(meeting.starts_at), _aware(meeting.ends_at)),
+            "people_changed": people != before_people,
+            "reservation": RoomReservation.restored(meeting.room_reservation),
+        }
+
+    def clear_reservation(self, meeting_id: UUID) -> None:
+        """「회의실 예약 없음」 — 쥔 자리가 없던 회의의 예약 표지와 장소 글자를 걷는다 (SPEC-010 §2.2 마지막 줄)."""
+        meeting = self._repository.meeting(meeting_id, lock=True)
+        if meeting is None:
+            raise MeetingNotFound("meeting was not found")
+        meeting.room_reservation = None
+        meeting.location = None
+        self._repository.touch(meeting)
+
     def attach_reservation(self, meeting_id: UUID, reservation: RoomReservation, *, location: str | None) -> None:
         """예약을 부른 **뒤** 그 결과를 회의에 붙인다. 실패도 붙인다 — 화면이 사유를 읽어야 한다."""
         meeting = self._repository.meeting(meeting_id, lock=True)

@@ -838,13 +838,23 @@ class McpReportsFacade:
         return action if action is not None else self._application.quick_start_meeting(self.principal)
 
     def update_current_meeting(
-        self, meeting_id: str, request: MeetingInfoPatch
+        self, meeting_id: str, request: MeetingInfoPatch, idempotency_key: str | None = None
     ) -> dict[str, Any] | ActionProposalResult:
-        payload = {"meeting_id": meeting_id, "changes": request.changes()}
+        # 회의실 고르기(`room`)도 제안에 싣는다 — 확정 실행이 PATCH 와 같은 수정 규칙을 탄다 (SPEC-010 §4.3 · §2.4).
+        changes = request.changes()
+        if request.room is not None:
+            changes["room"] = request.room_choice()
+        payload = {"meeting_id": meeting_id, "changes": changes}
         action = self._propose_chat_action("meeting.info.update", "회의 수정 확인", payload)
         if action is not None:
             return action
-        return self._application.update_meeting(self.principal, UUID(meeting_id), request.changes())
+        return self._application.update_meeting(
+            self.principal,
+            UUID(meeting_id),
+            request.changes(),
+            room=request.room_choice(),
+            idempotency_key=idempotency_key,
+        )
 
     def cancel_current_meeting(self, meeting_id: str) -> dict[str, Any] | ActionProposalResult:
         payload = {"meeting_id": meeting_id}
@@ -966,10 +976,19 @@ class McpReportsFacade:
             )
         }
 
-    def meeting_rooms(self, starts_at: str | None = None, ends_at: str | None = None) -> list[dict[str, Any]]:
+    def meeting_rooms(
+        self,
+        starts_at: str | None = None,
+        ends_at: str | None = None,
+        people: int | None = None,
+        meeting_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         return self._application.meeting_rooms(
+            self.principal,
             starts_at=_parse_iso_datetime(starts_at) if starts_at else None,
             ends_at=_parse_iso_datetime(ends_at) if ends_at else None,
+            people=people,
+            meeting_id=UUID(meeting_id) if meeting_id else None,
         )
 
     def meeting_transcript(self, meeting_id: str) -> list[dict[str, Any]]:
@@ -1703,8 +1722,13 @@ def _register_meeting_tools(server: MCPServer, facade: McpReportsFacade) -> None
         return facade.get_meeting(meeting_id)
 
     @server.tool(annotations=_READ_ONLY_TOOL, structured_output=True)
-    def meeting_room_list(starts_at: str | None = None, ends_at: str | None = None) -> list[dict[str, Any]]:
-        return facade.meeting_rooms(starts_at, ends_at)
+    def meeting_room_list(
+        starts_at: str | None = None,
+        ends_at: str | None = None,
+        people: int | None = None,
+        meeting_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return facade.meeting_rooms(starts_at, ends_at, people, meeting_id)
 
     @server.tool(annotations=_READ_ONLY_TOOL, structured_output=True)
     def meeting_transcript(meeting_id: str) -> list[dict[str, Any]]:
@@ -1741,8 +1765,10 @@ def _register_meeting_tools(server: MCPServer, facade: McpReportsFacade) -> None
         return CommandResult[dict[str, Any]](facade.quick_start_meeting())
 
     @server.tool(annotations=_COMMAND_TOOL, structured_output=True)
-    def meeting_update(meeting_id: str, request: MeetingInfoPatch) -> CommandResult[dict[str, Any]]:
-        return CommandResult[dict[str, Any]](facade.update_current_meeting(meeting_id, request))
+    def meeting_update(
+        meeting_id: str, request: MeetingInfoPatch, idempotency_key: str | None = None
+    ) -> CommandResult[dict[str, Any]]:
+        return CommandResult[dict[str, Any]](facade.update_current_meeting(meeting_id, request, idempotency_key))
 
     @server.tool(annotations=_COMMAND_TOOL, structured_output=True)
     def meeting_cancel(meeting_id: str) -> CommandResult[dict[str, Any]]:

@@ -101,3 +101,47 @@ def test_claude_conversation_and_generation_keep_the_prompt_out_of_argv(tmp_path
         assert BIG in (call["stdin"] or "")
         assert all(BIG not in argument for argument in call["arguments"])
     assert "--resume" in seen[0]["arguments"]
+
+
+# ── WP2 재검수 W-r2-3 · W-r2-4 ─────────────────────────────────────────────────────────────────────────────────
+
+
+def test_a_runner_that_cannot_take_stdin_is_refused_before_it_runs(tmp_path) -> None:
+    """stdin 을 못 받는 러너로 프롬프트를 조용히 빼고 돌리지 않는다 — 부르기 전에 오류(빈 프롬프트·이중 실행 없음)."""
+    from ax_workspace.platform.cli_process import invoke_plain_runner, invoke_runner
+
+    calls: list = []
+
+    def old_runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+        calls.append(arguments)
+        return ProcessResult("", "", 0)
+
+    with pytest.raises(TypeError, match="stdin"):
+        invoke_runner(old_runner, "codex", ["-"], tmp_path, {}, 5, None, None, stdin_text="프롬프트")
+    with pytest.raises(TypeError, match="stdin"):
+        invoke_plain_runner(old_runner, "codex", ["-"], tmp_path, {}, 5, "프롬프트")
+    assert calls == []
+
+
+def test_a_type_error_inside_the_runner_is_not_retried_as_another_call_shape(tmp_path) -> None:
+    """러너 안에서 난 `TypeError` 가 'on_line' 같은 낱말을 품어도 다른 모양으로 다시 부르지 않는다 — CLI 를 두 번 띄우지 않는다."""
+    from ax_workspace.platform.cli_process import invoke_runner
+
+    calls: list = []
+
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None, stdin_text=None):
+        calls.append(stdin_text)
+        raise TypeError("unexpected keyword argument 'on_line' somewhere deep inside")
+
+    with pytest.raises(TypeError):
+        invoke_runner(runner, "codex", ["-"], tmp_path, {}, 5, None, None, stdin_text="프롬프트")
+    assert calls == ["프롬프트"]
+
+
+@pytest.mark.serial
+def test_the_prompt_is_written_as_utf8_whatever_the_childs_locale(tmp_path) -> None:
+    """W-r2-4 — `Popen(encoding="utf-8")`: 한국어 프롬프트가 로케일과 무관하게 UTF-8 바이트로 닿는다."""
+    script = "import sys; data = sys.stdin.buffer.read(); print(len(data), data.decode('utf-8') == '가나다')"
+    result = subprocess_runner(sys.executable, ["-c", script], tmp_path, {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "LANG": "C"}, 30, stdin_text="가나다")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["9", "True"]

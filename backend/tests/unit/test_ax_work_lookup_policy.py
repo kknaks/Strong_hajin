@@ -197,3 +197,55 @@ def test_the_drafting_search_has_a_call_ceiling() -> None:
         description = TOOL_CATALOG[name].description
         assert "Call each search once (no re-search), read at most 3 details" in description, name
         assert "look up project and link candidates once when needed" in description, name
+
+
+# ── WORK-012 WP3-BE — 맥락 목록 매 턴 · 회의 생성의 자료 탐색 · 이어온 안건 `carried` (SPEC-010 §4.5 · §4.4 · WP1 W-2) ──
+
+
+def test_drafting_work_looks_in_the_context_catalog_first_and_uses_tools_for_details() -> None:
+    policy = CodexCliProviderAdapter.WORK_AND_REPORT_ROUTING_POLICY
+    assert "「조직 맥락 목록」" in policy
+    assert "목록에서 먼저, 상세는 도구로" in policy
+
+
+def test_meeting_creation_searches_materials_like_task_creation() -> None:
+    policy = CodexCliProviderAdapter.MEETING_CREATION_POLICY
+    assert "업무 생성과 같은 기준으로 관련 회의·자료를 찾는다" in policy
+    assert "`material_search`" in policy and "`my_meeting_list`" in policy
+    assert "근거 자료" in policy
+
+
+def test_a_continued_meeting_carries_the_unresolved_agendas_as_carried() -> None:
+    """WP1 W-2 — AX 회의 생성에서 이어온 회의의 미결 안건은 `source:"carried"` (정책 문장 + 도구 설명)."""
+    policy = CodexCliProviderAdapter.MEETING_CREATION_POLICY
+    assert "`carried_from_meeting_id`" in policy
+    assert 'source:\\"carried\\"' in policy or 'source:"carried"' in policy
+    assert "결론이 나지 않은 것" in policy
+    assert "이어온 회의 없이 `carried`를 쓰지 않는다" in policy
+    description = TOOL_CATALOG["meeting_create"].description
+    assert "carried_from_meeting_id" in description and '"carried"' in description
+
+
+def test_the_place_is_a_room_not_free_text_and_existing_meetings_change_through_meeting_update() -> None:
+    policy = CodexCliProviderAdapter.MEETING_CREATION_POLICY
+    assert "회의실(`room_id`)로만" in policy and "`meeting_room_list`" in policy
+    assert "`meeting_update`" in policy and "request.room = {room_id}" in policy
+    assert "room" in TOOL_CATALOG["meeting_update"].description
+    assert "people" in TOOL_CATALOG["meeting_room_list"].description
+
+
+def test_the_context_catalog_rides_every_conversation_turn_for_both_providers() -> None:
+    """017 — AX 대화 프롬프트에 맥락 목록을 **매 턴** 싣는다(SPEC-010 §4.5 · OQ-1002 ②) — Codex·Claude 같은 자리."""
+    from ax_workspace.modules.ax_execution.ai import AiConversationRequest, AiDelegatedToolContext
+
+    request = AiConversationRequest(
+        "업무 만들어줘", None, [], AiDelegatedToolContext("mina", "x"), context_catalog="## 조직 맥락 목록(시험)\n{}"
+    )
+    for adapter in (CodexCliProviderAdapter, ClaudeCliProviderAdapter):
+        prompt = adapter._conversation_prompt(request)
+        assert "## 조직 맥락 목록(시험)" in prompt
+        assert prompt.index("## 조직 맥락 목록(시험)") < prompt.index("User message:")
+    bare = CodexCliProviderAdapter._conversation_prompt(
+        AiConversationRequest("업무 만들어줘", None, [], AiDelegatedToolContext("mina", "x"))
+    )
+    assert "조직 맥락 목록(" not in bare
