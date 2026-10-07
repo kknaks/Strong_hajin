@@ -33,6 +33,8 @@ from ax_workspace.modules.actions.confirmation import (
     AxReplayContext,
     decide_ax_confirmation,
     is_ax_replay,
+    PATCHABLE_DRAFT_ACTION_TYPES,
+    merge_creation_draft as _merge_creation_draft,
     merge_meeting_update_draft as _merge_meeting_update_draft,
     normalize_ax_draft as _normalize_ax_draft,
     required_base_submission_version as _required_base_submission_version,
@@ -70,6 +72,8 @@ from ax_workspace.modules.organization_access.domain import (
     TASK_READ,
     Principal,
 )
+from ax_workspace.modules.actions.domain import AX_TURN_CAUSATION_PREFIX
+from ax_workspace.platform.work_tasks import current_causation
 from ax_workspace.platform.actions import (
     ActionEvidenceReader,
     ActionPresenter,
@@ -88,6 +92,7 @@ from ax_workspace.modules.work.requests import (
     decision_facts,
 )
 from ax_workspace.platform.persistence import (
+    ActionItemAuditEventRecord,
     ActionItemRecord,
     DecisionItemRecord,
     ResourceRelationshipRecord,
@@ -595,6 +600,15 @@ class AxProposalActionHandler:
                 if payload.get("draft") is not None
                 else recovery_payload or (dict(version.snapshot) if version else {})
             )
+            if item.action_type in PATCHABLE_DRAFT_ACTION_TYPES and payload.get("draft") is not None:
+                # **바뀐 칸만 지금 회차 위에 덮는다** — 사람의 [수정]→저장(전체 draft)과 AX 의 `save_draft`(바뀐 칸만)가
+                # 같은 결과를 낸다(E-6). 모르는·바꿀 수 없는 칸은 422.
+                draft = _merge_creation_draft(
+                    item.action_type,
+                    recovery_payload or (dict(version.snapshot) if version else {}),
+                    draft,
+                    requester_id=str(item.owner_id),
+                )
             if (
                 item.action_type == "meeting.info.update"
                 and isinstance(draft, dict)
@@ -619,6 +633,11 @@ class AxProposalActionHandler:
                     elif payload.get("draft") is None:
                         # draft 를 생략하면 최신 스냅샷을 쓰듯 자료 목록도 최신 스냅샷의 것이다 (fix2 W5) —
                         # 저장한 회차를 그대로 확인할 때 자료가 빠져 회차가 또 열리지 않는다.
+                        attachment_source = (
+                            recovery_payload or (dict(version.snapshot) if version else {})
+                        ).get("attachment_draft_ids")
+                    elif item.action_type in PATCHABLE_DRAFT_ACTION_TYPES:
+                        # 바뀐 칸만 보낸 수정은 첨부 선택도 「안 보냈으면 그대로」 다(E-6) — 지금 회차의 선택을 잇는다.
                         attachment_source = (
                             recovery_payload or (dict(version.snapshot) if version else {})
                         ).get("attachment_draft_ids")
@@ -1050,11 +1069,28 @@ class AxProposalActionHandler:
         if attachment_ids:
             if self._material_drafts is None:
                 raise ActionError("action material staging is not available")
-            self._material_drafts.validate_claim(principal, locked.id, [UUID(value) for value in attachment_ids], "task")
+            owner_type = "meeting" if locked.action_type == "meeting.reservation.create" else "task"
+            self._material_drafts.validate_claim(principal, locked.id, [UUID(value) for value in attachment_ids], owner_type)
         if decision.open_round is None:
             return
-        self._open_revised_round(
-            principal, decision_item, submission, assignment, decision.open_round, datetime.now(UTC)
+        now = datetime.now(UTC)
+        selected, _ = self._open_revised_round(principal, decision_item, submission, assignment, decision.open_round, now)
+        # 회차의 「누가 고쳤나」 — 사람과 AX 가 같은 회원 이름으로 저장하므로(`submitted_by`) 무엇을 거쳐 왔는지를 감사
+        # 기록에 남긴다. AX 대화 턴의 수정은 `ax_turn:<execution id>` 를 거쳐 온다(E-6 · 새 칸 없음).
+        causation = current_causation()
+        edited_by = "ax" if causation and causation.startswith(AX_TURN_CAUSATION_PREFIX) else "person"
+        self._session.add(
+            ActionItemAuditEventRecord(
+                action_id=locked.id,
+                actor_id=str(principal.id),
+                event_type="draft_saved",
+                payload={
+                    "submission_version": int(selected.submission_version),
+                    "edited_by": edited_by,
+                    **({"causation_ref": causation} if causation else {}),
+                },
+                occurred_at=now,
+            )
         )
 
     def _is_saved_draft_receipt(

@@ -75,6 +75,11 @@ class ActionEnvelope:
         }
 
 
+#: AX 대화 턴이 그 사람 이름으로 낸 수정(`save_draft`)의 거쳐 온 자리 — `ax_turn:<execution id>` (E-6). 회차의 「누가
+#: 고쳤나」(사람/AX)를 감사 기록에 남길 때 읽는다.
+AX_TURN_CAUSATION_PREFIX = "ax_turn:"
+
+
 class ActionError(Exception):
     """The command cannot be run as asked."""
 

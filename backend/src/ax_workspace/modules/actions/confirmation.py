@@ -183,6 +183,37 @@ def normalize_ax_draft(
         raise ActionError(str(error)) from error
 
 
+#: 「바뀐 칸만」 덮는 AX 생성 초안 — 사람이 [수정]→저장할 때와 AX 의 `save_draft` 가 같은 규칙을 탄다(E-6 · OQ-901).
+PATCHABLE_DRAFT_ACTION_TYPES = frozenset({"task.create_self", "work_request.create", "meeting.reservation.create"})
+#: 그 종류의 편집 계약에 없는 칸 — 값을 보내면 422 다(조용히 버리지 않는다). 회의 장소는 회의실(`room_id`)로만 정한다(W-r2-6).
+_LOCKED_DRAFT_FIELDS: dict[str, frozenset[str]] = {"meeting.reservation.create": frozenset({"location"})}
+
+
+def merge_creation_draft(
+    action_type: str,
+    base: Mapping[str, Any],
+    draft: Any,
+    *,
+    requester_id: str | None = None,
+) -> dict[str, Any]:
+    """**부분 수정** — 보낸 칸만 지금 회차 위에 덮는다 (E-6 · 메디니스 `merge_intake_patch` 와 같은 규칙).
+
+    - 보낸 칸만 바꾸고 안 보낸 칸은 지금 회차 그대로다. 전체를 보내도(화면) 결과가 같다.
+    - 값 `null` = 비우기 — 비울 수 없는 칸(제목·시각 등)은 생성 명령의 검증이 422 로 거절한다.
+    - 목록 칸(체크리스트·참석자·안건 …)은 **목록 전체를 보내면 그 목록으로 교체**한다. 항목 단위 더하기·빼기는 없다.
+    - 모르는 칸 · 바꿀 수 없는 칸은 422 다 — 조용히 무시하지 않는다(사유는 그대로 호출자에게 간다).
+    """
+    if not isinstance(draft, Mapping):
+        raise ActionError("초안은 칸별 값이어야 합니다")
+    locked = sorted(
+        key for key in _LOCKED_DRAFT_FIELDS.get(action_type, frozenset()) if draft.get(key) not in (None, "")
+    )
+    if locked:
+        raise ActionError(f"이 초안에서 바꿀 수 없는 항목입니다: {', '.join(locked)}")
+    current = normalize_ax_draft(action_type, dict(base), requester_id=requester_id)
+    return {**current, **{key: value for key, value in draft.items() if key != "attachment_draft_ids"}}
+
+
 def normalize_meeting_update(value: Any) -> dict[str, Any]:
     """AX 회의 수정 제안의 정본 모양 — `{meeting_id, changes}`(장소 글자 없음 · 회의실은 `changes.room`).
 

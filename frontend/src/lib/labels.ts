@@ -867,6 +867,10 @@ export const meetingScreen = {
   /* 회의실 셀렉트(SPEC-010 §2.2 · 네 자리가 같이 쓴다) — 문구는 OQ-1017 코디 기본값 */
   roomKeep: (name: string) => `기존 — ${name} (변경 안 함)`,
   roomKeepUnchecked: (name: string) => `기존 — ${name} (확인 못 함)`,
+  /** 셀렉트 목록에서 「기존」 줄과 나머지를 가르는 묶음 머리(구분선 자리 · 2루프 E-3) */
+  roomGroup: "다른 회의실",
+  /** 거절 뒤 아직 고르지 않았을 때 트리거 글자 */
+  roomPickPlaceholder: "회의실을 골라 주세요",
   roomUnavailableReason: { time_conflict: "새 시간에 예약 불가", capacity: "새 인원보다 작은 방" } as Record<string, string>,
   roomUnavailableFallback: "새 조건에 예약 불가",
   roomsEmpty: "이 시간·인원에 예약 가능한 회의실이 없습니다",
@@ -1503,6 +1507,8 @@ export const inboxScreen = {
   reply: "답장",
   replyAll: "전체 답장",
   /* 메시지함 → AX(SPEC-008 §2.9 · OQ-908) — 막대 아이콘의 툴팁 · 메일 머리 단추 · 말풍선 본문 넷 · 「업무 만듦」 */
+  /** 앱에서 받기를 누른 뒤 셸 알림이 올 때까지(2루프 E-2) */
+  downloading: (name: string) => `${name} 받는 중`,
   axTask: "AX 업무 생성",
   axSummary: "AX 요약",
   threadReply: "스레드에 답글",

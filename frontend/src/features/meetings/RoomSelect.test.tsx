@@ -11,6 +11,7 @@ import * as api from "../../lib/api";
 import { meetingScreen } from "../../lib/labels";
 import type { MeetingRoom } from "../../lib/viewModels";
 import { RoomSelect, type RoomChoice, type RoomQuery, type RoomSelectStatus } from "./RoomSelect";
+import { pickRoom, roomOptions, roomTrigger, roomValue, waitForRoom, waitForRows } from "./roomSelectTestKit";
 
 /*
  * WORK-012 WP3-FE — 회의실 셀렉트 부품 하나(SPEC-010 §2.2 · §4.1 · WP3 계약 고정 4).
@@ -55,9 +56,9 @@ function Host({
   );
 }
 
-const radios = () => [...document.querySelectorAll<HTMLInputElement>('input[name="meeting-room"]')];
-const labels = () => radios().map((input) => input.closest("label")?.textContent ?? "");
 const value = () => screen.getByTestId("value").textContent;
+const rows = () => roomOptions().rows;
+const labelsOf = () => rows().map((row) => row.label);
 
 beforeEach(() => {
   lastStatus = null;
@@ -69,16 +70,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/*
+ * 2루프 E-3 — 모양은 **드롭다운 셀렉트**(DS `Select`). 줄 구성·동작은 SPEC-010 §2.2 그대로다:
+ * 수정 때 맨 위 「기존 — 회의실 N (변경 안 함)」 · 구분(묶음 머리) · 「회의실 예약 없음」 · 가능한 방 / 생성 땐 첫 줄 없음.
+ */
+describe("회의실 셀렉트 — 드롭다운 모양", () => {
+  it("라디오 카드가 아니라 셀렉트 트리거 하나다 — 고른 줄은 트리거 글자로 선다", async () => {
+    vi.mocked(api.readMeetingRooms).mockResolvedValue([room({ room_id: 1, name: "회의실 1 (6인)" })]);
+    render(<Host />);
+    await waitForRoom(document.body, "회의실 1 (6인)");
+    expect(document.querySelectorAll('input[type="radio"]')).toHaveLength(0);
+    expect(roomTrigger().classList.contains("select-trigger")).toBe(true);
+    expect(roomValue()).toBe("회의실 예약 없음");
+  });
+});
+
 describe("회의실 셀렉트 — 상태 넷", () => {
   it("가용 있음 — 「회의실 예약 없음」 이 기본이고 그 시간·인원의 방만 선다 · 조건(people·meeting_id)을 실어 묻는다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([room({ room_id: 1, name: "회의실 1 (6인)" }), room({ room_id: 2, name: "회의실 2 (4인)" })]);
     render(<Host />);
-    await screen.findByText("회의실 1 (6인)");
-    expect(labels()).toEqual(["회의실 예약 없음", "회의실 1 (6인)", "회의실 2 (4인)"]);
-    expect(radios()[0].checked).toBe(true);
+    await waitForRoom(document.body, "회의실 1 (6인)");
+    expect(labelsOf()).toEqual(["회의실 예약 없음", "회의실 1 (6인)", "회의실 2 (4인)"]);
+    // 생성 모양 — 첫 줄(기존)도 구분 머리도 없다
+    expect(roomOptions().groups).toEqual([]);
     expect(api.readMeetingRooms).toHaveBeenCalledWith({ ...query, meeting_id: null });
-    fireEvent.click(screen.getByLabelText("회의실 2 (4인)"));
+    await pickRoom(document.body, "회의실 2 (4인)");
     expect(value()).toBe("2");
+    expect(roomValue()).toBe("회의실 2 (4인)");
     expect(lastStatus).toEqual({ state: "ok", blocked: false, reason: null });
   });
 
@@ -86,7 +104,7 @@ describe("회의실 셀렉트 — 상태 넷", () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([]);
     render(<Host />);
     expect(await screen.findByText(meetingScreen.roomsEmpty)).toBeTruthy();
-    expect(labels()).toEqual(["회의실 예약 없음"]);
+    expect(labelsOf()).toEqual(["회의실 예약 없음"]);
     expect(screen.queryByText(meetingScreen.roomsFailed)).toBeNull();
   });
 
@@ -99,7 +117,7 @@ describe("회의실 셀렉트 — 상태 넷", () => {
 
     vi.mocked(api.readMeetingRooms).mockResolvedValue([room({ room_id: 1, name: "회의실 1 (6인)" })]);
     fireEvent.click(screen.getByRole("button", { name: meetingScreen.roomsRetry }));
-    expect(await screen.findByText("회의실 1 (6인)")).toBeTruthy();
+    await waitForRoom(document.body, "회의실 1 (6인)");
     expect(api.readMeetingRooms).toHaveBeenCalledTimes(2);
   });
 
@@ -110,30 +128,31 @@ describe("회의실 셀렉트 — 상태 넷", () => {
     ]);
     render(<Host currentName="회의실 3 (4인)" initial="keep" meetingId="m1" />);
     // 기존 줄은 목록이 오기 전에도(이름으로) 서고, 목록이 오면 비활성으로 바뀐다
-    await waitFor(() => expect(radios()[0].disabled).toBe(true));
-    const keep = radios()[0];
-    expect(keep.disabled).toBe(true);
-    expect(keep.checked).toBe(true);
-    expect(keep.closest("label")?.textContent).toContain("새 인원보다 작은 방");
+    await waitForRows(document.body, (current) => current[0]?.disabled === true);
+    expect(rows()[0]).toMatchObject({ label: meetingScreen.roomKeep("회의실 3 (4인)"), description: "새 인원보다 작은 방", selected: true });
     expect(value()).toBe("keep");
+    // 목록을 열지 않아도 이유가 보인다
+    expect(screen.getByText("새 인원보다 작은 방")).toBeTruthy();
     expect(lastStatus).toEqual({ state: "ok", blocked: true, reason: meetingScreen.roomPickAgain });
     // 다른 방을 고르면 풀린다
-    fireEvent.click(screen.getByLabelText("회의실 1 (6인)"));
+    await pickRoom(document.body, "회의실 1 (6인)");
     await waitFor(() => expect(lastStatus?.blocked).toBe(false));
   });
 });
 
 describe("회의실 셀렉트 — 수정 모양", () => {
-  it("기존 방을 쓸 수 있으면 맨 위 「기존 — 회의실 N (변경 안 함)」 · 구분선 · 「예약 없음」 · 가용 목록 · 조회에 meeting_id 를 싣는다", async () => {
+  it("기존 방을 쓸 수 있으면 맨 위 「기존 — 회의실 N (변경 안 함)」 · 구분 · 「예약 없음」 · 가용 목록 · 조회에 meeting_id 를 싣는다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([
       room({ room_id: 3, name: "회의실 3", current: true }),
       room({ room_id: 1, name: "회의실 1 (6인)" }),
     ]);
     render(<Host currentName="회의실 3" initial="keep" meetingId="m1" />);
-    await screen.findByText(meetingScreen.roomKeep("회의실 3"));
-    expect(labels()).toEqual([meetingScreen.roomKeep("회의실 3"), "회의실 예약 없음", "회의실 1 (6인)"]);
-    expect(document.querySelector(".meeting-room-sep")).toBeTruthy();
-    expect(radios()[0].disabled).toBe(false);
+    await waitForRoom(document.body, "회의실 1 (6인)");
+    expect(labelsOf()).toEqual([meetingScreen.roomKeep("회의실 3"), "회의실 예약 없음", "회의실 1 (6인)"]);
+    // 기존 줄과 나머지 사이의 구분(묶음 머리)
+    expect(roomOptions().groups).toEqual([meetingScreen.roomGroup]);
+    expect(rows()[0].disabled).toBe(false);
+    expect(roomValue()).toBe(meetingScreen.roomKeep("회의실 3"));
     expect(api.readMeetingRooms).toHaveBeenCalledWith({ ...query, meeting_id: "m1" });
     expect(lastStatus?.blocked).toBe(false);
   });
@@ -147,17 +166,17 @@ describe("회의실 셀렉트 — 수정 모양", () => {
   it("조회 실패면 기존 줄은 「(확인 못 함)」 으로 고를 수 있다 (S-3)", async () => {
     vi.mocked(api.readMeetingRooms).mockRejectedValue(new api.ApiError(503, "Service Unavailable", { code: "ROOM_SERVICE_UNAVAILABLE" }));
     render(<Host currentName="회의실 3" initial="keep" meetingId="m1" />);
-    await screen.findByText(meetingScreen.roomKeepUnchecked("회의실 3"));
-    expect(radios()[0].disabled).toBe(false);
+    await waitFor(() => expect(roomValue()).toBe(meetingScreen.roomKeepUnchecked("회의실 3")));
+    expect(rows()[0].disabled).toBe(false);
     expect(lastStatus).toEqual({ state: "failed", blocked: false, reason: null });
   });
 
-  it("원래 방이 없던 회의면 기존 줄도 없다", async () => {
+  it("원래 방이 없던 회의면 기존 줄도 구분도 없다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([room({ room_id: 1, name: "회의실 1 (6인)" })]);
     render(<Host meetingId="m1" />);
-    await screen.findByText("회의실 1 (6인)");
-    expect(labels()).toEqual(["회의실 예약 없음", "회의실 1 (6인)"]);
-    expect(document.querySelector(".meeting-room-sep")).toBeNull();
+    await waitForRoom(document.body, "회의실 1 (6인)");
+    expect(labelsOf()).toEqual(["회의실 예약 없음", "회의실 1 (6인)"]);
+    expect(roomOptions().groups).toEqual([]);
   });
 });
 
@@ -180,7 +199,7 @@ describe("회의실 셀렉트 — 다시 받기 · 빠진 방 · 불러오기 ·
   it("고른 방이 새 목록에서 빠지면 조용히 「예약 없음」 이 되지 않고 이유를 말하며 막는다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValueOnce([room({ room_id: 1, name: "회의실 1 (6인)" })]);
     const { rerender } = render(<Host q={query} />);
-    fireEvent.click(await screen.findByLabelText("회의실 1 (6인)"));
+    await pickRoom(document.body, "회의실 1 (6인)");
     vi.mocked(api.readMeetingRooms).mockResolvedValue([]);
     rerender(<Host q={{ ...query, people: 9 }} />);
     await screen.findByText(meetingScreen.roomPickedGone("1"), {}, { timeout: 2000 });
@@ -202,9 +221,17 @@ describe("회의실 셀렉트 — 다시 받기 · 빠진 방 · 불러오기 ·
   it("저장이 409 로 거절되면 그때 가능한 방만으로 다시 선다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([room({ room_id: 1, name: "회의실 1 (6인)" })]);
     const { rerender } = render(<Host />);
-    await screen.findByText("회의실 1 (6인)");
+    await waitForRoom(document.body, "회의실 1 (6인)");
     rerender(<Host refused={[{ room_id: 11, name: "3F 회의실 (8인)", capacity: 8 }]} />);
-    expect(await screen.findByText("3F 회의실 (8인)")).toBeTruthy();
-    expect(screen.queryByText("회의실 1 (6인)")).toBeNull();
+    await waitForRoom(document.body, "3F 회의실 (8인)");
+    expect(labelsOf()).not.toContain("회의실 1 (6인)");
+  });
+
+  it("거절 뒤 아직 안 고른 값(`unset`)이면 트리거에 「회의실을 골라 주세요」", async () => {
+    vi.mocked(api.readMeetingRooms).mockResolvedValue([room({ room_id: 1, name: "회의실 1 (6인)" })]);
+    render(<Host initial="unset" />);
+    await waitForRoom(document.body, "회의실 1 (6인)");
+    expect(roomValue()).toBe(meetingScreen.roomPickPlaceholder);
+    expect(lastStatus?.blocked).toBe(true);
   });
 });

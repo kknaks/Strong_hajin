@@ -108,6 +108,17 @@ class CodexCliProfile:
 CodexCliMcpServer = ScaxMcpServer
 
 
+#: 아직 등록 전인 AX 초안(업무·요청·회의 생성 카드)을 고치는 길 — 사람이 [수정]→저장하는 것과 같은 `save_draft` 다(E-6).
+AX_DRAFT_EDIT_RULE = (
+    "**아직 등록 전인 AX 초안**(업무 생성·업무 요청·회의 생성 카드)을 사용자가 고치라고 하면(「체크리스트 줄여 줘」·"
+    "「참석자 추가해 줘」·「시간 바꿔 줘」) 새 카드를 만들지 말고 그 카드에 `action_item_command(command=\"save_draft\")` 로 "
+    "**바뀐 칸만** 보낸다 — `expected_version`·`base_submission_version` 은 `action_item_get` 의 값, `draft` 에는 바꿀 칸만"
+    "(안 보낸 칸은 그대로 · `null` 은 비우기 · 목록 칸은 목록 **전체**를 보내면 그 목록으로 바뀐다 · 편집 칸에 없는 칸은 거절된다). "
+    "같은 카드의 다음 회차가 되고 **등록은 사람이 한다** — 확정(`confirm`)·거절(`reject`)을 부르지 않는다. 실패하면 돌아온 "
+    "사유(코드)를 읽고 고쳐 다시 보내되 같은 호출을 그대로 되풀이하지 않는다."
+)
+
+
 class CodexCliProviderAdapter:
     """Structured one-shot generation; no caller can invoke a CLI process directly."""
 
@@ -458,7 +469,8 @@ class CodexCliProviderAdapter:
         "그 시간·인원에 쓸 수 있는 방을 확인해 고른다. 사외 장소·주소를 글자(`location`)로 넣지 않는다 — 카드가 저장하지 않는다.\n"
         "- **이미 만들어진 회의**의 시간·참석자·회의실을 바꾸자는 요청이면 `meeting_update`로 사람이 확정할 수정 카드를 준비한다. "
         "회의실은 `request.room = {room_id}`(「회의실 예약 없음」은 `{room_id: null}`, 안 바꾸면 생략)이고, 방을 고르거나 시간·인원을 "
-        "바꾸기 전에 `meeting_room_list`에 `meeting_id`와 새 시각·인원을 넣어 그 조건에서 쓸 수 있는 방을 확인한다."
+        "바꾸기 전에 `meeting_room_list`에 `meeting_id`와 새 시각·인원을 넣어 그 조건에서 쓸 수 있는 방을 확인한다.\n"
+        + "- " + AX_DRAFT_EDIT_RULE
     )
 
     TASK_PROGRESS_POLICY = (
@@ -474,6 +486,7 @@ class CodexCliProviderAdapter:
 
     WORK_AND_REPORT_ROUTING_POLICY = (
         "SCAX 업무 생성·보고 상태 선택 지침:\n"
+        + "- " + AX_DRAFT_EDIT_RULE + "\n"
         "- 특정 날짜의 일보가 작성됐는지·생성 중인지·제출됐는지 묻는 질문은 `daily_report_status` 하나로 확인한다. "
         "보고서 본문 속 사실을 찾을 때만 `material_search`를 사용한다. 상태 질문을 자료 검색으로 바꾸지 않는다.\n"
         "- 다른 사람에게 새 일을 제안할 때 관리자 지시·업무 배정이면 `task_assignment_candidates`로 표시 이름을 확인한 뒤 "
@@ -814,7 +827,21 @@ class CodexEventIngest:
                 # 그대로 쓰지는 않는다 — 그러면 무엇이 잘못됐는지 대신 `결과 수신`이라고 적힌다.
                 payload = item["result"]
                 carried = payload.get("isError") or payload.get("is_error")
-                reason = _summarize_tool_result(payload) if carried else None
+                if carried:
+                    reason = _summarize_tool_result(payload)
+                else:
+                    # Codex 는 실패를 `status` 로 옮기고 결과의 `isError` 표지를 떼어 넘기기도 한다 — 그래도 **실패한 호출의
+                    # 결과 글자는 사유다**(서버의 `ToolError("<코드>: <한 줄>")`). 그 글자를 버리면 「실패: failed」 만 남는다
+                    # (E-6 · C-2). 글자 조각만 읽는다 — 구조화 결과(정상 결과의 모양)는 사유 자리에 쓰지 않는다.
+                    text = next(
+                        (
+                            str(block["text"])
+                            for block in payload.get("content") or []
+                            if isinstance(block, dict) and isinstance(block.get("text"), str) and block["text"].strip()
+                        ),
+                        None,
+                    )
+                    reason = _summarize_tool_error(text) if text else None
             current["error_summary"] = reason if isinstance(reason, str) and reason.startswith("실패") else _summarize_tool_error(
                 reason or item.get("error") or status
             )

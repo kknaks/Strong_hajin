@@ -201,6 +201,12 @@ export function ActionMeetingUpdateCard({
         </div>
         <b className="ax-draft-card__title">{text(values.title) || action.title}</b>
       </header>
+      {/*
+        칸은 **세로로 쌓는다**(2루프 E-4). `.scax-actioncard > div { display: flex }`(ax.css) 가 카드의 «직속» div 를 가로 줄로 만든다 —
+        칸 묶음을 직속으로 두면 좁은 AX 서랍에서 회의명·목적·날짜·참석자·회의실이 한 줄로 몰려 넘쳤다. 생성 카드(`ActionMeetingCard`)처럼
+        `.action-task-content`(세로 격자) 안에 둔다. 날짜·시작·종료만 한 줄(`.action-meeting-schedule`)이다.
+      */}
+      <div className="action-task-content">
       <div className="action-task-fields action-meeting-fields">
         <div className="action-task-field text">
           <label htmlFor={`meeting-update-title-${action.action_id}`}>
@@ -318,6 +324,7 @@ export function ActionMeetingUpdateCard({
             value={draft.room}
           />
         </div>
+      </div>
       </div>
       {error && <FieldMessage error={error} />}
       {pending && roomStatus.reason && <FieldMessage error={roomStatus.reason} />}

@@ -105,7 +105,13 @@ def _content_hash(payload: dict) -> str:
 
 #: Set for the duration of one approved AX confirmation, so every ledger line that confirmation causes can say so.
 #: The actor is always the person who approved; this names only the decision the change travelled through.
+#: AX 대화 턴이 그 사람 이름으로 낸 수정(`save_draft`)도 같은 자리에 `ax_turn:<execution id>` 로 선다(E-6).
 _CAUSATION: ContextVar[str | None] = ContextVar("activity_causation_ref", default=None)
+
+
+def current_causation() -> str | None:
+    """지금 쓰는 기록이 무엇을 거쳐 왔나 — 없으면 사람이 직접 한 것이다."""
+    return _CAUSATION.get()
 
 
 @contextmanager

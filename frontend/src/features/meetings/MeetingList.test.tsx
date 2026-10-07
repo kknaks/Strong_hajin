@@ -35,6 +35,7 @@ import type React from "react";
 
 import { MeetingListPage } from "./MeetingListPage";
 import { resetRoster } from "./roster";
+import { pickRoom, roomOptions, roomTrigger, roomValue, waitForRoom } from "./roomSelectTestKit";
 import { scopeScreenCache } from "../../lib/screenCache";
 
 const row = (over: Partial<MeetingRow> & { meeting_id: string }): MeetingRow => ({
@@ -299,12 +300,10 @@ describe("SCR-105 회의 목록", () => {
     renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    const rooms = [...modal.querySelectorAll<HTMLInputElement>('input[name="meeting-room"]')];
-    // 잡을 수 없는 방을 지어내지 않는다
-    expect(rooms).toHaveLength(1);
-    expect(rooms[0].checked).toBe(true);
-    // SPEC-010 §2.2 — 옛 「회의실 선택 안 함」 → 「회의실 예약 없음」
-    expect(within(modal).getByText("회의실 예약 없음")).toBeTruthy();
+    // 잡을 수 없는 방을 지어내지 않는다 — SPEC-010 §2.2 — 옛 「회의실 선택 안 함」 → 「회의실 예약 없음」
+    await within(modal).findByText("이 시간·인원에 예약 가능한 회의실이 없습니다");
+    expect(roomOptions(modal).rows.map((row) => row.label)).toEqual(["회의실 예약 없음"]);
+    expect(roomValue(modal)).toBe("회의실 예약 없음");
     expect(within(modal).queryByText("회의실 선택 안 함")).toBeNull();
     expect(await within(modal).findByText("이 시간·인원에 예약 가능한 회의실이 없습니다")).toBeTruthy();
   });
@@ -317,7 +316,7 @@ describe("SCR-105 회의 목록", () => {
     renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    await within(modal).findByText("5F 대회의실 (20인)");
+    await waitForRoom(modal, "5F 대회의실 (20인)");
 
     fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
     addGuest(modal, "한서린");
@@ -333,10 +332,10 @@ describe("SCR-105 회의 목록", () => {
     renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const again = await screen.findByRole("dialog", { name: "회의 예약" });
-    await within(again).findByText("6F 소회의실 (4인)");
+    await waitForRoom(again, "6F 소회의실 (4인)");
     fireEvent.change(within(again).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
     addGuest(again, "한서린");
-    fireEvent.click(within(again).getByLabelText("6F 소회의실 (4인)"));
+    await pickRoom(again, "6F 소회의실 (4인)");
     vi.mocked(api.bookMeeting).mockResolvedValue(record());
     fireEvent.click(within(again).getByRole("button", { name: "회의 생성" }));
     await waitFor(() => expect(vi.mocked(api.bookMeeting).mock.calls[0][0].room_id).toBe(9));
@@ -368,10 +367,10 @@ describe("SCR-105 회의 목록", () => {
     const { onNotice } = renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    await within(modal).findByText("5F 대회의실 (20인)");
+    await waitForRoom(modal, "5F 대회의실 (20인)");
     fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
     addGuest(modal, "한서린");
-    fireEvent.click(within(modal).getByLabelText("5F 대회의실 (20인)"));
+    await pickRoom(modal, "5F 대회의실 (20인)");
 
     let settle: (value: MeetingRecord) => void = () => {};
     vi.mocked(api.bookMeeting).mockReturnValue(new Promise<MeetingRecord>((resolve) => (settle = resolve)));
@@ -396,10 +395,10 @@ describe("SCR-105 회의 목록", () => {
     const { onNotice } = renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    await within(modal).findByText("5F 대회의실 (20인)");
+    await waitForRoom(modal, "5F 대회의실 (20인)");
     fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
     addGuest(modal, "한서린");
-    fireEvent.click(within(modal).getByLabelText("5F 대회의실 (20인)"));
+    await pickRoom(modal, "5F 대회의실 (20인)");
 
     vi.mocked(api.bookMeeting).mockResolvedValue(
       record({
@@ -424,11 +423,11 @@ describe("SCR-105 회의 목록", () => {
     const { onNotice } = renderList([], []);
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    await within(modal).findByText("5F 대회의실 (20인)");
+    await waitForRoom(modal, "5F 대회의실 (20인)");
     fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "주간 회의" } });
     fireEvent.change(within(modal).getByPlaceholderText("이 회의를 왜 하는지 한 줄로"), { target: { value: "범위를 정한다" } });
     addGuest(modal, "한서린");
-    fireEvent.click(within(modal).getByLabelText("5F 대회의실 (20인)"));
+    await pickRoom(modal, "5F 대회의실 (20인)");
 
     vi.mocked(api.bookMeeting).mockRejectedValue(
       new ApiError(409, "Conflict", {
@@ -446,11 +445,9 @@ describe("SCR-105 회의 목록", () => {
     expect((within(modal).getByPlaceholderText("이 회의를 왜 하는지 한 줄로") as HTMLInputElement).value).toBe("범위를 정한다");
     expect(within(modal).getByText("한서린")).toBeTruthy();
     // 회의실만 다시 그려진다 — 거절당한 방은 사라지고 고른 것은 풀린다
-    expect(within(modal).getByText("3F 회의실 (8인)")).toBeTruthy();
-    expect(within(modal).queryByText("5F 대회의실 (20인)")).toBeNull();
-    const rooms = [...modal.querySelectorAll<HTMLInputElement>('input[name="meeting-room"]')];
-    expect(rooms).toHaveLength(2);
-    expect(rooms[0].checked).toBe(true);
+    await waitForRoom(modal, "3F 회의실 (8인)");
+    expect(roomOptions(modal).rows.map((row) => row.label)).toEqual(["회의실 예약 없음", "3F 회의실 (8인)"]);
+    expect(roomValue(modal)).toBe("회의실 예약 없음");
   });
 
   it("응답을 받지 못한 생성 재시도는 같은 idempotency key를 다시 쓴다", async () => {
@@ -461,10 +458,10 @@ describe("SCR-105 회의 목록", () => {
        짚는 것은 그대로 두고 이름만 지금 것으로 맞춘다. */
     fireEvent.click(await screen.findByRole("button", { name: "회의 생성" }));
     const modal = await screen.findByRole("dialog", { name: "회의 예약" });
-    await within(modal).findByText("5F 대회의실 (20인)");
+    await waitForRoom(modal, "5F 대회의실 (20인)");
     fireEvent.change(within(modal).getByPlaceholderText("회의명을 적으세요"), { target: { value: "응답 유실 회의" } });
     addGuest(modal, "한서린");
-    fireEvent.click(within(modal).getByLabelText("5F 대회의실 (20인)"));
+    await pickRoom(modal, "5F 대회의실 (20인)");
     vi.mocked(api.bookMeeting).mockRejectedValueOnce(new Error("응답을 받지 못했습니다"));
 
     fireEvent.click(within(modal).getByRole("button", { name: "회의 생성" }));
@@ -942,12 +939,12 @@ describe("WP3-FE — 불러오기 뒤 지난 회의 방 (W-3)", () => {
 
   it("그 방을 지금 쓸 수 있으면 미리 골라진다", async () => {
     const modal = await load([{ room_id: 7, name: "5F 대회의실", capacity: 20 }]);
-    await waitFor(() => expect((within(modal).getByLabelText("5F 대회의실") as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect(roomValue(modal)).toBe("5F 대회의실"));
   });
 
   it("못 쓰면 「예약 없음」 그대로 두되 그 이유를 한 줄로 보인다", async () => {
     const modal = await load([{ room_id: 9, name: "6F 소회의실", capacity: 4 }]);
     expect(await within(modal).findByText("지난 회의의 회의실 「5F 대회의실」 은 이 시간·인원에 예약할 수 없습니다")).toBeTruthy();
-    expect((within(modal).getByLabelText("회의실 예약 없음") as HTMLInputElement).checked).toBe(true);
+    expect(roomValue(modal)).toBe("회의실 예약 없음");
   });
 });

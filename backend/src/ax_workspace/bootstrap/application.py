@@ -51,6 +51,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from time import monotonic, sleep
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from contextvars import ContextVar
 from typing import Any
 import asyncio
@@ -266,6 +267,7 @@ from ax_workspace.platform.material_extraction import (
     SqlAlchemyMaterialExtractionRepository,
 )
 from ax_workspace.platform.work_tasks import (
+    caused_by,
     ActivityLedger,
     SqlAlchemyGraphReceiptRepository,
     SqlAlchemyTaskAssignmentRepository,
@@ -3971,10 +3973,20 @@ class WorkflowApplication(ExternalInboxOperations):
         with self._session_factory() as session:
             return self._action_center(session).normalize(principal, action_item_id, command, payload)
 
-    def run_action_command(self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]) -> ActionEnvelopeResult:
-        return self._run_with_room_recheck(
-            lambda: self._run_action_command_once(principal, action_item_id, command, payload)
-        )
+    def run_action_command(
+        self,
+        principal: Principal,
+        action_item_id: str,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        causation_ref: str | None = None,
+    ) -> ActionEnvelopeResult:
+        """`causation_ref` = 이 명령이 무엇을 거쳐 왔나(예: AX 대화 턴의 수정 `ax_turn:<execution id>` — E-6). 기록이 읽는다."""
+        with caused_by(causation_ref) if causation_ref else nullcontext():
+            return self._run_with_room_recheck(
+                lambda: self._run_action_command_once(principal, action_item_id, command, payload)
+            )
 
     def _run_action_command_once(
         self, principal: Principal, action_item_id: str, command: str, payload: dict[str, Any]

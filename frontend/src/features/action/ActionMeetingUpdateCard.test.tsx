@@ -9,6 +9,7 @@ vi.mock("../../lib/api", async (actual) => ({
 import * as api from "../../lib/api";
 import { axDraftCard, meetingScreen } from "../../lib/labels";
 import type { ActionItem } from "../../lib/viewModels";
+import { pickRoom, roomOptions, roomTrigger, roomValue, waitForRoom } from "../meetings/roomSelectTestKit";
 import { ActionMeetingUpdateCard } from "./ActionMeetingUpdateCard";
 
 /*
@@ -82,17 +83,17 @@ describe("AX 회의 수정 카드 — 고칠 수 있는 카드", () => {
     expect(within(region).getByText(axDraftCard.updateKind)).toBeTruthy();
     expect(within(region).queryByText(/회차/)).toBeNull();
     expect((within(region).getByLabelText(/회의명/) as HTMLInputElement).value).toBe("주간 회의");
-    // 장소 «글자 칸» 이 없다 — 「장소」 는 회의실 셀렉트(라디오 묶음)의 이름일 뿐이다
+    // 장소 «글자 칸» 이 없다 — 「장소」 는 회의실 셀렉트(드롭다운 · 2루프 E-3)의 이름일 뿐이다
     expect(within(region).queryByRole("textbox", { name: "장소" })).toBeNull();
-    expect(within(region).getByRole("radiogroup", { name: "장소" })).toBeTruthy();
+    expect(roomTrigger(region).classList.contains("select-trigger")).toBe(true);
     expect(within(region).queryByRole("button", { name: axDraftCard.edit })).toBeNull();
-    await within(region).findByText(meetingScreen.roomKeep("회의실 3"));
+    await waitForRoom(region, meetingScreen.roomKeep("회의실 3"));
     expect(api.readMeetingRooms).toHaveBeenCalledWith(expect.objectContaining({ meeting_id: "m1", people: 1 }));
   });
 
   it("고친 것이 없으면 [등록]은 초안 없이 회차만 싣는다", async () => {
     const { onCommand } = renderCard();
-    await within(card()).findByText(meetingScreen.roomKeep("회의실 3"));
+    await waitForRoom(card(), meetingScreen.roomKeep("회의실 3"));
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2 }));
   });
@@ -100,7 +101,7 @@ describe("AX 회의 수정 카드 — 고칠 수 있는 카드", () => {
   it("[등록]의 draft 는 바뀐 칸만 — 제목과 방을 바꾸면 `title` 과 `room: {room_id}` 둘뿐이다", async () => {
     const { onCommand } = renderCard();
     fireEvent.change(within(card()).getByLabelText(/회의명/), { target: { value: "주간 회의 (옮김)" } });
-    fireEvent.click(await within(card()).findByLabelText("회의실 1 (8인)"));
+    await pickRoom(card(), "회의실 1 (8인)");
     fireEvent.click(confirmButton());
     await waitFor(() =>
       expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2, draft: { title: "주간 회의 (옮김)", room: { room_id: 1 } } }),
@@ -109,7 +110,7 @@ describe("AX 회의 수정 카드 — 고칠 수 있는 카드", () => {
 
   it("「회의실 예약 없음」 을 고르면 `room: {room_id: null}` · 시각을 바꾸면 시작·종료 둘 다", async () => {
     const { onCommand } = renderCard();
-    fireEvent.click(await within(card()).findByLabelText(meetingScreen.noRoom));
+    await pickRoom(card(), meetingScreen.noRoom);
     fireEvent.click(within(card()).getByRole("button", { name: /종료 시각/ }));
     fireEvent.click(await screen.findByRole("option", { name: "16:30" }));
     fireEvent.click(confirmButton());
@@ -121,7 +122,7 @@ describe("AX 회의 수정 카드 — 고칠 수 있는 카드", () => {
   it("방이 없던 회의는 「예약 없음」 에서 열리고 기존 줄이 없다 — 그대로 두면 `room` 을 싣지 않는다", async () => {
     vi.mocked(api.readMeetingRooms).mockResolvedValue([rooms[1]]);
     const { onCommand } = renderCard(updateAction({}, { room_id: null, room_name: null }));
-    await within(card()).findByText("회의실 1 (8인)");
+    await waitForRoom(card(), "회의실 1 (8인)");
     expect(within(card()).queryByText(/기존 —/)).toBeNull();
     fireEvent.change(within(card()).getByLabelText(/목적/), { target: { value: "범위 점검" } });
     fireEvent.click(confirmButton());
@@ -141,9 +142,9 @@ describe("AX 회의 수정 카드 — 고칠 수 있는 카드", () => {
       throw new api.ApiError(409, "Conflict", { code: "ROOM_BOOKING_REFUSED", message: "taken", available_rooms: [{ room_id: 5, name: "회의실 5 (8인)", capacity: 8 }] });
     });
     renderCard(updateAction(), onCommand);
-    fireEvent.click(await within(card()).findByLabelText("회의실 1 (8인)"));
+    await pickRoom(card(), "회의실 1 (8인)");
     fireEvent.click(confirmButton());
-    expect(await within(card()).findByText("회의실 5 (8인)")).toBeTruthy();
+    expect(await waitForRoom(card(), "회의실 5 (8인)")).toBeTruthy();
     expect(within(card()).getByText(meetingScreen.roomRejected.ROOM_BOOKING_REFUSED)).toBeTruthy();
     expect(confirmButton().disabled).toBe(true);
   });
@@ -173,17 +174,17 @@ describe("AX 회의 수정 카드 — AX 가 제안한 방 (F-1 · 계약 고정
 
   it("제안 방이 미리 골라져 있고 「AX 제안」 표지가 선다 — 그대로 [등록]하면 그 방이 `room` 으로 실린다", async () => {
     const { onCommand } = renderCard(proposing(1, "회의실 1 (8인)"));
-    await waitFor(() => expect((within(card()).getByLabelText("회의실 1 (8인)") as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect(roomValue(card())).toBe("회의실 1 (8인)"));
     expect(within(card()).getByText("AX 제안 · 회의실 1 (8인)")).toBeTruthy();
     // 「기존 (변경 안 함)」 은 골라져 있지 않다 — 화면이 보이는 것과 실리는 것이 같다
-    expect((within(card()).getByLabelText(meetingScreen.roomKeep("회의실 3")) as HTMLInputElement).checked).toBe(false);
+    expect(roomValue(card())).not.toBe(meetingScreen.roomKeep("회의실 3"));
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2, draft: { room: { room_id: 1 } } }));
   });
 
   it("사람이 「기존 (변경 안 함)」 으로 되돌리면 표지가 사라지고 `room: {keep: true}` 를 명시한다", async () => {
     const { onCommand } = renderCard(proposing(1, "회의실 1 (8인)"));
-    fireEvent.click(await within(card()).findByLabelText(meetingScreen.roomKeep("회의실 3")));
+    await pickRoom(card(), meetingScreen.roomKeep("회의실 3"));
     expect(within(card()).queryByText(/AX 제안/)).toBeNull();
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2, draft: { room: { keep: true } } }));
@@ -191,7 +192,7 @@ describe("AX 회의 수정 카드 — AX 가 제안한 방 (F-1 · 계약 고정
 
   it("「예약 없음」 제안(`proposed_room_id: null`)은 「회의실 예약 없음」 을 미리 고르고 `room: {room_id: null}` 을 싣는다", async () => {
     const { onCommand } = renderCard(proposing(null));
-    await waitFor(() => expect((within(card()).getByLabelText(meetingScreen.noRoom) as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect(roomValue(card())).toBe(meetingScreen.noRoom));
     expect(within(card()).getByText("AX 제안 · 회의실 예약 없음")).toBeTruthy();
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2, draft: { room: { room_id: null } } }));
@@ -199,7 +200,7 @@ describe("AX 회의 수정 카드 — AX 가 제안한 방 (F-1 · 계약 고정
 
   it("제안이 지금 방과 같으면 제안이 아니다 — 표지 없이 「기존」 그대로 · `room` 을 싣지 않는다", async () => {
     const { onCommand } = renderCard(proposing(3, "회의실 3"));
-    await within(card()).findByText(meetingScreen.roomKeep("회의실 3"));
+    await waitForRoom(card(), meetingScreen.roomKeep("회의실 3"));
     expect(within(card()).queryByText(/AX 제안/)).toBeNull();
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2 }));
@@ -207,7 +208,7 @@ describe("AX 회의 수정 카드 — AX 가 제안한 방 (F-1 · 계약 고정
 
   it("제안 칸이 없는 계약은 지금처럼 — 「기존」 에서 열리고 그대로 두면 `room` 이 없다", async () => {
     const { onCommand } = renderCard();
-    await within(card()).findByText(meetingScreen.roomKeep("회의실 3"));
+    await waitForRoom(card(), meetingScreen.roomKeep("회의실 3"));
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2 }));
   });
@@ -220,7 +221,7 @@ describe("AX 회의 수정 카드 — AX 가 제안한 방 (F-1 · 계약 고정
 describe("AX 회의 수정 카드 — `room_proposed` · 확인 중 409 (F-r2-1 · W-r2-1)", () => {
   it("방 있는 회의 + 시간만 바꾸자는 제안(`room_proposed: false`, `proposed_room_id: null`) — 기존 방 그대로 · 표지 없음 · 그대로 등록해도 `room` 이 없다", async () => {
     const { onCommand } = renderCard(updateAction({}, { room_proposed: false, proposed_room_id: null, starts_at: "2026-10-08T07:00:00Z", ends_at: "2026-10-08T08:00:00Z" }));
-    await waitFor(() => expect((within(card()).getByLabelText(meetingScreen.roomKeep("회의실 3")) as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect(roomValue(card())).toBe(meetingScreen.roomKeep("회의실 3")));
     expect(within(card()).queryByText(/AX 제안/)).toBeNull();
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2 }));
@@ -228,7 +229,7 @@ describe("AX 회의 수정 카드 — `room_proposed` · 확인 중 409 (F-r2-1 
 
   it("`room_proposed` 칸이 없으면 `proposed_room_id` 가 있어도 제안으로 보지 않는다", async () => {
     const { onCommand } = renderCard(updateAction({}, { proposed_room_id: 1 }));
-    await waitFor(() => expect((within(card()).getByLabelText(meetingScreen.roomKeep("회의실 3")) as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect(roomValue(card())).toBe(meetingScreen.roomKeep("회의실 3")));
     expect(within(card()).queryByText(/AX 제안/)).toBeNull();
     fireEvent.click(confirmButton());
     await waitFor(() => expect(onCommand).toHaveBeenCalledWith("confirm", { base_submission_version: 2 }));
@@ -239,11 +240,11 @@ describe("AX 회의 수정 카드 — `room_proposed` · 확인 중 409 (F-r2-1 
       throw new api.ApiError(409, "Conflict", { code: "ROOM_RESERVATION_UNCONFIRMED", message: "reservation is being confirmed" });
     });
     renderCard(updateAction(), onCommand);
-    fireEvent.click(await within(card()).findByLabelText("회의실 1 (8인)"));
+    await pickRoom(card(), "회의실 1 (8인)");
     fireEvent.click(confirmButton());
     expect(await within(card()).findByText(meetingScreen.saveErrors.ROOM_RESERVATION_UNCONFIRMED)).toBeTruthy();
     // 거절(가능한 방 목록)이 아니다 — 고른 방은 그대로 남고 다시 [등록]할 수 있다
-    expect((within(card()).getByLabelText("회의실 1 (8인)") as HTMLInputElement).checked).toBe(true);
+    expect(roomValue(card())).toBe("회의실 1 (8인)");
     expect(confirmButton().disabled).toBe(false);
   });
 
@@ -252,8 +253,43 @@ describe("AX 회의 수정 카드 — `room_proposed` · 확인 중 409 (F-r2-1 
       throw new api.ApiError(409, "Conflict", { code: "SOMETHING_NEW", message: "서버가 쓴 문장" });
     });
     renderCard(updateAction(), onCommand);
-    await within(card()).findByText(meetingScreen.roomKeep("회의실 3"));
+    await waitForRoom(card(), meetingScreen.roomKeep("회의실 3"));
     fireEvent.click(confirmButton());
     expect(await within(card()).findByText("서버가 쓴 문장")).toBeTruthy();
+  });
+});
+
+/*
+ * 2루프 E-4 — 좁은 AX 서랍에서 칸이 한 줄로 몰려 넘치던 것. `.scax-actioncard > div { display: flex }`(ax.css) 가 카드의 **직속** div 를
+ * 가로 줄로 만든다 — 칸 묶음은 생성 카드처럼 `.action-task-content`(세로 격자) 안에 있어야 한다. 실제 폭 넘침은 jsdom 이 재지 못한다(앱 실물 확인).
+ */
+describe("AX 회의 수정 카드 — 세로 배치 (2루프 E-4)", () => {
+  it("칸 묶음은 카드의 직속 div 가 아니라 `.action-task-content` 안이고 · 날짜·시작·종료만 한 줄 · 참석자/외부 참석자/회의실은 그 아래로 쌓인다", async () => {
+    renderCard();
+    await waitForRoom(card(), meetingScreen.roomKeep("회의실 3"));
+    const section = card().closest(".scax-actioncard") ?? card();
+    const fields = section.querySelector(".action-meeting-fields") as HTMLElement;
+    // 직속 div 가 아니다 — 직속이면 ax.css 의 flex 줄이 걸린다
+    expect(fields.parentElement?.classList.contains("action-task-content")).toBe(true);
+    expect(fields.parentElement?.parentElement).toBe(section);
+    expect([...section.children].some((child) => child.tagName === "DIV" && child.classList.contains("action-task-fields"))).toBe(false);
+    // 한 줄은 일정 하나 — 날짜 + 시각 범위
+    const schedule = fields.querySelector(".action-meeting-schedule") as HTMLElement;
+    expect(schedule.parentElement).toBe(fields);
+    expect(schedule.querySelector(".time-range")).toBeTruthy();
+    expect(schedule.querySelector(".action-meeting-people")).toBeNull();
+    // 참석자 묶음(참석자 · 외부 참석자)과 회의실은 일정 줄 밖, 같은 세로 격자의 다음 칸들이다
+    const people = fields.querySelector(".action-meeting-people") as HTMLElement;
+    expect(people.parentElement).toBe(fields);
+    expect(people.compareDocumentPosition(schedule) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(roomTrigger(card()).closest(".action-meeting-schedule, .action-meeting-people")).toBeNull();
+  });
+
+  it("CSS — `.action-task-card > .action-task-content` 는 세로 격자다(카드 직속 div 의 flex 줄을 덮는다)", async () => {
+    // @ts-expect-error — 이 리포는 @types/node 를 두지 않는다.
+    const { readFileSync } = await import("node:fs");
+    const css = (readFileSync("src/styles/ax.css", "utf8") as string).replace(/\s+/g, "");
+    expect(css).toMatch(/\.action-task-card>\.action-task-content\{display:grid;/);
+    expect(css).toContain(".action-task-card.action-task-fields{grid-template-columns:minmax(0,1fr);}");
   });
 });

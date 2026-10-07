@@ -7,6 +7,7 @@ HTTP and invokes local operations in-process.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from ax_workspace.modules.ax_execution.browser_interactions import BrowserRecordingRequest, BrowserFileRequest, BrowserInteractionResult
 
@@ -52,7 +53,9 @@ from uuid import UUID
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from ax_workspace.modules.actions.domain import AX_TURN_CAUSATION_PREFIX
+from ax_workspace.modules.errors import ResourceNotFound
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from ax_workspace.entrypoints.mcp_server import PersonaMcpServer
 
@@ -244,7 +247,50 @@ class MaterialOpenResult(BaseModel):
 
 
 class McpDelegatedActionAccessDenied(RuntimeError):
-    pass
+    """위임 턴(AX 대화)이 사람의 판단을 대신하려 했다. `code` 가 모델에 가는 사유의 머리다(E-6 · C-1·C-3)."""
+
+    def __init__(self, message: str, *, code: str = "AX_COMMAND_REFUSED") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+#: 위임 턴의 `ax.*` 항목 명령 — **수정(`save_draft`)만** AX 도 사람과 같이 한다(같은 카드의 다음 회차 · 사용자 결정
+#: 2026-10-07). 등록(확정)·거절은 사람만 한다(E-6 · C-3).
+_AX_DRAFT_EDIT_COMMAND = "save_draft"
+_AX_DECISION_REFUSED = ("AX_DECISION_REFUSED", "AX 제안의 등록(확정)·거절은 사람이 합니다 — 카드에서 사람이 고르게 두세요")
+_AX_DRAFT_SAVE_UNAVAILABLE = (
+    "AX_DRAFT_SAVE_UNAVAILABLE",
+    "이 카드는 지금 수정할 수 없습니다 — 카드의 allowed_commands 에 save_draft 가 있을 때만 고칠 수 있습니다",
+)
+
+
+def _error_code(error: BaseException) -> str:
+    code = getattr(error, "code", None) or getattr(error, "reason", None)
+    if isinstance(code, str) and code.strip():
+        return code.strip()
+    if isinstance(error, ResourceNotFound):
+        return "NOT_FOUND"
+    # `ActionCapabilityDenied` → `ACTION_CAPABILITY_DENIED` — 클래스 이름이 곧 사유의 종류다.
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", type(error).__name__).upper()
+
+
+def anticipated_tool_error(error: BaseException) -> ToolError | None:
+    """도메인이 **예상한** 거절을 모델이 읽는 `ToolError("<코드>: <한 줄>")` 로 바꾼다 (E-6 · C-1).
+
+    MCP 는 `ToolError` 가 아닌 예외를 「예상 못 한 실패」 로 보고 모델에 `Error executing tool <name>` 만 준다 — 그러면
+    모델은 무엇이 틀렸는지 모른 채 같은 호출을 되풀이한다(운영 2026-10-07 4회). 도메인 모듈의 예외 · 위임 거절 ·
+    입력 검증만 바꾼다. 그 밖(프로그램 오류)은 그대로 「예상 못 한 실패」 로 남겨 서버가 traceback 을 남긴다.
+    """
+    if isinstance(error, ToolError):
+        return None
+    if isinstance(error, ValidationError):
+        fields = sorted({".".join(str(part) for part in row["loc"]) for row in error.errors()})
+        return ToolError(f"INVALID_INPUT: 입력이 계약에 맞지 않습니다 — {', '.join(fields)[:160]}")
+    domain = type(error).__module__.startswith("ax_workspace.modules.")
+    if not (domain or isinstance(error, (McpDelegatedActionAccessDenied, ResourceNotFound))):
+        return None
+    message = " ".join(str(error).split())[:200] or type(error).__name__
+    return ToolError(f"{_error_code(error)}: {message}")
 
 
 class McpReportsFacade:
@@ -439,6 +485,12 @@ class McpReportsFacade:
         gated = self._propose_action_item_command(action_item_id, command, payload)
         if gated is not None:
             return gated
+        turn = self._delegated_turn_id()
+        if turn is not None and command == _AX_DRAFT_EDIT_COMMAND:
+            # 이 수정이 AX 대화 턴에서 왔다고 남긴다 — 회차의 「누가 고쳤나」(사람/AX)가 감사 기록에 선다.
+            return self._application.run_action_command(
+                self.principal, action_item_id, command, payload, causation_ref=f"{AX_TURN_CAUSATION_PREFIX}{turn}"
+            )
         return self._application.run_action_command(self.principal, action_item_id, command, payload)
 
     def _propose_action_item_command(
@@ -458,7 +510,16 @@ class McpReportsFacade:
         # approve an AX proposal, which is the very gate that puts a person in front of this effect.
         detail = self._application.action_item_detail(principal, action_item_id)
         if str(detail.get("kind", "")).startswith("ax."):
-            raise McpDelegatedActionAccessDenied("AX 제안은 사람이 승인합니다")
+            if command == _AX_DRAFT_EDIT_COMMAND:
+                # **수정은 누가 하든 같은 수정이다** — 사람이 [수정]→저장할 때와 같은 `save_draft` 로 같은 카드의 다음 회차를
+                # 연다(바뀐 칸만 지금 회차 위에 덮는다 · 등록은 여전히 사람). 서버가 그 카드에 저장을 열어 둔 때만이다.
+                if _AX_DRAFT_EDIT_COMMAND not in {str(row.get("id")) for row in detail.get("allowed_commands") or []}:
+                    code, message = _AX_DRAFT_SAVE_UNAVAILABLE
+                    raise McpDelegatedActionAccessDenied(message, code=code)
+                return None
+            # AX 는 자기 제안을 판단하지 않는다 — 등록(확정)·거절은 사람이 한다(E-6 · C-3).
+            code, message = _AX_DECISION_REFUSED
+            raise McpDelegatedActionAccessDenied(message, code=code)
         # The server decides what this command actually carries, so what is stored is what will run.
         canonical = {
             "action_item_id": action_item_id,
@@ -1604,16 +1665,23 @@ def _register_action_item_tools(server: MCPServer, facade: McpReportsFacade) -> 
         reason: Annotated[str | None, ActionCommandInput.model_fields["reason"]] = None,
         changes: dict[str, JsonValue] | None = None,
     ) -> CommandResult[ActionEnvelopeResult]:
-        return CommandResult[ActionEnvelopeResult](facade.run_action_command(
-            action_item_id,
-            command,
-            expected_version=expected_version,
-            base_submission_version=base_submission_version,
-            draft=draft,
-            attachment_draft_ids=[str(value) for value in attachment_draft_ids] if attachment_draft_ids is not None else None,
-            reason=reason,
-            changes=changes,
-        ))
+        try:
+            return CommandResult[ActionEnvelopeResult](facade.run_action_command(
+                action_item_id,
+                command,
+                expected_version=expected_version,
+                base_submission_version=base_submission_version,
+                draft=draft,
+                attachment_draft_ids=[str(value) for value in attachment_draft_ids] if attachment_draft_ids is not None else None,
+                reason=reason,
+                changes=changes,
+            ))
+        except Exception as error:
+            # 거절 사유를 모델에 준다 — 같은 실패를 그대로 되풀이하지 않게(E-6 · C-1).
+            anticipated = anticipated_tool_error(error)
+            if anticipated is None:
+                raise
+            raise anticipated from error
 
 
 def _register_daily_report_tools(server: MCPServer, facade: McpReportsFacade) -> None:
