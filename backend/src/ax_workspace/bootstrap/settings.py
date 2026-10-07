@@ -25,6 +25,29 @@ DEFAULT_ROOM_BOOKING_BASE_URL = "https://connect.tdl-cloud.com"
 DEFAULT_ROOM_BOOKING_COMPANY_ID = 3
 
 
+#: AI 호출의 단계별 상한(초) 기본값 (SPEC-010 §4.6 · DEC-009 D-12 · OQ-902). provider(Codex·Claude)와 무관하게 같은 값이다.
+DEFAULT_AI_TIMEOUT_BATCH_SECONDS = 240
+DEFAULT_AI_TIMEOUT_WARMSTART_SECONDS = 240
+DEFAULT_AI_TIMEOUT_FINAL_SECONDS = 900
+DEFAULT_AI_TIMEOUT_CONVERSATION_SECONDS = 180
+#: lease 바닥에 더하는 여유(초) — DB 적재·재배달 판단이 lease 안에서 끝나게.
+_FINALIZE_LEASE_MARGIN_SECONDS = 300
+
+
+def _positive_seconds(name: str, default: int) -> int:
+    """timeout env — **양의 정수(초)만**. 숫자가 아니거나 0·음수면 시작 오류로 멈춘다(조용한 기본값 금지 · OQ-1015)."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError as error:
+        raise ValueError(f"{name} must be a positive integer (seconds), got {raw!r}") from error
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer (seconds), got {raw!r}")
+    return value
+
+
 def _flag(raw: str | None) -> bool:
     """env 의 불리언 — 말하지 않으면 끔이다. 알림은 켜는 쪽이 위험하므로 기본을 끔에 둔다."""
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -96,6 +119,12 @@ class Settings:
     #: 순으로 한 배달 안에서 돌기 때문이다. 짧으면 긴 음원을 다시 듣는 동안 lease 가 먼저 만료되고,
     #: 다른 워커가 같은 회의를 집어 재전사가 두 번 돈다.
     meeting_finalize_lease_seconds: int = 1800
+    #: AI 호출의 **단계별** 상한(초) — SPEC-010 §4.6. provider 공장이 단계마다 이 값으로 프로필을 만든다.
+    #: 보고서 생성(`generate`)은 대화와 같은 provider 라 대화 값을 따른다.
+    ai_timeout_batch_seconds: int = DEFAULT_AI_TIMEOUT_BATCH_SECONDS
+    ai_timeout_warmstart_seconds: int = DEFAULT_AI_TIMEOUT_WARMSTART_SECONDS
+    ai_timeout_final_seconds: int = DEFAULT_AI_TIMEOUT_FINAL_SECONDS
+    ai_timeout_conversation_seconds: int = DEFAULT_AI_TIMEOUT_CONVERSATION_SECONDS
     report_queue_visibility_timeout: int = 120
     report_queue_max_attempts: int = 3
     report_stage_timeout_seconds: int = 300
@@ -144,6 +173,15 @@ class Settings:
     def __post_init__(self) -> None:
         if self.ai_provider not in AI_PROVIDERS:
             raise ValueError(f"AX_AI_PROVIDER must be one of {AI_PROVIDERS}")
+        for name in (
+            "ai_timeout_batch_seconds",
+            "ai_timeout_warmstart_seconds",
+            "ai_timeout_final_seconds",
+            "ai_timeout_conversation_seconds",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer (seconds)")
         object.__setattr__(self, "web_origin", _origin(self.web_origin, "AX_WEB_ORIGIN"))
         # API origin 도 같은 검사를 지난다 — 경로·쿼리가 붙으면 OAuth redirect_uri 가 조용히 틀어진다(검수 W-4).
         object.__setattr__(self, "api_origin", _origin(self.api_origin or self.web_origin, "AX_API_ORIGIN"))
@@ -160,6 +198,25 @@ class Settings:
     def room_booking_configured(self) -> bool:
         """계정이 갖춰졌는가. 아니면 예약을 시도조차 하지 않고 사유만 남긴다."""
         return bool(self.room_booking_email and self.room_booking_password)
+
+    @property
+    def effective_meeting_finalize_lease_seconds(self) -> int:
+        """합성 잡 lease 가 실제로 쓰는 값 — 설정값과 **한 배달이 걸릴 수 있는 최대 시간** 중 큰 쪽.
+
+        한 배달 = 재전사(최대 `retranscribe.TIMEOUT_SECONDS`) + 최종 합성 provider 호출 **최대 횟수**(`FINAL_MAX_PROVIDER_CALLS` —
+        시도 3 + 세션 유실 폴백 1 + timeout 뒤 새 세션 1) × 최종 상한 + 여유. timeout 이 아닌 실패(스키마 위반)도 답을 다 낸 뒤라
+        한 번이 상한까지 걸릴 수 있다. 워커는 이 값으로 잡고 **heartbeat 로 연장**한다(`meeting_worker`) — 바닥은 연장이 끊겨도
+        한 배달의 최악이 lease 안에 드는 안전판이다. lease 가 끝나면 다른 워커가 같은 회의를 집어 재전사·합성이 겹쳐 돈다.
+        """
+        from ax_workspace.modules.meetings.finalize import FINAL_MAX_PROVIDER_CALLS
+        from ax_workspace.modules.meetings.retranscribe import TIMEOUT_SECONDS as RETRANSCRIBE_SECONDS
+
+        floor = (
+            RETRANSCRIBE_SECONDS
+            + FINAL_MAX_PROVIDER_CALLS * self.ai_timeout_final_seconds
+            + _FINALIZE_LEASE_MARGIN_SECONDS
+        )
+        return max(self.meeting_finalize_lease_seconds, floor)
 
     @property
     def meeting_ai_tool_registry(self) -> tuple[str, ...]:
@@ -207,6 +264,14 @@ class Settings:
             meeting_batch_max_wait_seconds=int(os.getenv("AX_MEETING_BATCH_MAX_WAIT_SECONDS", "90")),
             meeting_ai_tools=_tool_registry(os.getenv("AX_MEETING_AI_TOOLS")),
             meeting_finalize_lease_seconds=int(os.getenv("AX_MEETING_FINALIZE_LEASE_SECONDS", "1800")),
+            ai_timeout_batch_seconds=_positive_seconds("AX_AI_TIMEOUT_BATCH_SECONDS", DEFAULT_AI_TIMEOUT_BATCH_SECONDS),
+            ai_timeout_warmstart_seconds=_positive_seconds(
+                "AX_AI_TIMEOUT_WARMSTART_SECONDS", DEFAULT_AI_TIMEOUT_WARMSTART_SECONDS
+            ),
+            ai_timeout_final_seconds=_positive_seconds("AX_AI_TIMEOUT_FINAL_SECONDS", DEFAULT_AI_TIMEOUT_FINAL_SECONDS),
+            ai_timeout_conversation_seconds=_positive_seconds(
+                "AX_AI_TIMEOUT_CONVERSATION_SECONDS", DEFAULT_AI_TIMEOUT_CONVERSATION_SECONDS
+            ),
             report_queue_visibility_timeout=int(os.getenv("AX_REPORT_QUEUE_VISIBILITY_TIMEOUT", "120")),
             report_queue_max_attempts=int(os.getenv("AX_REPORT_QUEUE_MAX_ATTEMPTS", "3")),
             report_stage_timeout_seconds=int(os.getenv("AX_REPORT_STAGE_TIMEOUT_SECONDS", "300")),

@@ -919,6 +919,15 @@ export const meetingScreen = {
    * 그쪽은 아직 회의가 돌고 AI 가 중간 요약을 채우는 중이고, 이쪽은 회의가 닫혀 최종 한 벌을 짓는 중이다.
    */
   finalNoteGenerating: "최종 회의록 생성 중입니다.",
+  /* 「용어 보정」 표 — 최종 회의록 끝(SPEC-010 §2.5 · D-18). 읽기 전용 */
+  termCorrectionsTitle: "용어 보정",
+  termCorrectionsHeard: "들린 말",
+  termCorrectionsCorrected: "바로잡은 말",
+  termCorrectionsGrade: "처리",
+  /** 정정이 돌았고 바꿀 것이 없었다(`[]`) — H-3. 돌지 않은 회의(`null`)는 표 자리 자체가 없다 */
+  termCorrectionsEmpty: "바로잡은 용어 없음",
+  /** `auto` = 본문에 바로잡은 말로 썼다 · `presumed` = 본문은 들린 말 그대로, 표에만 남겼다 */
+  termCorrectionGrade: { auto: "바꿈", presumed: "표에만" } as Record<string, string>,
   lastSaved: (at: string) => `마지막 저장 ${at}`,
   edit: "수정",
   saved: "저장했습니다.",

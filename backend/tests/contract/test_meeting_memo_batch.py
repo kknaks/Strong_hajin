@@ -41,6 +41,8 @@ class FakeBatchAgent:
         self.opened: list[dict] = []
         self.runs: list[dict] = []
         self.script: list[str | Exception] = []
+        self.fresh: list[dict] = []
+        self.fresh_session_ref: str | None = "session-fresh"
 
     def open_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> str | None:
         self.opened.append({"persona_id": persona_id, "prompt": prompt, "tools": tools})
@@ -50,6 +52,14 @@ class FakeBatchAgent:
         self.runs.append(
             {"persona_id": persona_id, "session_ref": session_ref, "prompt": prompt, "tools": tools}
         )
+        return self._next()
+
+    def run_batch_in_new_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> tuple[str | None, str]:
+        """새 세션 1회 배치 (SPEC-010 §4.6) — 같은 대본에서 하나를 꺼낸다. 열린 세션은 `fresh_session_ref`."""
+        self.fresh.append({"persona_id": persona_id, "prompt": prompt, "tools": tools})
+        return self.fresh_session_ref, self._next()
+
+    def _next(self) -> str:
         if not self.script:
             return _output([])
         item = self.script.pop(0)
@@ -381,9 +391,12 @@ def test_starting_a_meeting_opens_one_provider_session_in_the_background(tmp_pat
     # 도구는 회의를 만든 사람으로 선다 (SPEC §13 `OQ-315` 잠정값).
     assert opened["persona_id"] == "mina"
     assert opened["tools"] == DEFAULT_TOOL_REGISTRY
-    # 첫 turn 이 맥락을 싣는다 — 회의 정보 · 안건. 참석자는 수만 싣고 실명을 흘리지 않는다.
+    # 첫 turn 이 맥락을 싣는다 — 회의 정보 · 안건. **이 회의의 참석자는 수만** 싣고 실명을 흘리지 않는다.
+    # 조직 명부는 AI 맥락 목록(SPEC-010 §4.5 · D-13 — 구성원 전부)으로 따로 실리고, 화자 짐작에 쓰지 말라는 줄이 붙는다.
     assert "메모할 회의" in opened["prompt"] and "첫 안건" in opened["prompt"]
-    assert "지호" not in opened["prompt"]
+    meeting_part = opened["prompt"].split("## 이 회의", 1)[1].split("## 조직 맥락 목록", 1)[0]
+    assert "지호" not in meeting_part
+    assert "## 조직 맥락 목록" in opened["prompt"] and "화자가 누구인지 짐작하는 데 쓰지 마라" in opened["prompt"]
 
     with application._session_factory() as session:
         assert application._meetings(session).ai_session_ref(UUID(meeting_id)) == "session-1"

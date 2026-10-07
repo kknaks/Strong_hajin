@@ -103,12 +103,39 @@ def summarize_stderr(stderr: str, *, limit: int = STDERR_SUMMARY_LIMIT) -> str:
     return text
 
 
-def invoke_runner(runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel) -> ProcessResult:
-    """Call a streaming runner; fall back to the legacy 5-argument runner used by older tests."""
+def invoke_runner(
+    runner, command, arguments, cwd, environment, timeout_seconds, on_line, should_cancel, stdin_text: str | None = None
+) -> ProcessResult:
+    """Call a streaming runner; fall back to the legacy 5-argument runner used by older tests.
+
+    `stdin_text` — **프롬프트는 argv 가 아니라 stdin 으로 넘긴다** (WORK-012 WP2 수정 1 W-1). 리눅스는 인자 하나에 128KiB
+    (`MAX_ARG_STRLEN`) 상한이 있고, 최종 합성 프롬프트(재전사 전량 + 맥락 목록)는 그보다 크다. 그 키워드를 모르는 옛 시험 러너는
+    stdin 없이 부른다(프롬프트를 보지 않는 시험들이다).
+    """
+    if stdin_text is not None:
+        try:
+            return runner(
+                command, arguments, cwd, environment, timeout_seconds,
+                on_line=on_line, should_cancel=should_cancel, stdin_text=stdin_text,
+            )
+        except TypeError as error:
+            # 그 키워드를 모르는 러너다(옛 시험 러너는 `on_line` 부터 모른다) — 아래 옛 길로 다시 부른다.
+            if not any(name in str(error) for name in ("stdin_text", "on_line", "should_cancel", "positional")):
+                raise
     try:
         return runner(command, arguments, cwd, environment, timeout_seconds, on_line=on_line, should_cancel=should_cancel)
     except TypeError as error:
         if "on_line" not in str(error) and "positional" not in str(error):
+            raise
+        return runner(command, arguments, cwd, environment, timeout_seconds)
+
+
+def invoke_plain_runner(runner, command, arguments, cwd, environment, timeout_seconds, stdin_text: str) -> ProcessResult:
+    """단발 생성(`generate`)용 — stdin 으로 프롬프트를 넘긴다. 키워드를 모르는 옛 시험 러너는 5인자로 부른다."""
+    try:
+        return runner(command, arguments, cwd, environment, timeout_seconds, stdin_text=stdin_text)
+    except TypeError as error:
+        if "stdin_text" not in str(error):
             raise
         return runner(command, arguments, cwd, environment, timeout_seconds)
 
@@ -121,16 +148,19 @@ def subprocess_runner(
     timeout_seconds: int,
     on_line: Callable[[str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    stdin_text: str | None = None,
 ) -> ProcessResult:
     """Run the CLI in its own process group and stream stdout lines to `on_line` as they arrive.
 
     Cancel and timeout stop the whole group (a CLI may spawn MCP child processes), so nothing is orphaned.
+    `stdin_text` 가 있으면 그 글을 stdin 으로 흘리고 닫는다 — 프롬프트가 argv 한도(128KiB)에 걸리지 않는다. 쓰기는 따로 도는
+    스레드가 해서, CLI 가 stdout 을 먼저 쏟아도 파이프가 서로 막히지 않는다. 없으면 지금처럼 `/dev/null`.
     """
     process = subprocess.Popen(
         [command, *arguments],
         cwd=cwd,
         env=environment,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -157,7 +187,21 @@ def subprocess_runner(
                 except Exception as error:  # noqa: BLE001 - recorded and surfaced; ingestion of further lines stops
                     ingest_failure.append(error)
 
+    def feed_stdin() -> None:
+        assert process.stdin is not None
+        try:
+            process.stdin.write(stdin_text or "")
+        except (BrokenPipeError, OSError):
+            pass  # CLI 가 먼저 끝났다 — 결과는 returncode 와 stderr 가 말한다
+        finally:
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
     readers = [threading.Thread(target=drain_stdout, daemon=True), threading.Thread(target=drain_stderr, daemon=True)]
+    if stdin_text is not None:
+        readers.append(threading.Thread(target=feed_stdin, daemon=True))
     for reader in readers:
         reader.start()
     while process.poll() is None:

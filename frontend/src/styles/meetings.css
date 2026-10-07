@@ -66,6 +66,9 @@
 /* 공유 모달의 「볼 수 있는 사람」 표 — 모달 안이라 기본 표보다 한 단 낮다 (바퀴 9 에 구 styles.css 에서 옮겨 왔다) */
 .scax-table.meeting-share-table th{height:34px;font-size:var(--scax-text-caption1-size)}
 .scax-table.meeting-share-table td{height:40px;font-size:var(--scax-text-label2-size)}
+/* 「용어 보정」 표(SPEC-010 §2.5) — 공유 표와 같은 촘촘한 높이. 용어가 길면 줄을 바꾼다(가로로 밀지 않는다) */
+.scax-table.meeting-term-table th{height:34px;font-size:var(--scax-text-caption1-size)}
+.scax-table.meeting-term-table td{height:40px;font-size:var(--scax-text-label2-size);white-space:normal;overflow-wrap:anywhere}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    바퀴 9-B — 구 `styles.css` 에서 옮겨 온 회의 규칙 50개.

@@ -367,7 +367,86 @@ def test_final_prompt_carries_the_meeting_day_for_relative_due_dates() -> None:
         ai_agendas=[],
         memo_lines=[],
         ai_lines=[],
+        transcript=[],
     )
 
     assert "기준일: 2026-09-13 (일)" in prompt
     assert "YYYY-MM-DD" in prompt and "환산" in prompt
+
+
+# ── WORK-012 WP2-BE — 용어 보정 표 · 안건 순서 · 배치에 온 보정 표 (SPEC-010 §4.7) ─────────────────────────────────
+
+
+def _final_body(**extra) -> str:
+    import json as _json
+
+    return _json.dumps(
+        {
+            "title_candidate": None,
+            "agendas": [
+                {"title": "늦은 안건", "merged_from": [], "concluded": False, "todos": [],
+                 "lines": [{"text": "뒤", "evidence": [{"from_ms": 50_000, "to_ms": 51_000}], "from_lines": []}]},
+                {"title": "줄 없는 안건", "merged_from": [], "concluded": False, "lines": [], "todos": []},
+                {"title": "이른 안건", "merged_from": [], "concluded": False, "todos": [],
+                 "lines": [{"text": "앞", "evidence": [{"from_ms": 1_000, "to_ms": 2_000}], "from_lines": []},
+                           {"text": "더 뒤", "evidence": [{"from_ms": 70_000, "to_ms": 71_000}], "from_lines": []}]},
+            ],
+            **extra,
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_term_corrections_keep_valid_rows_in_order_and_drop_only_the_bad_ones() -> None:
+    """형식 오류 항목만 버린다 — 시도를 실패시키지 않는다 (SPEC-010 §4.7-6 · OQ-1013)."""
+    notes = parse_final_output(_final_body(term_corrections=[
+        {"heard": "캐스티", "corrected": "CASTI", "grade": "auto"},
+        {"heard": "차티", "corrected": "김차태", "grade": "presumed"},
+        {"heard": "캐스티", "corrected": "다른 것", "grade": "auto"},          # 같은 들린 말 — 첫 것만
+        {"heard": "", "corrected": "빈 들린 말", "grade": "auto"},              # 길이 0
+        {"heard": "가" * 101, "corrected": "길다", "grade": "auto"},           # 100자 초과
+        {"heard": "등급", "corrected": "틀림", "grade": "maybe"},              # 등급 밖
+        {"heard": "칸", "corrected": None, "grade": "auto"},                    # 타입
+        "문자열 항목",
+    ]))
+    assert [(row.heard, row.corrected, row.grade) for row in notes.term_corrections] == [
+        ("캐스티", "CASTI", "auto"),
+        ("차티", "김차태", "presumed"),
+    ]
+
+
+def test_a_missing_or_malformed_term_table_is_none_not_an_empty_table_nor_a_failed_attempt() -> None:
+    """칸이 없거나 배열이 아니면 `None` — 정정 pass 를 건너뛴 응답이다. `[]`(돌았는데 없음)와 가른다 (WP2 수정 1 W-2 · H-4).
+    시도는 실패시키지 않는다(본문은 섰다)."""
+    assert parse_final_output(_final_body()).term_corrections is None
+    assert parse_final_output(_final_body(term_corrections="표가 아님")).term_corrections is None
+    assert parse_final_output(_final_body(term_corrections=[])).term_corrections == []
+
+
+def test_the_provider_schema_requires_the_term_table() -> None:
+    assert "term_corrections" in FINAL_OUTPUT_SCHEMA["required"]
+    assert FINAL_OUTPUT_SCHEMA["properties"]["term_corrections"]["items"]["properties"]["grade"]["enum"] == ["auto", "presumed"]
+
+
+def test_final_agendas_are_ordered_by_their_earliest_evidence_and_lineless_ones_go_last() -> None:
+    """D-15 — 모델 순서가 아니라 회의 흐름 순서(가장 이른 근거 시작). 줄 없는 안건은 끝."""
+    notes = parse_final_output(_final_body())
+    outcome = finalize_notes(
+        notes,
+        FinalizationContext(covered_ms=(0, 100_000), meeting_title="회의", existing_task_titles=frozenset(), next_meeting_starts_on=None),
+    )
+    assert [agenda.title for agenda in outcome.notes.agendas] == ["이른 안건", "늦은 안건", "줄 없는 안건"]
+
+
+def test_a_batch_output_with_a_term_table_drops_the_table_not_the_batch() -> None:
+    """중간 배치는 정정하지 않는다 (D-16) — 보정 표가 오면 그 칸만 버리고 본문은 산다."""
+    import json as _json
+
+    from ax_workspace.modules.meetings.batch import parse_output
+
+    body = _json.dumps({
+        "agendas": [{"title": "화제", "lines": [], "todos": []}],
+        "term_corrections": [{"heard": "캐스티", "corrected": "CASTI", "grade": "auto"}],
+    }, ensure_ascii=False)
+    [agenda] = parse_output(body)
+    assert agenda.title == "화제"

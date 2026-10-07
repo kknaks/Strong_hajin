@@ -1290,7 +1290,18 @@ export type MeetingTranscript = {
   memos: Array<{ line_id: string; agenda_id: string; text: string; author: string | null; atMs: number | null }>;
 };
 
-export type MeetingRecord = { meeting: MeetingInfo; agendas: MeetingAgenda[] };
+/**
+ * 용어 보정 표 한 줄(SPEC-010 §4.7-4) — `heard` 들린 말(STT 표기) · `corrected` 바로잡은 말 ·
+ * `grade` `auto`(본문에 바로잡은 말로 썼다) | `presumed`(본문은 들린 말 그대로 — 표에만). 순서 = 원문에 처음 나온 순(서버가 정함).
+ */
+export type MeetingTermCorrection = { heard: string; corrected: string; grade: "auto" | "presumed" | string };
+
+/**
+ * 회의 상세 응답. `term_corrections` 는 **최상위**(`meeting`·`agendas` 옆 — 코디 판정 2026-10-07):
+ * `null` = 정정이 돌지 않은 회의(이 판 이전 · 합성 실패 — 표 자리 없음) · `[]` = 돌았는데 바로잡을 것이 없었다 · 행 목록.
+ * 옛 서버·스트림이 이 칸을 싣지 않으면(`undefined`) `null` 과 같이 본다.
+ */
+export type MeetingRecord = { meeting: MeetingInfo; agendas: MeetingAgenda[]; term_corrections?: MeetingTermCorrection[] | null };
 
 /* ---- 회의 자료와 공유 (SCAX-WP-005) ---- */
 

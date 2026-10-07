@@ -5,6 +5,7 @@ from ax_workspace.modules.ax_execution.browser_interactions import BrowserRecord
 from ax_workspace.bootstrap.browser_interactions import SessionBrowserFileTargets
 from ax_workspace.platform.browser_interactions import SqlAlchemyBrowserInteractionRepository
 
+from ax_workspace.modules.ax_execution.context_catalog import render_ai_context_catalog
 from ax_workspace.modules.ax_execution.result_contracts import ActionMaterialDraftView
 from ax_workspace.modules.organization_access.commands import AssistantCharacterResult
 from ax_workspace.modules.ax_execution.conversation_commands import ConversationMessageResult
@@ -99,9 +100,11 @@ from ax_workspace.modules.ax_execution.ai import (
     AiProvider,
     ProviderFailure,
     ProviderSessionUnavailable,
+    ProviderTimedOut,
 )
 from ax_workspace.platform.codex_cli import CodexCliMcpServer, CodexCliProfile, CodexCliProviderAdapter
-from ax_workspace.platform.claude_cli import ClaudeCliProviderAdapter
+from ax_workspace.platform.claude_cli import ClaudeCliProfile, ClaudeCliProviderAdapter
+from ax_workspace.platform.ai_context import SqlAlchemyAiContextCatalogSource
 from ax_workspace.platform.conversation_jobs import ConversationJobQueue
 from ax_workspace.platform.durable_jobs import MemoryDurableJobQueue, build_job_queue
 from ax_workspace.platform.conversations import (
@@ -152,6 +155,8 @@ from ax_workspace.modules.meetings.commands import (
 )
 from ax_workspace.modules.meetings.domain import TRACK_MEMO, MeetingAccessDenied, MeetingError, MeetingVersionConflict
 from ax_workspace.modules.meetings.batch import (
+    AiCallTimedOut,
+    AiSessionLost,
     CAUSE_AGENDA_SWITCH,
     CAUSE_TRANSCRIPT,
     OUTPUT_SCHEMA as BATCH_OUTPUT_SCHEMA,
@@ -469,6 +474,9 @@ class _SessionFinalizeGateway:
         with self._application._session_factory() as session:
             return self._application._meetings(session).finalize_input(UUID(meeting_id))
 
+    def ai_context_catalog(self) -> str:
+        return self._application.ai_context_catalog()
+
     def existing_task_titles(self, persona_id: str) -> set[str]:
         """이미 있는 업무의 제목 — 후보 중복을 막는 근거다. **검사 시점에** 읽는다 (SCAX-SPEC-004 §8.1)."""
         principal = self._application.authenticated_principal(persona_id)
@@ -514,7 +522,10 @@ class _CodexFinalizeAgent:
         self._application = application
 
     def run_final(self, *, persona_id: str, session_ref: str | None, prompt: str) -> str:
-        provider = self._application.meeting_batch_provider(self._application._settings.meeting_ai_tool_registry)
+        settings = self._application._settings
+        provider = self._application.meeting_batch_provider(
+            settings.meeting_ai_tool_registry, timeout_seconds=settings.ai_timeout_final_seconds
+        )
         request = AiConversationRequest(
             prompt=prompt,
             provider_session_ref=session_ref,
@@ -527,6 +538,9 @@ class _CodexFinalizeAgent:
         )
         try:
             return provider.converse(request).body
+        except ProviderTimedOut as error:
+            # 상한을 넘겼다 — 합성은 같은 세션을 다시 잇지 않고 새 세션으로 1회 간다 (SPEC-010 §4.6).
+            raise AiCallTimedOut(str(error)) from error
         except ProviderSessionUnavailable as error:
             # 세션은 회의 중 API 프로세스가 열었고 합성은 워커가 돈다 — 그 세션이 여기 없을 수 있다.
             raise FinalizeSessionLost(str(error)) from error
@@ -542,12 +556,15 @@ class _SessionBatchGateway:
         with self._application._session_factory() as session:
             return self._application._meetings(session).warm_start_context(UUID(meeting_id))
 
-    def record_session(self, meeting_id: str, *, session_ref: str, persona_id: str) -> None:
+    def record_session(
+        self, meeting_id: str, *, session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None:
         with self._application._session_factory() as session:
-            self._application._meetings(session).record_ai_session(
-                UUID(meeting_id), session_ref=session_ref, persona_id=persona_id
+            current = self._application._meetings(session).record_ai_session(
+                UUID(meeting_id), session_ref=session_ref, persona_id=persona_id, expected=expected
             )
             session.commit()
+            return current
 
     def pending_chars(self, meeting_id: str) -> int:
         with self._application._session_factory() as session:
@@ -576,6 +593,13 @@ class _SessionBatchGateway:
             covered_ms=raw["covered_ms"],
             allowed_task_ids=allowed,
         )
+
+    def ai_context_catalog(self) -> str:
+        return self._application.ai_context_catalog()
+
+    def ai_track(self, meeting_id: str) -> list[dict[str, Any]]:
+        with self._application._session_factory() as session:
+            return self._application._meetings(session).ai_track_material(UUID(meeting_id))
 
     def record_run(
         self, meeting_id: str, *, seq: int, status: str, cause: str, from_seq: int, to_seq: int, reason: str | None
@@ -612,31 +636,58 @@ class _CodexBatchAgent:
         self._application = application
 
     def open_session(self, *, persona_id: str, prompt: str, tools: tuple[str, ...]) -> str | None:
-        # 웜스타트는 형식을 예고만 한다 — 「준비됨」 한 마디에 스키마를 걸지 않는다.
-        result = self._converse(persona_id, prompt, tools, session_ref=None, schema=None)
+        # 웜스타트는 형식을 예고만 한다 — 「준비됨」 한 마디에 스키마를 걸지 않는다. 상한은 웜스타트 값이다.
+        result = self._converse(
+            persona_id, prompt, tools, session_ref=None, schema=None,
+            timeout_seconds=self._application._settings.ai_timeout_warmstart_seconds,
+        )
         return result.provider_session_ref
 
     def run_batch(self, *, persona_id: str, session_ref: str, prompt: str, tools: tuple[str, ...]) -> str:
         return self._converse(
-            persona_id, prompt, tools, session_ref=session_ref, schema=BATCH_OUTPUT_SCHEMA
+            persona_id, prompt, tools, session_ref=session_ref, schema=BATCH_OUTPUT_SCHEMA,
+            timeout_seconds=self._application._settings.ai_timeout_batch_seconds,
         ).body
 
-    def _converse(
-        self, persona_id: str, prompt: str, tools: tuple[str, ...], *, session_ref: str | None, schema: dict | None
-    ) -> Any:
-        provider = self._application.meeting_batch_provider(tools)
-        return provider.converse(
-            AiConversationRequest(
-                prompt=prompt,
-                provider_session_ref=session_ref,
-                context_references=[],
-                delegated_tool_context=AiDelegatedToolContext(
-                    principal_id=persona_id, causation_id=f"meeting-batch:{persona_id}"
-                ),
-                # 대화로 돌아도 출력은 스키마 안에서만 나온다 (SCAX-SPEC-004 §7.2-6).
-                output_schema=schema,
-            )
+    def run_batch_in_new_session(
+        self, *, persona_id: str, prompt: str, tools: tuple[str, ...]
+    ) -> tuple[str | None, str]:
+        """새 세션 1회 배치 (SPEC-010 §4.6) — 웜스타트 맥락과 그 배치를 한 turn 에. 상한은 배치 값이다."""
+        result = self._converse(
+            persona_id, prompt, tools, session_ref=None, schema=BATCH_OUTPUT_SCHEMA,
+            timeout_seconds=self._application._settings.ai_timeout_batch_seconds,
         )
+        return result.provider_session_ref, result.body
+
+    def _converse(
+        self,
+        persona_id: str,
+        prompt: str,
+        tools: tuple[str, ...],
+        *,
+        session_ref: str | None,
+        schema: dict | None,
+        timeout_seconds: int,
+    ) -> Any:
+        provider = self._application.meeting_batch_provider(tools, timeout_seconds=timeout_seconds)
+        try:
+            return provider.converse(
+                AiConversationRequest(
+                    prompt=prompt,
+                    provider_session_ref=session_ref,
+                    context_references=[],
+                    delegated_tool_context=AiDelegatedToolContext(
+                        principal_id=persona_id, causation_id=f"meeting-batch:{persona_id}"
+                    ),
+                    # 대화로 돌아도 출력은 스키마 안에서만 나온다 (SCAX-SPEC-004 §7.2-6).
+                    output_schema=schema,
+                )
+            )
+        except ProviderTimedOut as error:
+            # 그 단계의 상한을 넘겼다 — 배치 서비스가 같은 세션 대신 새 세션으로 1회 다시 건다 (SPEC-010 §4.6).
+            raise AiCallTimedOut(str(error)) from error
+        except ProviderSessionUnavailable as error:
+            raise AiSessionLost(str(error)) from error
 
 
 class _SessionStreamGateway:
@@ -1000,7 +1051,9 @@ class WorkflowApplication(ExternalInboxOperations):
         )
         # One in-process job store per application when the memory backend is selected (tests); postgres joins each session.
         self.memory_job_queue: MemoryDurableJobQueue | None = MemoryDurableJobQueue() if settings.job_queue_backend == "memory" else None
-        self._report_provider = report_provider or create_conversation_provider(settings)
+        self._report_provider = report_provider or create_conversation_provider(
+            settings, timeout_seconds=settings.ai_timeout_conversation_seconds
+        )
         # 회의실 예약 시스템. **시험이 대역을 끼우는 자리**이고, 비어 있으면 계정이 갖춰졌을 때만 실물을 만든다.
         self._room_gateway: MeetingRoomGateway | None = None
         self._room_sync_locks: dict[UUID, threading.RLock] = {}
@@ -2090,14 +2143,29 @@ class WorkflowApplication(ExternalInboxOperations):
         """회의당 하나의 배치를 지키는 자리 — 프로세스 하나에 하나다."""
         return self._meeting_batch
 
-    def meeting_batch_provider(self, tools: tuple[str, ...]) -> AiProvider:
-        """배치가 쓰는 provider — 레지스트리가 준 도구만 여는 어댑터다.
+    def ai_context_catalog(self) -> str:
+        """AI 맥락 목록 한 덩어리 — **조직 전체를 그 순간 DB 에서** 읽어 조립한다 (SPEC-010 §4.5).
+
+        회의 웜스타트 · 새 세션 재시도 · 최종 합성이 이 하나를 부르고, AX 대화(WP3)도 같은 것을 쓴다. 상한이 없으므로
+        크기를 로그로 남긴다(WORK-012 I-6 — 실측 뒤 재검토).
+        """
+        with self._session_factory() as session:
+            catalog = SqlAlchemyAiContextCatalogSource(session).load()
+        text = render_ai_context_catalog(catalog)
+        logger.info(
+            "AI 맥락 목록: 프로젝트 %d · 업무 %d · 구성원 %d · %d자",
+            len(catalog.projects), len(catalog.tasks), len(catalog.members), len(text),
+        )
+        return text
+
+    def meeting_batch_provider(self, tools: tuple[str, ...], *, timeout_seconds: int) -> AiProvider:
+        """회의 AI(웜스타트·배치·최종)가 쓰는 provider — 레지스트리가 준 도구만 열고, **그 단계의 상한**으로 선다.
 
         시험이 `_report_provider` 를 대역으로 갈아 끼우면 그 대역이 그대로 온다: 경계는 하나다.
         """
         if not isinstance(self._report_provider, (CodexCliProviderAdapter, ClaudeCliProviderAdapter)):
             return self._report_provider
-        return create_conversation_provider(self._settings, enabled_tools=tools)
+        return create_conversation_provider(self._settings, enabled_tools=tools, timeout_seconds=timeout_seconds)
 
     def schedule_push_ai_batch(self, meeting_id: str, *, seq: int, agendas: list[dict[str, Any]]) -> None:
         """적재 커밋 직후 push. 스트림이 다른 event loop 에 살아 있어도 그 루프에서 깨운다."""
@@ -4740,21 +4808,25 @@ def create_scax_mcp_server(
 
 
 def create_codex_cli_provider(
-    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+    settings: Settings, *, enabled_tools: tuple[str, ...] = (), timeout_seconds: int | None = None
 ) -> CodexCliProviderAdapter:
-    """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP."""
+    """Compose the isolated CLI adapter with exactly one server-bound SCAX MCP — under that stage's limit (대화 값 기본)."""
     return CodexCliProviderAdapter(
-        CodexCliProfile(runtime_home=Path(settings.codex_runtime_home)),
+        CodexCliProfile(
+            runtime_home=Path(settings.codex_runtime_home),
+            timeout_seconds=timeout_seconds or settings.ai_timeout_conversation_seconds,
+        ),
         scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools),
     )
 
 
 def create_claude_cli_provider(
-    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+    settings: Settings, *, enabled_tools: tuple[str, ...] = (), timeout_seconds: int | None = None
 ) -> ClaudeCliProviderAdapter:
-    """Compose the Claude Code CLI adapter with the same server-bound SCAX MCP binding as Codex."""
+    """Compose the Claude Code CLI adapter with the same server-bound SCAX MCP binding as Codex — same stage limit."""
     return ClaudeCliProviderAdapter(
-        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools)
+        profile=ClaudeCliProfile(timeout_seconds=timeout_seconds or settings.ai_timeout_conversation_seconds),
+        scax_mcp_server=create_scax_mcp_server(settings, enabled_tools=enabled_tools),
     )
 
 
@@ -4766,7 +4838,13 @@ _AI_PROVIDER_FACTORIES = {
 
 
 def create_conversation_provider(
-    settings: Settings, *, enabled_tools: tuple[str, ...] = ()
+    settings: Settings, *, enabled_tools: tuple[str, ...] = (), timeout_seconds: int | None = None
 ) -> AiProvider:
-    """The one place a caller picks a provider — by `Settings.ai_provider`, never by importing an adapter."""
-    return _AI_PROVIDER_FACTORIES[settings.ai_provider](settings, enabled_tools=enabled_tools)
+    """The one place a caller picks a provider — by `Settings.ai_provider`, never by importing an adapter.
+
+    **단계 timeout 이 여기서 프로필이 된다** (SPEC-010 §4.6 · WORK-012 WP2-BE). 부르는 자리가 자기 단계 값을 넘긴다 —
+    회의 배치 · 웜스타트 · 최종 합성 · 대화(보고서 생성 포함). 안 넘기면 대화 값이다. 요청 필드
+    `AiProviderProfileRequest.timeout_seconds` 는 쓰지 않는다(두 길을 섞지 않는다).
+    """
+    limit = settings.ai_timeout_conversation_seconds if timeout_seconds is None else timeout_seconds
+    return _AI_PROVIDER_FACTORIES[settings.ai_provider](settings, enabled_tools=enabled_tools, timeout_seconds=limit)

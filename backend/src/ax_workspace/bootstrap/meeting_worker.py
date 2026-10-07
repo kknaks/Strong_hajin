@@ -35,8 +35,13 @@ class MeetingFinalizeWorker:
         *,
         application: WorkflowApplication | None = None,
         queue_factory: Callable[[Any], DurableJobQueue] | None = None,
+        heartbeat_seconds: float | None = None,
     ) -> None:
         self._settings = settings
+        #: lease 를 연장하는 간격 — 기본 lease 의 1/3 (report·material 워커와 같은 결). 시험이 짧게 준다.
+        self._heartbeat_seconds = (
+            heartbeat_seconds if heartbeat_seconds is not None else max(1.0, settings.effective_meeting_finalize_lease_seconds / 3)
+        )
         self._sessions = make_session_factory(settings.database_url)
         self._application = application or create_workflow_application(settings)
         self._worker_id = f"meeting-worker:{uuid4().hex[:12]}"
@@ -73,15 +78,39 @@ class MeetingFinalizeWorker:
         if not jobs:
             return False
         for job in jobs:
-            await asyncio.to_thread(self._handle, job)
+            await self._handle_with_heartbeat(job)
         return True
+
+    async def _handle_with_heartbeat(self, job: ClaimedJob) -> None:
+        """합성은 스레드에서 돌고, 그동안 **lease 를 주기적으로 연장한다** (WORK-012 WP2 수정 1 F-1 — report·material 워커와 같은 결).
+
+        최종 900초 × 최대 5회 + 재전사면 한 배달이 한 시간을 넘길 수 있다. lease 가 그 전에 끝나면 다른 워커가 같은 회의를
+        집어 재전사·합성이 겹쳐 돈다. 연장이 실패하면(lease 를 이미 잃었다) 로그를 남긴다 — 도는 합성은 멈출 수 없고,
+        잡 완료·실패 처리는 lease token 으로 fenced 되어 있어 늦은 쪽이 잡을 덮어쓰지 못한다.
+        """
+        work = asyncio.ensure_future(asyncio.to_thread(self._handle, job))
+        while True:
+            done, _ = await asyncio.wait({work}, timeout=self._heartbeat_seconds)
+            if done:
+                work.result()
+                return
+            if not await asyncio.to_thread(self._heartbeat, job):
+                logger.warning("회의 합성 잡 %s 의 lease 를 연장하지 못했습니다 — 이미 잃었을 수 있습니다", job.job_id)
+
+    def _heartbeat(self, job: ClaimedJob) -> bool:
+        with self._sessions() as session:
+            extended = self._queue_factory(session).extend_lease(
+                job.job_id, job.lease_token, self._settings.effective_meeting_finalize_lease_seconds
+            )
+            session.commit()
+            return extended
 
     def _claim_jobs(self) -> list[ClaimedJob]:
         with self._sessions() as session:
             jobs = self._queue_factory(session).claim(
                 JOB_KIND_MEETING_FINALIZE,
                 limit=1,
-                lease_seconds=self._settings.meeting_finalize_lease_seconds,
+                lease_seconds=self._settings.effective_meeting_finalize_lease_seconds,
                 worker_id=self._worker_id,
             )
             session.commit()

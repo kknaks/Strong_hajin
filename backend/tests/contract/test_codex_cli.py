@@ -176,9 +176,13 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
         def accept(self, event) -> None:
             observed.append(event)
 
-    def runner(command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int) -> ProcessResult:
+    def runner(
+        command: str, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: int,
+        on_line=None, should_cancel=None, stdin_text: str | None = None,
+    ) -> ProcessResult:
         captured["arguments"] = arguments
         captured["environment"] = environment
+        captured["stdin"] = stdin_text
         schema = json.loads(Path(arguments[arguments.index("--output-schema") + 1]).read_text(encoding="utf-8"))
         assert schema["required"] == ["body", "follow_up_candidates", "elements"]
         assert schema["properties"]["follow_up_candidates"]["maxItems"] == 3
@@ -291,7 +295,11 @@ def test_codex_cli_conversation_injects_only_server_bound_scax_mcp_context(tmp_p
     assert 'mcp_servers.scax.args=["-m", "ax_workspace.entrypoints.mcp"]' in arguments
     assert 'mcp_servers.scax.env_vars=["AX_MCP_PERSONA", "AX_MCP_CAUSATION_ID", "AX_PROFILE", "DATABASE_URL", "AX_WEB_ORIGIN"]' in arguments
     assert 'mcp_servers.scax.default_tools_approval_mode="approve"' in arguments
-    prompt = arguments[-1]
+    # 프롬프트는 argv 가 아니라 **stdin** 이다 — argv 의 프롬프트 자리는 `-`(WORK-012 WP2 수정 1 W-1 · 128KiB 인자 상한).
+    assert arguments[-1] == "-"
+    prompt = captured["stdin"]
+    assert isinstance(prompt, str) and "User message:" in prompt and "내 업무를 보여줘" in prompt
+    assert all("내 업무를 보여줘" not in argument for argument in arguments)
     assert "서로 의미가 겹치는 후보는 제외" in prompt
     assert "유용한 후보가 없으면 빈 배열" in prompt
     assert "일반 사용자 발화" in prompt
@@ -457,8 +465,12 @@ def test_a_conversation_that_asked_for_the_final_notes_schema_parses_as_final_no
                 "todos": [],
             }
         ],
+        # 정정 pass 의 결과 — provider 스키마는 이 칸을 **필수**로 건다 (SPEC-010 §4.7 · WORK-012 WP2-BE).
+        "term_corrections": [{"heard": "배포", "corrected": "배포", "grade": "auto"}],
     }
-    provider = _conversation_provider(tmp_path, _schema_runner(produced, ["title_candidate", "agendas"]))
+    provider = _conversation_provider(
+        tmp_path, _schema_runner(produced, ["title_candidate", "agendas", "term_corrections"])
+    )
 
     result = provider.converse(
         AiConversationRequest(
@@ -604,3 +616,26 @@ def test_a_shared_runtime_home_tolerates_another_process_linking_auth_first(tmp_
 
     monkeypatch.setattr(Path, "symlink_to", raced)
     assert prepare_isolated_codex_home(home, auth_file=auth) == home.resolve()
+
+
+def test_a_conversation_timeout_is_classified_and_uses_the_profile_limit(tmp_path):
+    """SPEC-010 §4.6 — 상한 초과는 `ProviderTimedOut`(여전히 `ProviderRequestFailed`)으로 갈린다. 상한은 프로필(단계 값)이다."""
+    import subprocess
+
+    from ax_workspace.modules.ax_execution.ai import ProviderTimedOut
+
+    seen: list[int] = []
+
+    def runner(command, arguments, cwd, environment, timeout, on_line=None, should_cancel=None):
+        seen.append(timeout)
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}")
+    provider = CodexCliProviderAdapter(
+        CodexCliProfile(runtime_home=tmp_path / "runtime", auth_file=auth, timeout_seconds=900), runner=runner,
+        scax_mcp_server=CodexCliMcpServer(command="python", arguments=(), environment={}))
+    with pytest.raises(ProviderTimedOut) as raised:
+        provider.converse(AiConversationRequest("합성", "session-1", [], AiDelegatedToolContext("mina", "exec-1")))
+    assert isinstance(raised.value, ProviderRequestFailed)
+    assert seen == [900]

@@ -320,9 +320,34 @@ class MeetingRecord(Base):
     last_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # 「진행 중」으로 옮긴 실제 시각 — 예정 시각과 다르다. 확정 발화의 `at_ms` 가 이 값을 기준으로 잰다.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: **정정 pass 가 들어간 최종 합성이 적재된 시각** (SPEC-010 §4.7-4 · 코디 판정 N-1). `NULL` = 정정이 돌지 않았다(이 판
+    #: 이전 회의 · 합성 실패) → 응답 `term_corrections: null`. 값이 있으면 보정 표 행 목록(0개면 `[]`)이다. 보정 표와 같은 트랜잭션.
+    term_corrected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MeetingTermCorrectionRecord(Base):
+    """용어 보정 표 한 행 — 최종 합성의 정정 pass 가 바로잡은 쌍 (SPEC-010 §4.7 · DEC-009 D-16·D-17·D-18).
+
+    회의 최종 벌에 매달린 표다. **최종 합성이 성공할 때마다 그 회의 것을 통째로 갈아 끼운다**(최종 벌 전량 교체와 같은
+    트랜잭션). 원문(스크립트)은 바꾸지 않는다 — `heard` 가 남아 있어 사람이 되돌릴 수 있다. 순서 = 원문에 처음 나온 순.
+    """
+
+    __tablename__ = "meeting_term_corrections"
+    __table_args__ = (Index("ix_meeting_term_corrections_meeting_order", "meeting_id", "order_index"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id"), nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 들린 말 — 원문의 STT 표기 그대로 (1~100자).
+    heard: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: 바로잡은 말 — 맥락 목록의 정확한 표기 (1~100자).
+    corrected: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: `auto`(본문에 바로잡은 말로 썼다) | `presumed`(본문은 들린 말 그대로 · 표에만).
+    grade: Mapped[str] = mapped_column(String(10), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MeetingRoomCreationAttemptRecord(Base):

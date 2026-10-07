@@ -6,7 +6,8 @@
   "additionalProperties": false,
   "required": [
     "title_candidate",
-    "agendas"
+    "agendas",
+    "term_corrections"
   ],
   "properties": {
     "title_candidate": {
@@ -154,6 +155,40 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "term_corrections": {
+      "description": "SPEC-010 §4.7 — **정정 pass 의 결과**(용어 보정 표). 원문에서 STT 오인식으로 보이는 표기를 조직 맥락 목록의 이름에 비춰 바로잡은 쌍이다. 원문에 처음 나온 순서로 낸다. 바로잡을 것이 없으면 빈 배열. `auto` = 확실한 기술 용어·고유명사(제품·프로젝트·시스템명) — 회의록 본문에 바로잡은 말로 썼다 · `presumed` = 인명·숫자·금액·일정 — 본문은 들린 말 그대로 두고 표에만 남긴다. 화자 라벨은 바꾸지 않는다. 서버는 항목마다 다시 보고 틀린 항목만 버린다(시도를 실패시키지 않는다).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "heard",
+          "corrected",
+          "grade"
+        ],
+        "properties": {
+          "heard": {
+            "type": "string",
+            "description": "들린 말 — 원문(스크립트)의 STT 표기 그대로",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "corrected": {
+            "type": "string",
+            "description": "바로잡은 말 — 맥락 목록의 정확한 표기",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "grade": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "presumed"
+            ]
           }
         }
       }

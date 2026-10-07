@@ -58,7 +58,9 @@ class ConversationWorker:
         self._settings = settings
         self._sessions = make_session_factory(settings.database_url)
         self._execution_guard = SqlAlchemyConversationExecutionGuard(self._sessions.kw["bind"])
-        self._provider = provider or create_conversation_provider(settings)
+        self._provider = provider or create_conversation_provider(
+            settings, timeout_seconds=settings.ai_timeout_conversation_seconds
+        )
         # Rebuilding the turn's context from the canonical conversation, not from the provider's memory.
         self._application = create_workflow_application(settings)
         self._worker_id = f"conversation-worker:{uuid4().hex[:12]}"

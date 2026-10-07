@@ -271,9 +271,9 @@ def test_a_merge_that_succeeds_closes_the_meeting_with_its_notes_already_written
     assert todo["linked"] is None
     # 담당자는 후보에 없다 (SPEC §8.2).
     assert "assignee" not in todo and "assignee_candidate" not in todo
-    # 같은 세션을 이어 쓴다 — 회의를 처음부터 다시 읽히지 않는다 (§8-3).
+    # 같은 세션을 이어 쓴다 (§8-3) — 그래도 **재전사 전체 발화는 매번 싣는다** (SPEC-010 §4.7-1 · OQ-904).
     assert agent.runs[0]["session_ref"] is not None
-    assert "확정 발화 0" not in agent.runs[0]["prompt"]
+    assert "확정 발화 0" in agent.runs[0]["prompt"]
 
 
 def test_a_merge_that_fails_leaves_the_speech_and_memos_and_marks_the_meeting_failed(tmp_path) -> None:

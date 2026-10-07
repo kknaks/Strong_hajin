@@ -22,11 +22,31 @@ from ax_workspace.modules.meetings.batch import BatchLine, SchemaViolation, demo
 
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "ai_final_output.json"
+#: provider 에 거는 스키마 — 용어 보정 표(`term_corrections`)까지 **필수**로 건다(모델이 정정 pass 를 빼먹지 않게).
 FINAL_OUTPUT_SCHEMA: dict[str, Any] = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-_validator = jsonschema.Draft202012Validator(FINAL_OUTPUT_SCHEMA)
+
+
+def _without_term_corrections(schema: dict[str, Any]) -> dict[str, Any]:
+    """서버 검증용 — 보정 표 칸만 뺀 같은 스키마. 보정 표는 **항목마다** 따로 본다(틀린 항목만 버림 · SPEC-010 §4.7-6)."""
+    trimmed = deepcopy(schema)
+    trimmed["properties"].pop("term_corrections", None)
+    trimmed["required"] = [name for name in trimmed["required"] if name != "term_corrections"]
+    return trimmed
+
+
+_validator = jsonschema.Draft202012Validator(_without_term_corrections(FINAL_OUTPUT_SCHEMA))
+#: 용어 보정 표의 등급 둘 (SPEC-010 §4.7-3 · D-17) — `auto` 는 본문에 바로잡은 말로 · `presumed` 는 표에만.
+TERM_GRADES = ("auto", "presumed")
+#: 들린 말 · 바로잡은 말의 길이 (OQ-1013 코디 기본값).
+TERM_MAX_CHARS = 100
 
 #: 합성 시도 상한. 넘으면 「실패」이고 사람이 [다시 시도]로 다시 건다 (WP Open Issue — 잠정값).
 FINAL_ATTEMPTS = 3
+#: **한 회차(한 배달)에서 provider 를 부르는 최대 횟수** — lease 바닥이 이 수로 셈한다(WORK-012 WP2 수정 1 F-1).
+#: 시도 `FINAL_ATTEMPTS` 번 + 세션 유실 콜드 폴백 1번(첫 resume 이 「세션 없음」 이면 같은 시도 안에서 한 번 더 부르고, 그 뒤
+#: 시도는 세션 없이 돈다) + timeout 뒤 새 세션 1번(시도 상한과 무관하게 보장되고, 그 뒤 실패는 무엇이든 끝이다).
+#: `MeetingFinalizeService` 의 루프가 이 수를 넘지 않는다 — 시험이 최악 경로를 실제로 돌려 센다.
+FINAL_MAX_PROVIDER_CALLS = FINAL_ATTEMPTS + 2
 #: 후보 설명의 마지막 줄이 지는 모양 (SPEC §8.2 `description`).
 SOURCE_LINE = "회의 {title} · 안건 {order} 에서"
 TITLELESS = "제목 없는 회의"
@@ -88,10 +108,22 @@ class FinalAgenda:
     todos: list[FinalTodo] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class TermCorrection:
+    """용어 보정 표 한 행 (SPEC-010 §4.7-4) — 들린 말 · 바로잡은 말 · 등급."""
+
+    heard: str
+    corrected: str
+    grade: str
+
+
 @dataclass(slots=True)
 class FinalNotes:
     title_candidate: str | None
     agendas: list[FinalAgenda]
+    #: 정정 pass 의 결과 — 원문에 처음 나온 순. 틀린 항목은 파서가 이미 버렸다. 빈 목록 = 바로잡을 것이 없었다.
+    #: `None` = 모델이 보정 표 칸을 내지 않았다(정정 pass 를 건너뜀) → 「정정이 돌았다」 를 찍지 않는다.
+    term_corrections: list[TermCorrection] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,12 +143,41 @@ class FinalizationOutcome:
     notes: FinalNotes
 
 
+def parse_term_corrections(raw: object) -> list[TermCorrection] | None:
+    """용어 보정 표 — **항목마다** 본다 (SPEC-010 §4.7-6 · OQ-1013).
+
+    `heard`·`corrected` 는 1~100자 문자열 · `grade` 는 `auto`|`presumed` · 같은 `heard` 는 첫 것만. 어긋난 항목은 **그 항목만**
+    버린다 — 보정 표가 틀려도 시도를 실패시키지 않는다(근거와 결이 다르다: 본문은 이미 섰다).
+    **칸이 없거나 배열이 아니면 `None`** — 정정 pass 를 건너뛴 응답이다. 빈 표(`[]` = 「돌았는데 바로잡을 것이 없었다」)로
+    보지 않는다(WORK-012 WP2 수정 1 W-2 · H-4): 적재가 `term_corrected_at` 을 찍지 않아 응답이 `null` 이 된다.
+    """
+    if not isinstance(raw, list):
+        return None
+    rows: list[TermCorrection] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        heard, corrected, grade = item.get("heard"), item.get("corrected"), item.get("grade")
+        if not isinstance(heard, str) or not isinstance(corrected, str) or grade not in TERM_GRADES:
+            continue
+        heard, corrected = heard.strip(), corrected.strip()
+        if not (1 <= len(heard) <= TERM_MAX_CHARS and 1 <= len(corrected) <= TERM_MAX_CHARS):
+            continue
+        if heard in seen:
+            continue
+        seen.add(heard)
+        rows.append(TermCorrection(heard=heard, corrected=corrected, grade=str(grade)))
+    return rows
+
+
 def parse_final_output(body: str) -> FinalNotes:
-    """스키마 1단 — JSON · 구조 · 타입 · enum · 길이. 부분 통과가 없다."""
+    """스키마 1단 — JSON · 구조 · 타입 · enum · 길이. 부분 통과가 없다. **용어 보정 표만 항목 단위로 따로 본다.**"""
     try:
         data = json.loads(body)
     except json.JSONDecodeError as error:
         raise SchemaViolation(f"출력이 JSON 이 아닙니다: {error.msg}") from error
+    corrections = parse_term_corrections(data.pop("term_corrections", None)) if isinstance(data, dict) else None
     problem = jsonschema.exceptions.best_match(_validator.iter_errors(data))
     if problem is not None:
         raise SchemaViolation(f"스키마 위반: {problem.message}")
@@ -153,7 +214,7 @@ def parse_final_output(body: str) -> FinalNotes:
                 ],
             )
         )
-    return FinalNotes(title_candidate=data["title_candidate"], agendas=agendas)
+    return FinalNotes(title_candidate=data["title_candidate"], agendas=agendas, term_corrections=corrections)
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -186,6 +247,19 @@ def _bind_evidence(notes: FinalNotes, covered_ms: tuple[int, int]) -> None:
                     "최종 회의록의 줄은 근거 구간을 하나는 들어야 합니다"
                     f" — 「{line.text[:30]}」 이(가) 딛는 구간이 없습니다"
                 )
+
+
+def order_agendas_by_evidence(notes: FinalNotes) -> None:
+    """최종 안건을 **그 안건 줄들의 가장 이른 근거 시작 시각** 순으로 다시 매긴다 (SPEC-010 §4.7-7 · D-15).
+
+    모델이 낸 순서에 기대지 않는다 — 회의 흐름 순서로 선다. 줄(근거)이 없는 안건은 끝에, 같은 시각이면 모델 순서(안정 정렬).
+    """
+
+    def earliest(agenda: FinalAgenda) -> float:
+        starts = [int(span["from_ms"]) for line in agenda.lines for span in line.evidence]
+        return min(starts) if starts else float("inf")
+
+    notes.agendas = sorted(notes.agendas, key=earliest)
 
 
 def _stamp_source_lines(notes: FinalNotes, *, meeting_title: str | None) -> None:
@@ -269,6 +343,8 @@ def _prepare_final_notes_in_place(
     follow-ups survive, how due dates are inferred, and whether an AI title may be retained.
     """
     _bind_evidence(notes, covered_ms)
+    # 순서를 먼저 매긴다 — 후보 설명의 「안건 N 에서」 가 화면의 안건 순서와 같아야 한다.
+    order_agendas_by_evidence(notes)
     _stamp_source_lines(notes, meeting_title=meeting_title or notes.title_candidate)
     if meeting_title:
         notes.title_candidate = None
@@ -318,6 +394,20 @@ _FINAL_INSTRUCTIONS = """회의가 끝났다. **재료를 보고 최종 회의�
 **원본 두 벌은 네가 건드리는 것이 아니다.** 그 둘은 최종본을 사람이 대조할 근거로 그대로 남는다 —
 네가 하는 일은 그것을 지우거나 고치는 것이 아니라 **그 위에 최종 벌 하나를 새로 짓는 것**이다.
 어디서 무엇이 왔는지는 **계보**로 남긴다.
+
+## 두 단계로 한다 — ① 정정 → ② 다시 쓰기
+
+**① 정정 pass.** 먼저 확정 발화 전량을 읽으며 **STT 오인식으로 보이는 표기**를 고른다 — 아래 「조직 맥락 목록」의
+프로젝트·업무·구성원 이름에 비춰 「이 말이 사실은 저것」 인 쌍이다. 쌍마다 등급을 단다:
+
+- `auto` — **확실한 기술 용어·고유명사**(제품·프로젝트·시스템명). ② 에서 회의록 본문에 **바로잡은 말**로 쓴다.
+- `presumed` — **인명·숫자·금액·일정**. 확신이 서도 본문은 **들린 말 그대로** 두고 표에만 남긴다 — 확인은 사람이 한다.
+- **화자 라벨은 어떤 경우에도 바꾸지 않는다.** 원문(확정 발화) 자체를 고쳐 쓰지 않는다 — 고치는 것은 네가 짓는 최종 벌뿐이다.
+
+고른 쌍을 `term_corrections` 에 `{{heard, corrected, grade}}` 로, **원문에 처음 나온 순서**대로 낸다. 같은 들린 말은 한 번만.
+목록에 근거가 없는 짐작은 내지 마라 — 바로잡을 것이 없으면 빈 배열이다.
+
+**② 다시 쓰기.** ① 의 결과를 반영해 최종 벌을 **처음부터** 짓는다(아래 규칙).
 
 ## 쓰는 규칙
 
@@ -381,13 +471,15 @@ def build_final_prompt(
     ai_agendas: list[dict[str, Any]],
     memo_lines: list[dict[str, Any]],
     ai_lines: list[dict[str, Any]],
-    transcript: list[dict[str, Any]] | None = None,
+    transcript: list[dict[str, Any]],
+    catalog: str | None = None,
 ) -> str:
-    """합성 입력 — **원본 두 벌 전체**(안건과 줄)다 (SPEC §8-3).
+    """합성 입력 — **원본 두 벌 전체**(안건과 줄) · **재전사 전체 발화(매번)** · **AI 맥락 목록** (SPEC §8-3 · SPEC-010 §4.7).
 
     0.4.x 는 사람 쪽 입력이 줄뿐이었다. 이제 사람이 세운 **안건 목록도 함께 실린다** — 사람이 이야기를
-    어떻게 갈랐는지가 그 자체로 재료이고, 계보가 그 id 를 딛는다. 세션이 발화를 기억하므로 원문은
-    폴백에서만 싣는다.
+    어떻게 갈랐는지가 그 자체로 재료이고, 계보가 그 id 를 딛는다. 0.6.x 는 세션이 발화를 기억한다고 보고 원문을
+    콜드 스타트에서만 실었다 — 세션 기억은 실시간 원문이라 재전사본과 다르고, 회의 앞머리가 회의록에서 빠졌다(SH-IMP-006).
+    이제 **세션을 이어 쓰든 새로 열든** 재전사 전체 발화를 싣는다(OQ-904). 맥락 목록은 정정 pass 의 근거다.
     """
     base_day = meeting.get("starts_on")
     next_day = meeting.get("next_meeting_on")
@@ -403,7 +495,8 @@ def build_final_prompt(
         f"\n사람 벌의 줄:\n{_dumps(memo_lines)}",
         f"\nAI 벌의 줄(네가 회의 중에 낸 것이다):\n{_dumps(ai_lines)}",
     ]
-    if transcript is not None:
-        # 콜드 스타트 — 세션이 없어 회의를 기억하지 못한다. 확정 발화 전량을 한 번에 싣는다.
-        sections.append(f"\n확정 발화 전량:\n{_dumps(transcript)}")
+    if catalog:
+        sections.append(f"\n{catalog}")
+    # 재전사한 확정 발화 전량 — 사실의 SoT 다(§8-3). 매번 싣는다(OQ-904).
+    sections.append(f"\n확정 발화 전량(재전사본 — 이것이 사실의 기준이다):\n{_dumps(transcript)}")
     return "".join(sections)

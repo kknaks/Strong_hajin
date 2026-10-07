@@ -26,6 +26,7 @@ from ax_workspace.platform.cli_process import (
     ProcessRunner,
     ScaxMcpServer,
     invalid_response_message as _invalid_response_message,
+    invoke_plain_runner as _invoke_plain_runner,
     invoke_runner as _invoke_runner,
     structured_body as _structured_body,
     subprocess_runner as _subprocess_runner,
@@ -53,6 +54,7 @@ from ax_workspace.modules.ax_execution.ai import (
     ProviderRequestFailed,
     ProviderResponseInvalid,
     ProviderSessionUnavailable,
+    ProviderTimedOut,
     ProviderUnavailable,
 )
 from ax_workspace.modules.ax_execution.answer_documents import AnswerDocument
@@ -85,6 +87,11 @@ _CONVERSATION_OUTPUT_SCHEMA: dict[str, Any] = {
     },
     "required": ["body", "follow_up_candidates", "elements"],
 }
+
+
+#: 프롬프트 자리의 `-` — `codex exec [PROMPT]`·`codex exec resume [ID] [PROMPT]` 가 `-` 이면 **stdin 에서 읽는다**
+#: (codex-cli 0.160.1 `--help`). 프롬프트를 argv 에 싣지 않는다 — 리눅스 한 인자 128KiB 상한(WORK-012 WP2 수정 1 W-1).
+STDIN_PROMPT = "-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,15 +140,17 @@ class CodexCliProviderAdapter:
             schema_path.write_text(json.dumps(request.output_schema), encoding="utf-8")
             started = perf_counter()
             try:
-                result = self._runner(
+                result = _invoke_plain_runner(
+                    self._runner,
                     command,
                     self._arguments(schema_path, output_path, request.prompt),
                     work_dir,
                     {**os.environ, "CODEX_HOME": str(runtime_home)},
                     self._profile.timeout_seconds,
+                    request.prompt,
                 )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Codex CLI generation timed out") from error
+                raise ProviderTimedOut("Codex CLI generation timed out") from error
             except OSError as error:
                 raise ProviderUnavailable("Codex CLI could not start") from error
 
@@ -222,9 +231,10 @@ class CodexCliProviderAdapter:
                     self._profile.timeout_seconds,
                     ingest.consume_line,
                     (lambda: cancel.is_set()) if cancel is not None else None,
+                    stdin_text=prompt,
                 )
             except subprocess.TimeoutExpired as error:
-                raise ProviderRequestFailed("Codex CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
+                raise ProviderTimedOut("Codex CLI conversation timed out", ingest.provenance(request, started, self._profile)) from error
             except EventIngestFailed as error:
                 # Persisting an observed event failed: the execution was stopped; the turn must not look complete.
                 raise ProviderRequestFailed("Codex CLI events could not be persisted", ingest.provenance(request, started, self._profile)) from error
@@ -321,9 +331,9 @@ class CodexCliProviderAdapter:
                 "-c",
                 'sandbox_mode="read-only"',
                 *common,
-                prompt,
+                STDIN_PROMPT,
             ]
-        return ["exec", "--sandbox", "read-only", "--color", "never", *common, prompt]
+        return ["exec", "--sandbox", "read-only", "--color", "never", *common, STDIN_PROMPT]
 
     def _mcp_overrides(self, request: AiConversationRequest) -> list[str]:
         server = self._scax_mcp_server
@@ -605,7 +615,7 @@ class CodexCliProviderAdapter:
             str(schema_path),
             "--output-last-message",
             str(output_path),
-            rendered_prompt,
+            STDIN_PROMPT,
         ]
 
     @staticmethod

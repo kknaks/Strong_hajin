@@ -173,6 +173,15 @@ class ProviderResponseInvalid(ProviderRequestFailed):
     """Invalid final output is terminal; repeating the agent could repeat domain effects."""
 
 
+class ProviderTimedOut(ProviderRequestFailed):
+    """The call did not finish within its stage's limit (SPEC-010 §4.6).
+
+    A subclass of `ProviderRequestFailed` so every existing handler still treats it as a failed call; callers that
+    can rebuild the context (meeting batch · warm start · final synthesis) tell it apart and retry once in a NEW
+    session instead of resuming the same one — resuming a session that just timed out tends to time out again.
+    """
+
+
 class ProviderSessionUnavailable(ProviderRequestFailed):
     """The session asked to resume does not exist where this process runs (e.g. it was opened in another pod).
 

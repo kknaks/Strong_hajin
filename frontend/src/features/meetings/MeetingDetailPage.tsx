@@ -53,6 +53,7 @@ import { MemoComposer } from "./MemoComposer";
 import { useMeetingStream, type StreamClosure } from "./stream";
 import { BookingModal, roomReservationNotice } from "./BookingModal";
 import { PersonSearch, PickedTags } from "./PeoplePicker";
+import { TermCorrections } from "./TermCorrections";
 import { ShareModal } from "./ShareModal";
 import { CreateWorkModal } from "../work/WorkModals";
 import { useRoster, type RosterPerson } from "./roster";
@@ -564,7 +565,9 @@ export function MeetingDetailPage({
   async function saveTitle(next: string) {
     if (!claim("title")) throw new Error("busy");
     try {
-      setRecord(await updateMeetingInfo(meetingId, { title: next }));
+      const updated = await updateMeetingInfo(meetingId, { title: next });
+      /* 수정 응답이 「용어 보정」 칸을 싣지 않으면(`undefined`) 들고 있던 표를 지우지 않는다 — 제목만 바꿨다 */
+      setRecord((prev) => (updated.term_corrections === undefined && prev ? { ...updated, term_corrections: prev.term_corrections } : updated));
       onError(null);
       onMeetingChanged?.();
     } catch (reason) {
@@ -712,6 +715,8 @@ export function MeetingDetailPage({
     final: agendas.filter((agenda) => agenda.track === "final"),
   };
   const trackAgendas = byTrack[shownTrack];
+  /** 「용어 보정」 표의 줄 — 배열일 때만(`[]` 포함). `null`·없음 = 정정이 돌지 않은 회의라 표 자리가 없다(SPEC-010 §2.5 · H-3). */
+  const termCorrections = Array.isArray(record?.term_corrections) ? record.term_corrections : null;
   /* AI 배치가 왔으면 그 회차가 낸 트랙 «전체» 를 쓴다 — 줄 id 를 붙들지 않고 통째로 갈아 끼운다 (§7.1).
      ⚠ **배치가 싣는 것은 AI 벌뿐이다** (`replace_ai_track` 의 반환이 세 벌 트리에서 AI 벌로 줄었다).
      그래서 이 갈아 끼우기는 **AI 탭에서만** 돈다 — 사람 벌 목록(`trackAgendas`)에는 손대지 않는다.
@@ -1301,6 +1306,11 @@ export function MeetingDetailPage({
                   {meetingScreen.addAgenda}
                 </Button>
               </div>
+            )}
+            {/* 「용어 보정」 표 — 최종 회의록 «끝»(SPEC-010 §2.5 · D-18). 최종 벌을 보는 「종료」·「실패」에서만, 정리 중에는 아니다.
+                `term_corrections` 가 배열일 때만 선다 — `null`(정정이 돌지 않은 회의)·없음이면 자리 자체가 없다(H-3) */}
+            {shownTrack === "final" && !settling && (settled || failedState) && termCorrections && (
+              <TermCorrections rows={termCorrections} />
             )}
           </div>
 

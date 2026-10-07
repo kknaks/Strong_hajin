@@ -88,7 +88,6 @@ def sniff_svg(data: bytes) -> bool:
 
 
 SVG_MEDIA_TYPE = "image/svg+xml"
-REMOTE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon", "image/vnd.microsoft.icon", SVG_MEDIA_TYPE})
 #: 토큰 자체가 죽었다는 슬랙 오류만. `missing_scope`(권한 하나 부족)는 **그 호출만** 실패다 — 연동을 끊지 않는다(BE 수정 판 4).
 SLACK_AUTH_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive"})
 

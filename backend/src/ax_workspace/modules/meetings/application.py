@@ -140,7 +140,9 @@ class MeetingRepository(Protocol):
     def delete_line(self, line: Any) -> None: ...
     def memo_lines(self, meeting: Any) -> list[Any]: ...
     def replace_track(self, meeting: Any, track: str) -> None: ...
-    def record_ai_session(self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str) -> None: ...
+    def record_ai_session(
+        self, meeting_id: UUID, *, provider_session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None: ...
     def ai_session(self, meeting_id: UUID) -> Any | None: ...
     def succeeded_batch_cursor(self, meeting_id: UUID) -> int: ...
     def next_batch_seq(self, meeting_id: UUID) -> int: ...
@@ -154,6 +156,8 @@ class MeetingRepository(Protocol):
     def link_todo(self, todo: Any, *, work_request_id: UUID) -> None: ...
     def delete_todo(self, todo: Any) -> None: ...
     def next_meeting_after(self, meeting: Any) -> Any | None: ...
+    def replace_term_corrections(self, meeting: Any, rows: list[dict[str, str]] | None, *, at: datetime) -> None: ...
+    def term_corrections(self, meeting: Any) -> list[Any]: ...
     def delete_note_content(self, meeting: Any) -> None: ...
     def append_transcript_block(
         self, meeting_id: UUID, *, speaker_label: str, at_ms: int, end_ms: int, text: str
@@ -944,6 +948,17 @@ class MeetingApplication:
                     }
                 )
         self._repository.replace_todos(meeting, drafts)
+        # 용어 보정 표 — **같은 트랜잭션**에서 통째로 갈아 끼우고 「정정이 돌았다」 시각을 찍는다 (SPEC-010 §4.7-4 · N-1).
+        # 0개여도 찍는다 — 「돌았는데 바로잡을 것이 없었다」(`[]`)와 「돌지 않았다」(`null`)를 가른다. 모델이 표 칸을 아예 내지
+        # 않았으면(`None`) 정정 pass 를 건너뛴 것이라 표를 비우고 시각도 걷는다 → 응답 `null` (WP2 수정 1 W-2).
+        corrections = getattr(notes, "term_corrections", None)
+        self._repository.replace_term_corrections(
+            meeting,
+            None
+            if corrections is None
+            else [{"heard": row.heard, "corrected": row.corrected, "grade": row.grade} for row in corrections],
+            at=datetime.now(UTC),
+        )
         if not meeting.title and notes.title_candidate:
             # 사람이 저장해야 제목이 된다 — 그전까지는 「제목 없는 회의」다 (SPEC-004 §3.1-6 · D14).
             meeting.title_candidate = notes.title_candidate
@@ -1059,6 +1074,8 @@ class MeetingApplication:
             "status": meeting.status,
             "title_candidate": meeting.title_candidate,
             "agendas": [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)],
+            # 합성 잡이 돌려주는 투영에도 같은 보정 표를 싣는다 — 상세 모양을 내는 자리는 같은 값을 낸다.
+            "term_corrections": self._term_corrections_view(meeting),
         }
 
     # ------------------------------------------------------------------ 공유 (SCAX-WP-005 인계 예정)
@@ -1442,8 +1459,34 @@ class MeetingApplication:
             "carried_from": carried,
         }
 
-    def record_ai_session(self, meeting_id: UUID, *, session_ref: str, persona_id: str) -> None:
-        self._repository.record_ai_session(meeting_id, provider_session_ref=session_ref, persona_id=persona_id)
+    def ai_track_material(self, meeting_id: UUID) -> list[dict[str, Any]]:
+        """AI 벌의 안건과 줄(근거 포함) — **새 세션 배치만** 「앞 배치까지 네 벌」로 싣는다(새 세션은 앞 구간을 기억하지 못한다).
+
+        이어 쓰는 배치는 부르지 않는다 — 매 배치마다 조립하지 않게 새 세션 갈래에서만 읽는다(WP2 수정 1 W-4).
+        """
+        meeting = self._repository.meeting(meeting_id)
+        if meeting is None:
+            return []
+        lines = self._grouped_lines(meeting)
+        return [
+            {
+                "title": agenda.title,
+                "lines": [
+                    {"text": line.text, "evidence": list(line.evidence or [])}
+                    for line in lines.get(agenda.id, [])
+                    if line.track == TRACK_AI
+                ],
+            }
+            for agenda in self._repository.agendas(meeting, track=TRACK_AI)
+        ]
+
+    def record_ai_session(
+        self, meeting_id: UUID, *, session_ref: str, persona_id: str, expected: str | None
+    ) -> str | None:
+        """세션 참조를 **기대한 값일 때만** 기록한다(CAS) — 돌려주는 값 = 원장에 남은 참조."""
+        return self._repository.record_ai_session(
+            meeting_id, provider_session_ref=session_ref, persona_id=persona_id, expected=expected
+        )
 
     def ai_session_ref(self, meeting_id: UUID) -> str | None:
         """SCAX-WP-004 의 종료 합성이 **같은 세션**을 이어 쓸 때 읽는 자리다 (SPEC §8-3)."""
@@ -1458,15 +1501,14 @@ class MeetingApplication:
     def batch_input(self, meeting_id: UUID) -> dict[str, Any] | None:
         """제출할 것이 있으면 증분, 없으면 `None`.
 
-        세션이 없으면 제출하지 않는다 — 트리거만 평가하고 구간은 미처리로 남는다 (SPEC §7.1 세션 행).
+        세션이 없으면(웜스타트가 끝내 못 열었다) `session_ref` 가 `None` 이고 그 회차가 **새 세션으로 연다** (SPEC-010 §4.6
+        — 웜스타트 새 세션 1회도 실패하면 「다음 배치에 합친다」). 도구는 회의를 만든 사람으로 선다.
         「진행 중」이 아니면 새 배치가 없다 — 종료 뒤 합성은 SCAX-WP-004 의 다른 진입점이다.
         """
         meeting = self._repository.meeting(meeting_id)
         if meeting is None or parse_status(meeting.status) is not MeetingStatus.IN_PROGRESS:
             return None
         session = self._repository.ai_session(meeting_id)
-        if session is None:
-            return None
         cursor = self._repository.succeeded_batch_cursor(meeting_id)
         blocks = self._repository.transcript_blocks_after(meeting_id, cursor)
         if not blocks:
@@ -1478,8 +1520,8 @@ class MeetingApplication:
         ]
         return {
             "seq": self._repository.next_batch_seq(meeting_id),
-            "session_ref": session.provider_session_ref,
-            "persona_id": session.persona_id,
+            "session_ref": None if session is None else session.provider_session_ref,
+            "persona_id": meeting.owner_id if session is None else session.persona_id,
             "blocks": [
                 {
                     "speakerLabel": block.speaker_label,
@@ -1820,7 +1862,18 @@ class MeetingApplication:
                 "transcript_source": meeting.transcript_source,
             },
             "agendas": [self._agenda_view(agenda, lines, todos) for agenda in self._repository.agendas(meeting)],
+            # 용어 보정 표 — **최상위**(meeting·agendas 옆 · 코디 판정 (A)). 정정이 돌지 않았으면 `null`, 돌았으면 행 목록
+            # (0개면 `[]`) · 행 = `{heard, corrected, grade}` (SPEC-010 §4.7-4). 상세 모양을 돌려주는 응답 전부가 이 자리를 지난다.
+            "term_corrections": self._term_corrections_view(meeting),
         }
+
+    def _term_corrections_view(self, meeting: Any) -> list[dict[str, str]] | None:
+        if getattr(meeting, "term_corrected_at", None) is None:
+            return None
+        return [
+            {"heard": row.heard, "corrected": row.corrected, "grade": row.grade}
+            for row in self._repository.term_corrections(meeting)
+        ]
 
     # ------------------------------------------------------------------ 회의실 예약 (SCAX-WP-007)
 

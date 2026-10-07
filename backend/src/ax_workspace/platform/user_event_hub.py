@@ -48,11 +48,12 @@ class UserEventHub:
         self,
         database_url: str,
         *,
-        coalesce_seconds: float = COALESCE_SECONDS,
+        coalesce_seconds: float | None = None,
         schedule: Callable[[float, Callable[[], None]], None] = _start_timer,
     ) -> None:
         self._database_url = database_url
-        self._coalesce_seconds = coalesce_seconds
+        # 안 주면 모듈 값을 **만들 때** 읽는다 — 계약 시험 앱이 그 값을 0 으로 갈아 끼워 진짜 1초 타이머를 돌리지 않는다.
+        self._coalesce_seconds = COALESCE_SECONDS if coalesce_seconds is None else coalesce_seconds
         self._schedule = schedule
         #: (회원, 연동) → 창 안에 밀린 마지막 사건(없으면 None). 키가 있으면 창이 열려 있다.
         self._windows: dict[tuple[str, str], UserEvent | None] = {}
