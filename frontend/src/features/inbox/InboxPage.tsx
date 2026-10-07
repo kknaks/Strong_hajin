@@ -14,7 +14,7 @@ import {
   reconnectIntegration,
 } from "../../lib/api";
 import { inboxScreen as copy } from "../../lib/labels";
-import type { InboxCard, InboxSource, InboxStreamEvent, Integration } from "../../lib/viewModels";
+import type { ConversationContextReference, InboxCard, InboxSource, InboxStreamEvent, Integration, TaskOriginMessage } from "../../lib/viewModels";
 import { beginConsent } from "../settings/consent";
 import { createInboxEventHub, useInboxStream } from "./inboxStream";
 import { MailView } from "./MailView";
@@ -36,6 +36,15 @@ type Props = {
   onRegisterRails?: (rails: { left?: ReactNode; right?: ReactNode }) => void;
   onRegisterHeaderActions?: (actions: ReactNode) => void;
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
+  /**
+   * 메시지함 → AX(SPEC-008 §2.9 ③) — 서랍을 **새 대화로** 열고 짧은 말풍선 + 참고 자료(그 메시지)를 보낸다(App 의 `askAx`).
+   * 없으면 호버 막대의 AX 둘과 메일 머리의 AX 단추가 서지 않는다.
+   */
+  onAskAx?: (text: string, context: ConversationContextReference[]) => void;
+  /** 업무 상세의 「원래 메시지」 링크로 들어왔다 — 그 방·그 메일을 열고 그 메시지를 짚는다(OQ-817). */
+  focus?: TaskOriginMessage | null;
+  /** 짚기를 마쳤다 — `found` 가 거짓이면(지워졌거나 남의 것·이미 오래된 쪽) 부르는 쪽이 「메시지를 찾을 수 없습니다」. */
+  onFocusHandled?: (found: boolean) => void;
 };
 
 /**
@@ -79,7 +88,7 @@ function ConnectionWarnings({ items, onReconnect }: { items: Integration[]; onRe
 
 const zeroCounts = { all: 0, mail: 0, slack: 0, kakao: 0 } as const;
 
-export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderActions, onRegisterRefresh }: Props) {
+export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderActions, onRegisterRefresh, onAskAx, focus = null, onFocusHandled }: Props) {
   const [source, setSource] = useState<InboxSource>("all");
   const [cards, setCards] = useState<InboxCard[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -207,6 +216,39 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
   }, [loadList, onError]);
 
   const selectedKey = selected ? cardKey(selected) : null;
+
+  /* 메시지 · 메일 → AX — 말풍선 본문은 넷 중 하나(SPEC-008 §2.9 ③-2), 맥락은 참고 자료 하나(그 메시지 · 판 1 고정 · §4.8 ①) */
+  const askFrom = useCallback(
+    (where: "message" | "mail") => (kind: "task" | "summary", messageId: string) => {
+      if (!onAskAx) return;
+      const text =
+        where === "mail" ? (kind === "task" ? copy.askTaskMail : copy.askSummaryMail) : kind === "task" ? copy.askTaskMessage : copy.askSummaryMessage;
+      onAskAx(text, [{ resource_type: "inbox_message", resource_id: messageId, resource_version: 1, included: true }]);
+    },
+    [onAskAx],
+  );
+
+  /*
+   * 출처 링크로 들어왔다(SPEC-008 §2.9 ④) — 그 방(메일)을 고른다. 레일에 그 카드가 없으면(출처 탭·페이지 밖) 출처가 준 값으로
+   * 카드를 세워 연다 — 방·메일 본문은 id 로 다시 읽으므로 카드에는 이름만 있으면 된다.
+   */
+  const [focusId, setFocusId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focus) return;
+    const known = focus.room_id
+      ? cards.find((card) => card.kind !== "mail" && card.room_id === focus.room_id)
+      : cards.find((card) => card.kind === "mail" && card.message_id === focus.message_id);
+    const now = new Date().toISOString();
+    const card: InboxCard =
+      known ??
+      (focus.room_id
+        ? { kind: focus.source_kind === "kakao" ? "kakao" : "slack", room_id: focus.room_id, integration_id: "", room_type: "channel", title: focus.label, member_count: null, unread_count: 0, last_at: now, at: now }
+        : { kind: "mail", message_id: focus.message_id, integration_id: "", account: "", subject: focus.label, sender: null, at: now, unread: false, attach_count: 0, snippet: null });
+    setSelected(card);
+    if (focus.room_id) setFocusId(focus.message_id);
+    else onFocusHandled?.(true); // 메일은 그 메일을 여는 것이 짚기다
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 들어온 출처 하나에 한 번
+  }, [focus]);
   /* 레일 숫자 = 미읽음 «카드» 수(§2.1). 서버가 세어 주면 그것을, 아니면 지금 목록에서 센다. */
   const unread = counts?.[source] ?? cards.filter((card) => (card.kind === "mail" ? card.unread : card.unread_count > 0)).length;
 
@@ -287,9 +329,23 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
       </div>
     );
   } else if (selected.kind === "mail") {
-    body = <MailView card={selected} hub={hub} key={selectedKey} onRead={readMail} />;
+    body = <MailView card={selected} hub={hub} key={selectedKey} onAsk={onAskAx ? askFrom("mail") : undefined} onRead={readMail} />;
   } else {
-    body = <RoomView card={selected} hub={hub} key={selectedKey} meName={meName} onRead={readRoom} />;
+    body = (
+      <RoomView
+        card={selected}
+        focusMessageId={focusId}
+        hub={hub}
+        key={selectedKey}
+        meName={meName}
+        onAsk={onAskAx ? askFrom("message") : undefined}
+        onFocusHandled={(found) => {
+          setFocusId(null);
+          onFocusHandled?.(found);
+        }}
+        onRead={readRoom}
+      />
+    );
   }
 
   return (

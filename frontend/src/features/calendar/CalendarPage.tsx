@@ -26,7 +26,7 @@ import {
   personName,
   seoulToday,
 } from "../../lib/labels";
-import type { CalendarEntry, CalendarTaskRow, DirectTask, Persona, TaskPatch } from "../../lib/viewModels";
+import type { CalendarEntry, CalendarTaskRow, DirectTask, Persona, TaskPatch, TaskOriginMessage } from "../../lib/viewModels";
 import { CreateWorkModal, TaskDetailDrawer, type TaskAction } from "../work/WorkModals";
 import { MonthGrid } from "./MonthGrid";
 import { ScheduleRail } from "./ScheduleRail";
@@ -74,6 +74,8 @@ type CalendarPageProps = {
   canAssignTasks: boolean;
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
+  /** 업무 상세 출처 행의 「원래 메시지」 링크(SPEC-008 §2.9 ④). */
+  onOpenInboxMessage?: (message: TaskOriginMessage) => void;
   /** Registers this surface's reload so the shell can await it after an approved AX effect (no remount). */
   onRegisterRefresh?: (refresh: (() => Promise<void>) | null) => void;
   /** 셸의 `AppBody` 세 칸 중 **왼쪽만** 쓴다 — 오른쪽 레일은 비운다(§J). */
@@ -106,6 +108,7 @@ export function CalendarPage({
   canAssignTasks,
   onNotice,
   onError,
+  onOpenInboxMessage,
   onRegisterRefresh,
   onRegisterRails,
   onRegisterHeaderActions,
@@ -704,6 +707,7 @@ export function CalendarPage({
           onClose={() => setTask(null)}
           onError={onError}
           onNotice={onNotice}
+          onOpenInboxMessage={onOpenInboxMessage}
           onTransition={transition}
           onUpdate={update}
           ownerName={personName(personaName)}

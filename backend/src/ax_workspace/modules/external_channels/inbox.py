@@ -143,6 +143,7 @@ class InboxRepository(Protocol):
     def message_by_id(self, message_id: UUID) -> Any | None: ...
     def room_by_id(self, room_id: UUID) -> Any | None: ...
     def notify(self, channel: str, payload: str) -> None: ...
+    def made_task_counts(self, message_ids: Sequence[UUID]) -> dict[UUID, int]: ...
 
 
 class TokenCipher(Protocol):
@@ -320,6 +321,8 @@ class MailView(TypedDict):
     safe_html: str
     attachments: list[AttachmentView]
     sent_replies: list[SentReplyView]
+    #: 그 메일로 확정된 업무 수 — 1 이상이면 머리에 「업무 만듦」(SPEC-008 §4.8 ④). 막지 않는다.
+    made_task_count: int
 
 
 class RoomMessageView(TypedDict):
@@ -332,6 +335,8 @@ class RoomMessageView(TypedDict):
     attachments: list[AttachmentView]
     #: 슬랙 「슬랙에서 열기」 — 워크스페이스 주소를 아는 연동만(BE 수정 판 3). 카톡·모르면 null.
     permalink: str | None
+    #: 그 메시지로 확정된 업무 수 — 1 이상이면 행에 「업무 만듦」(SPEC-008 §4.8 ④). 막지 않는다.
+    made_task_count: int
 
 
 class UserTagView(TypedDict):
@@ -577,6 +582,7 @@ class InboxApplication:
             "safe_html": safe,
             "attachments": [_attachment_view(row) for row in attachments],
             "sent_replies": [_reply_view(row) for row in self._repository.replies_for_message(str(principal.id), message.id)],
+            "made_task_count": self._repository.made_task_counts([message.id]).get(message.id, 0),
         }
 
     def _safe_html(self, message: Any, integration: Any, parts: Any = None) -> str:
@@ -613,6 +619,7 @@ class InboxApplication:
         page = rows[:limit]
         next_cursor = encode_cursor(aware(page[-1].sent_at), _id_key(page[-1].id)) if len(rows) > limit and page else None
         attachments = self._repository.attachments_of([row.id for row in page])
+        made = self._repository.made_task_counts([row.id for row in page])
         state = self._repository.room_read_state(str(principal.id), room.id)
         workspace = slack_workspace_url(integration) if integration.kind == IntegrationKind.SLACK else None
         return {
@@ -639,6 +646,7 @@ class InboxApplication:
                     "raw": row.raw or {},
                     "attachments": [_attachment_view(item) for item in attachments.get(row.id, [])],
                     "permalink": slack_permalink(workspace, room.external_id, row.external_key, row.thread_key) if workspace else None,
+                    "made_task_count": made.get(row.id, 0),
                 }
                 for row in reversed(page)
             ],

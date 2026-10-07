@@ -142,6 +142,55 @@ pub fn origin_of(url: &tauri::Url) -> String {
     url.origin().ascii_serialization()
 }
 
+/// 창 이동 하나에 대한 셸의 판정(SPEC-006 §5 네비게이션 · U-5 · WORK-012 SHELL 011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavVerdict {
+    /// 그대로 둔다.
+    Allow,
+    /// 취소한다. `open_external` 이면 OS 기본 브라우저로 넘긴다(`E-05` — http(s) 만).
+    Block { origin: String, open_external: bool },
+    /// 앱 origin 의 `/api/` — 취소하고 셸이 직접 받아 본다(`download.rs` · U-5).
+    TakeOverApi,
+}
+
+/// 문서 없는 프레임 주소 — `about:blank` · `about:srcdoc`(SH-IMP-011).
+///
+/// iframe 을 만들거나(`about:blank`) `srcdoc` 로 채울 때(`about:srcdoc`) 웹뷰가 이 주소로 **이동**을 낸다. origin 이
+/// `"null"` 이라 허용 목록에서 떨어져 하위 프레임이 통째로 취소됐다(메일 본문 빈 칸 — PR #15 는 웹 쪽에서 우회했다).
+/// 이 둘은 **네트워크로 아무것도 받지 않는 빈 문서**다 — 앱 origin 밖의 내용을 들이지 않는다.
+///
+/// ⚠ wry 0.55.1 의 정책 콜백은 **주소 문자열만** 받는다(프레임 구분 없음 — `wkwebview/navigation.rs` `navigation_policy`).
+/// 그래서 주 프레임의 `about:blank` 이동도 함께 허용된다(WORK-012 Open Issues I-1). 그것이 괜찮은 이유는
+/// `fe-shell-report.md` 에 적었다 — 요지: 빈 문서라 내용이 없고, 그 문서는 커맨드 허용 origin 이 아니라 네이티브 권한이 없다.
+/// `about:` 의 다른 주소(`about:config` 류)와 `data:` 는 그대로 취소한다.
+pub fn is_empty_frame_document(url: &tauri::Url) -> bool {
+    url.scheme() == "about" && matches!(url.path(), "blank" | "srcdoc")
+}
+
+/// 이동 하나를 판정한다 — 순서가 계약이다:
+/// 1. 셸 자기 화면(`shell_scheme`) → 허용
+/// 2. 빈 프레임 문서(`about:blank` · `about:srcdoc`) → 허용(011)
+/// 3. 네비게이션 허용 목록 밖 → 취소(http(s) 면 OS 브라우저로 — `E-05`)
+/// 4. 앱 origin 의 `/api/` → 셸이 받아 본다(U-5 — 기준은 허용 목록이 아니라 **앱 origin 하나** · fix1 W3)
+/// 5. 그 밖 → 허용
+pub fn navigation_verdict(url: &tauri::Url, nav_allow: &[String], app_origin: Option<&str>, shell_scheme: &str) -> NavVerdict {
+    if url.scheme() == shell_scheme {
+        return NavVerdict::Allow;
+    }
+    if is_empty_frame_document(url) {
+        return NavVerdict::Allow;
+    }
+    let origin = origin_of(url);
+    if !nav_allow.iter().any(|entry| entry == &origin) {
+        let open_external = matches!(url.scheme(), "http" | "https");
+        return NavVerdict::Block { origin, open_external };
+    }
+    if crate::download::is_api_request(url, app_origin) {
+        return NavVerdict::TakeOverApi;
+    }
+    NavVerdict::Allow
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +283,69 @@ mod tests {
         assert!(validate_external_url("javascript:alert(1)").is_err());
         assert!(validate_external_url("mailto:a@b.c").is_err());
         assert!(validate_external_url("/relative/path").is_err());
+    }
+
+    // ── 이동 판정(SPEC-006 §5 · U-5 · WORK-012 SHELL 011) ─────────────────────────
+    const APP: &str = "https://ax.example.test";
+    const SHELL: &str = "stronghajin";
+
+    fn verdict(raw: &str) -> NavVerdict {
+        let allow = vec![APP.to_string()];
+        navigation_verdict(&tauri::Url::parse(raw).unwrap(), &allow, Some(APP), SHELL)
+    }
+
+    #[test]
+    fn 빈_프레임_문서는_허용한다() {
+        // 011 — iframe 의 `about:blank` · `srcdoc` 이동이 취소돼 메일 본문이 빈 칸이 됐던 자리.
+        assert_eq!(verdict("about:blank"), NavVerdict::Allow);
+        assert_eq!(verdict("about:srcdoc"), NavVerdict::Allow);
+        assert_eq!(verdict("about:blank#top"), NavVerdict::Allow);
+        assert!(is_empty_frame_document(&tauri::Url::parse("about:blank").unwrap()));
+    }
+
+    #[test]
+    fn 빈_프레임_밖의_about_과_data_는_여전히_취소한다() {
+        // 허용은 이름 둘뿐이다 — `about:` 전체를 열지 않는다. http(s) 가 아니라 OS 브라우저로도 넘기지 않는다.
+        for raw in ["about:config", "about:srcdoc2", "data:text/html,<p>x</p>"] {
+            assert_eq!(verdict(raw), NavVerdict::Block { origin: "null".into(), open_external: false }, "{raw}");
+        }
+    }
+
+    #[test]
+    fn 외부_origin_은_여전히_취소하고_os_브라우저로_넘긴다() {
+        assert_eq!(
+            verdict("https://evil.example/path"),
+            NavVerdict::Block { origin: "https://evil.example".into(), open_external: true }
+        );
+        // 앱과 이름이 비슷해도 origin 이 다르면 밖이다
+        assert_eq!(
+            verdict("https://ax.example.test.evil.example/"),
+            NavVerdict::Block { origin: "https://ax.example.test.evil.example".into(), open_external: true }
+        );
+    }
+
+    #[test]
+    fn 앱_origin_의_api_는_그대로_셸이_받아_본다() {
+        assert_eq!(verdict("https://ax.example.test/api/meetings/m1/export?format=html"), NavVerdict::TakeOverApi);
+        assert_eq!(verdict("https://ax.example.test/api/inbox/mail/m1/attachments/a1?download=1"), NavVerdict::TakeOverApi);
+        // 앱의 화면 이동은 그대로 둔다
+        assert_eq!(verdict("https://ax.example.test/"), NavVerdict::Allow);
+        assert_eq!(verdict("https://ax.example.test/meetings"), NavVerdict::Allow);
+    }
+
+    #[test]
+    fn 셸_자기_화면은_허용한다() {
+        assert_eq!(verdict("stronghajin://shell/connection-error"), NavVerdict::Allow);
+    }
+
+    #[test]
+    fn 주소가_없는_판은_api_를_가로채지_않는다() {
+        // `Target::Missing` — 허용 목록도 앱 origin 도 없다. 셸 화면 말고는 다 밖이다.
+        let url = tauri::Url::parse("https://ax.example.test/api/x").unwrap();
+        assert_eq!(
+            navigation_verdict(&url, &[], None, SHELL),
+            NavVerdict::Block { origin: APP.into(), open_external: true }
+        );
     }
 
     #[test]

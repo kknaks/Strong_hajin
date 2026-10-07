@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { useCallback, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TaskOriginMessage } from "../../lib/viewModels";
 import { InboxPage } from "./InboxPage";
 
 /* 메시지함 (WORK-011 FE-a · SPEC-008 §2.1·2.2·2.8 · AC-07~13) — 서버 응답은 SPEC §4.4 모양의 가짜다. */
@@ -387,5 +388,148 @@ describe("슬랙·카톡 본문 — 대화방 · 스레드 3열 · 조회 전용
     expect(body().getByText("사진 · 만료됨")).toBeTruthy();
     expect(body().queryByRole("link", { name: /IMG_1.jpg 받기/ })).toBeNull();
     expect(body().getByText("받지 않음 — 카카오톡에서 보기")).toBeTruthy();
+  });
+});
+
+/*
+ * WORK-012 WP4-FE — 메시지함 → AX(SPEC-008 §2.9 · §4.4 · §4.8 · OQ-813 · OQ-817).
+ * 호버 막대(슬랙 셋 · 카톡 둘 · 아이콘만 + 툴팁 · 패널 안은 스레드 아이콘 없음 · 로컬 줄 없음) · 답글 0개 스레드 ·
+ * 메일 머리 단추 · 서랍 열며 참고 자료 · 「업무 만듦」(`inbox.message_updated` 로 새로고침 없이) · 출처 링크로 들어와 짚기.
+ */
+function AxHarness({ onAskAx, focus = null, onFocusHandled }: { onAskAx: (text: string, context: unknown[]) => void; focus?: TaskOriginMessage | null; onFocusHandled?: (found: boolean) => void }) {
+  const [rails, setRails] = useState<{ left?: ReactNode }>({});
+  const registerRails = useCallback((next: { left?: ReactNode }) => setRails(next), []);
+  return (
+    <>
+      <div data-testid="rail">{rails.left}</div>
+      <div data-testid="body">
+        <InboxPage focus={focus} meName="유하람" onAskAx={onAskAx as never} onError={noop} onFocusHandled={onFocusHandled} onRegisterRails={registerRails} />
+      </div>
+    </>
+  );
+}
+
+const rowOf = (messageId: string) => document.querySelector(`.scax-room-col [data-message-id="${messageId}"]`) as HTMLElement;
+const barOf = (row: HTMLElement) => row.querySelector('[role="toolbar"]') as HTMLElement | null;
+const tipsOf = (row: HTMLElement) => [...(barOf(row)?.querySelectorAll<HTMLElement>("[data-tip]") ?? [])].map((tool) => tool.dataset.tip);
+
+describe("WP4-FE — 메시지 호버 막대 · 스레드에 답글", () => {
+  it("슬랙 메시지 행마다 아이콘 셋(스레드에 답글 · AX 업무 생성 · AX 요약) — 글자 없이 아이콘 + 툴팁 · 행은 키보드로 들어갈 수 있다", async () => {
+    render(<AxHarness onAskAx={vi.fn()} />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    await body().findByText(/첫 줄/);
+    const row = rowOf("1");
+    expect(tipsOf(row)).toEqual(["스레드에 답글", "AX 업무 생성", "AX 요약"]);
+    const buttons = within(barOf(row)!).getAllByRole("button");
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(["스레드에 답글", "AX 업무 생성", "AX 요약"]);
+    // 아이콘만 — 단추 안에 글자가 없다
+    expect(buttons.every((button) => (button.textContent ?? "").trim() === "")).toBe(true);
+    expect(row.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("카톡은 AX 둘뿐 — 「스레드에 답글」 이 없다", async () => {
+    render(<AxHarness onAskAx={vi.fn()} />);
+    fireEvent.click(await rail().findByText("박지윤", { selector: "h3" }));
+    await body().findByText("옛 사진이에요");
+    const row = document.querySelector(".scax-room-col [data-message-id]") as HTMLElement;
+    expect(tipsOf(row)).toEqual(["AX 업무 생성", "AX 요약"]);
+  });
+
+  it("답글이 0개인 메시지도 「스레드에 답글」 로 패널을 그 메시지로 연다 · 패널 안 줄의 막대에는 스레드 아이콘이 없다", async () => {
+    overrides["GET /api/inbox/rooms/r1/messages?thread_ts=1.0"] = () => json({ ...ROOM, messages: [ROOM.messages[0]] });
+    render(<AxHarness onAskAx={vi.fn()} />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    await body().findByText(/첫 줄/);
+    // 답글 0개 — 「답글 N개」 줄은 없다
+    expect(within(rowOf("1")).queryByRole("button", { name: /답글 \d+개/ })).toBeNull();
+    fireEvent.click(within(barOf(rowOf("1"))!).getByRole("button", { name: "스레드에 답글" }));
+    const panel = await body().findByRole("complementary", { name: "스레드 · #pilot-launch" });
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/inbox/rooms/r1/messages?thread_ts=1.0")).toBe(true));
+    expect(within(panel).getByRole("textbox", { name: "답글 달기…" })).toBeTruthy();
+    const panelRow = panel.querySelector('[data-message-id="1"]') as HTMLElement;
+    expect(tipsOf(panelRow)).toEqual(["AX 업무 생성", "AX 요약"]);
+  });
+
+  it("보내는 중인 내 줄(로컬)에는 막대가 서지 않는다", async () => {
+    overrides["POST /api/inbox/rooms/r1/reply"] = () => new Promise<Response>(() => undefined) as never;
+    render(<AxHarness onAskAx={vi.fn()} />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    await body().findByText(/첫 줄/);
+    const box = body().getByRole("textbox", { name: /메시지 보내기/ });
+    fireEvent.change(box, { target: { value: "로컬 줄" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    const local = (await body().findByText("로컬 줄")).closest(".scax-imsg") as HTMLElement;
+    expect(barOf(local)).toBeNull();
+  });
+});
+
+describe("WP4-FE — 서랍 열며 참고 자료 · 메일 머리 · 「업무 만듦」 · 짚기", () => {
+  it("메시지 AX 업무 생성 · AX 요약 — 말풍선 본문 + 참고 자료(그 메시지 · inbox_message · 판 1)", async () => {
+    const onAskAx = vi.fn();
+    render(<AxHarness onAskAx={onAskAx} />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    await body().findByText(/첫 줄/);
+    fireEvent.click(within(barOf(rowOf("2"))!).getByRole("button", { name: "AX 업무 생성" }));
+    expect(onAskAx).toHaveBeenLastCalledWith("이 메시지 읽고 업무를 생성해 줘", [{ resource_type: "inbox_message", resource_id: "2", resource_version: 1, included: true }]);
+    fireEvent.click(within(barOf(rowOf("2"))!).getByRole("button", { name: "AX 요약" }));
+    expect(onAskAx).toHaveBeenLastCalledWith("이 메시지 요약해 줘", [{ resource_type: "inbox_message", resource_id: "2", resource_version: 1, included: true }]);
+  });
+
+  it("메일 머리는 [AX 업무 생성][AX 요약][답장][전체 답장] 순서 · 누르면 메일 문구 + 그 메일", async () => {
+    const onAskAx = vi.fn();
+    render(<AxHarness onAskAx={onAskAx} />);
+    fireEvent.click(await rail().findByText("2차 파일럿 일정표"));
+    await body().findByTitle("메일 본문");
+    const actions = document.querySelector(".scax-mail__actions") as HTMLElement;
+    expect(within(actions).getAllByRole("button").map((button) => button.textContent)).toEqual(["AX 업무 생성", "AX 요약", "답장", "전체 답장"]);
+    fireEvent.click(within(actions).getByRole("button", { name: "AX 업무 생성" }));
+    expect(onAskAx).toHaveBeenLastCalledWith("이 메일 읽고 업무를 생성해 줘", [{ resource_type: "inbox_message", resource_id: "m1", resource_version: 1, included: true }]);
+    fireEvent.click(within(actions).getByRole("button", { name: "AX 요약" }));
+    expect(onAskAx).toHaveBeenLastCalledWith("이 메일 요약해 줘", [{ resource_type: "inbox_message", resource_id: "m1", resource_version: 1, included: true }]);
+  });
+
+  it("「업무 만듦」 — `inbox.message_updated` 가 오면 그 방을 다시 읽어 새로고침 없이 선다", async () => {
+    vi.stubGlobal("WebSocket", FakeSocket);
+    render(<AxHarness onAskAx={vi.fn()} />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    await body().findByText(/첫 줄/);
+    expect(within(rowOf("2")).queryByText("업무 만듦")).toBeNull();
+    overrides["GET /api/inbox/rooms/r1/messages"] = () =>
+      json({ ...ROOM, messages: ROOM.messages.map((message) => (message.id === "2" ? { ...message, made_task_count: 1 } : message)) });
+    FakeSocket.all.at(-1)!.emit({ v: 1, type: "inbox.message_updated", member_id: "haram", message_id: "2", room_id: "r1" });
+    await waitFor(() => expect(within(rowOf("2")).getByText("업무 만듦")).toBeTruthy());
+    // 막지 않는다 — AX 업무 생성은 그대로 선다
+    expect(within(barOf(rowOf("2"))!).getByRole("button", { name: "AX 업무 생성" })).toBeTruthy();
+  });
+
+  it("메일도 — `inbox.message_updated`(room_id 없음)가 오면 머리에 「업무 만듦」", async () => {
+    vi.stubGlobal("WebSocket", FakeSocket);
+    render(<AxHarness onAskAx={vi.fn()} />);
+    fireEvent.click(await rail().findByText("2차 파일럿 일정표"));
+    await body().findByTitle("메일 본문");
+    expect(body().queryByText("업무 만듦")).toBeNull();
+    overrides["GET /api/inbox/mail/m1"] = () => json({ ...MAIL, made_task_count: 2 });
+    FakeSocket.all.at(-1)!.emit({ v: 1, type: "inbox.message_updated", member_id: "haram", message_id: "m1", room_id: null });
+    expect(await body().findByText("업무 만듦")).toBeTruthy();
+  });
+
+  it("출처 링크로 들어오면 그 방을 열고 그 메시지를 짚는다(강조) — 다 짚으면 알린다 (OQ-817)", async () => {
+    const onFocusHandled = vi.fn();
+    render(<AxHarness focus={{ message_id: "2", room_id: "r1", source_kind: "slack", label: "슬랙 #pilot-launch" }} onAskAx={vi.fn()} onFocusHandled={onFocusHandled} />);
+    await waitFor(() => expect(rowOf("2")?.classList.contains("scax-imsg--focus")).toBe(true));
+    expect(onFocusHandled).toHaveBeenCalledWith(true);
+  });
+
+  it("없는 메시지면 「찾지 못함」 으로 알린다", async () => {
+    const onFocusHandled = vi.fn();
+    render(<AxHarness focus={{ message_id: "nope", room_id: "r1", source_kind: "slack", label: "슬랙 #pilot-launch" }} onAskAx={vi.fn()} onFocusHandled={onFocusHandled} />);
+    await waitFor(() => expect(onFocusHandled).toHaveBeenCalledWith(false));
+  });
+
+  it("onAskAx 를 받지 않은 메시지함은 AX 단추를 세우지 않는다(스레드 입구만)", async () => {
+    render(<Harness />);
+    fireEvent.click(await rail().findByText("#pilot-launch"));
+    await body().findByText(/첫 줄/);
+    expect(tipsOf(rowOf("1"))).toEqual(["스레드에 답글"]);
   });
 });

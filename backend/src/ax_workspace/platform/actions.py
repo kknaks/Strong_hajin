@@ -88,6 +88,7 @@ from ax_workspace.platform.persistence import (
     ActionItemRecord,
     ActionMaterialDraftRecord,
     ConversationRecord,
+    ContextReferenceRecord,
     ConversationTurnRecord,
     DecisionItemRecord,
     EvidenceRecord,
@@ -99,6 +100,7 @@ from ax_workspace.platform.persistence import (
     SubmissionRecord,
     TaskAssignmentRecord,
     TaskRecord,
+    WorkRequestRecord,
     TaskVersionRecord,
 )
 from ax_workspace.modules.work.assignments import TaskAssignmentApplication
@@ -201,6 +203,8 @@ class ActionServices:
     work_requests: Callable[[], WorkRequestApplication]
     conversations: Callable[[], ConversationApplication]
     action_materials: Callable[[], ActionMaterialDraftApplication]
+    #: 확정된 업무가 메시지함 메시지를 출처로 남겼다 — 조립층이 커밋 뒤 `inbox.message_updated` 를 낸다(S8 §4.4).
+    message_origin_recorded: Callable[[Principal, UUID], None]
     #: 회의실 번호 → 이름(예약 시스템 목록 · 캐시). 모르면 `None` — AX 수정 카드의 「AX 제안」 방 이름(WP3 계약 고정 5).
     meeting_room_name: Callable[[int], str | None]
 
@@ -670,6 +674,10 @@ class SqlAlchemyActionRepository:
         return action.action_type
 
 
+#: 확정되면 원래 메시지를 남기는 생성 제안(SPEC-008 §4.8 ③).
+MESSAGE_ORIGIN_ACTION_TYPES = frozenset({"task.create_self", "task.assign", "work_request.create"})
+
+
 class SqlAlchemyActionExecutor:
     """Invokes existing public application commands inside the Action transaction."""
 
@@ -706,7 +714,7 @@ class SqlAlchemyActionExecutor:
         )
         # Everything this approval causes says which confirmation carried it; the actor stays the approver.
         with caused_by(f"action_item:{action.id}"):
-            return self._execute(
+            result = self._execute(
                 principal,
                 action,
                 payload=confirmed_payload,
@@ -714,6 +722,67 @@ class SqlAlchemyActionExecutor:
                 source_submission_id=source_submission_id,
                 source_review_decision_id=source_review_decision_id,
             )
+        if action.action_type in MESSAGE_ORIGIN_ACTION_TYPES:
+            self._record_message_origin(principal, action)
+        return result
+
+    def _record_message_origin(self, principal: Principal, action: ActionItemRecord) -> None:
+        """메시지함 메시지를 참고 자료로 받은 대화에서 확정된 업무·요청에 **원래 메시지**를 남긴다 (SPEC-008 §4.8 ③ · OQ-907).
+
+        「그 턴의 참고 자료」 는 **참고 자료를 실은 턴 이후 같은 「업무 생성」 흐름**으로 읽는다(코디 판정 ① · 검수 W-1):
+        제안을 낸 턴까지 그 대화에 실린 가장 최근 메시지 참고 자료이되, **그 참고 자료 턴부터 지금까지 다른 업무 생성 제안이
+        확정된 적이 없을 때만** 붙는다. AX 업무 생성은 단계 카드로 몇 턴에 걸칠 수 있다(「이 메시지 읽고 업무 생성해 줘」 →
+        질문·답 → 제안). 한 번 확정되면 그 참고 자료의 흐름은 끝났다 — 같은 대화의 나중 무관한 업무에 새지 않는다(H-1).
+        다른 메시지를 새로 실으면 그것이 이긴다(새 흐름). 같은 확정 안에서 만들어진 업무(요청이면 그 요청과 함께 선 업무)에
+        같은 메시지를 적고, 커밋 뒤 `inbox.message_updated` 를 내게 한다(S8 §4.4 · H-5 — 사건은 조립층이 커밋 뒤에 낸다).
+        """
+        proposing = self._session.get(ConversationTurnRecord, action.turn_id)
+        if proposing is None:
+            return
+        reference = self._session.scalar(
+            select(ContextReferenceRecord)
+            .join(ConversationTurnRecord, ConversationTurnRecord.id == ContextReferenceRecord.turn_id)
+            .where(
+                ContextReferenceRecord.conversation_id == proposing.conversation_id,
+                ContextReferenceRecord.resource_type == "inbox_message",
+                ContextReferenceRecord.included.is_(True),
+                ConversationTurnRecord.started_at <= proposing.started_at,
+            )
+            .order_by(ConversationTurnRecord.started_at.desc(), ContextReferenceRecord.id.desc())
+            .limit(1)
+        )
+        if reference is None:
+            return
+        reference_turn = self._session.get(ConversationTurnRecord, reference.turn_id)
+        flow_closed = reference_turn is not None and self._session.scalar(
+            select(ActionItemRecord.id)
+            .join(ConversationTurnRecord, ConversationTurnRecord.id == ActionItemRecord.turn_id)
+            .where(
+                ConversationTurnRecord.conversation_id == proposing.conversation_id,
+                ConversationTurnRecord.started_at >= reference_turn.started_at,
+                ActionItemRecord.id != action.id,
+                ActionItemRecord.action_type.in_(MESSAGE_ORIGIN_ACTION_TYPES),
+                ActionItemRecord.state == "approved",
+            )
+            .limit(1)
+        )
+        if flow_closed:
+            # 그 참고 자료로 이미 업무가 확정됐다 — 이번 업무는 그 흐름이 아니다(W-1).
+            return
+        try:
+            message_id = UUID(reference.resource_id)
+        except ValueError:
+            return
+        self._session.flush()
+        tasks = list(self._session.scalars(select(TaskRecord).where(TaskRecord.source_action_item_id == action.id)))
+        for task in tasks:
+            task.source_inbox_message_id = message_id
+            if task.source_work_request_id is not None:
+                request = self._session.get(WorkRequestRecord, task.source_work_request_id)
+                if request is not None:
+                    request.source_inbox_message_id = message_id
+        if tasks:
+            self._services.message_origin_recorded(principal, message_id)
 
     def _execute(
         self,

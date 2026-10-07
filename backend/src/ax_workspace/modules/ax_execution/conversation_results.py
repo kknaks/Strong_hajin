@@ -53,6 +53,9 @@ class ConversationContextView(TypedDict):
     resource_version: int
     summary: str
     included: bool
+    #: 메시지함 메시지(`inbox_message`) 참고 자료의 「실제로 실은 범위」 한 줄 — 실행 직전 조합 뒤에 찬다. 조합 전·다른
+    #: 종류는 null. 화면은 같은 `turn_id` 의 사용자 말풍선 아래에 그대로 그린다(SPEC-008 §2.9 ③-2 · WP4 계약 고정 1).
+    label: str | None
 
 
 class ConversationToolView(TypedDict):

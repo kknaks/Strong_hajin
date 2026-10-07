@@ -94,6 +94,7 @@ import type {
   TaskState,
   Project,
   WorkRequest,
+  TaskOriginMessage,
 } from "../../lib/viewModels";
 
 export type TaskAction = "start" | "block" | "resume" | "complete" | "cancel";
@@ -651,6 +652,7 @@ export function TaskDetailDrawer({
   task,
   ownerName,
   onOpenSource,
+  onOpenInboxMessage,
   canManage,
   busy,
   onTransition,
@@ -706,6 +708,8 @@ export function TaskDetailDrawer({
   ownerName: string;
   /** Navigate to the resource the origin names. Absent when the source is withheld. */
   onOpenSource?: (source: { type: string; id: string }) => void;
+  /** 출처 행의 「원래 메시지 · …」(SPEC-008 §2.9 ④) — 메시지함의 그 방·그 메일로 가서 그 메시지를 짚는다. 없으면 글자만 선다. */
+  onOpenInboxMessage?: (message: TaskOriginMessage) => void;
   canManage: boolean;
   busy: boolean;
   /** 전이를 보낸다. **`false` 면 서버가 거절한 것**이다 — 사유 입력 자리가 그때 열린 채로 남는다. */
@@ -2168,6 +2172,19 @@ export function TaskDetailDrawer({
                 ))}
             </>
           )}
+          {/* 원래 메시지 — 「판단 보기」 와 **함께** 선다(SPEC-008 §2.9 ④ · OQ-907) */}
+          {task.origin.message ? (
+            <>
+              <span aria-hidden>·</span>
+              {onOpenInboxMessage ? (
+                <Button variant="inline" onClick={() => { if (canLeave()) onOpenInboxMessage(task.origin!.message!); }} type="button">
+                  {taskDetail.originMessage(task.origin.message.source_kind, task.origin.message.label)}
+                </Button>
+              ) : (
+                <small className="t-meta">{taskDetail.originMessage(task.origin.message.source_kind, task.origin.message.label)}</small>
+              )}
+            </>
+          ) : null}
         </dd>
       </dl>
   ) : null;

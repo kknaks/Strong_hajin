@@ -60,7 +60,15 @@ type ChatLine = {
   thread: { count: number; users: string[]; last: string | null } | null;
   status: SendStatus | null;
   local: LocalLine | null;
+  /** 이 메시지로 확정된 업무 수(SPEC-008 §4.8 ④) — 1 이상이면 「업무 만듦」. 로컬 줄은 0. */
+  madeTaskCount: number;
 };
+
+/**
+ * 메시지 호버 막대의 행동(SPEC-008 §2.9 ① · OQ-908) — 슬랙: 스레드에 답글 · AX 업무 생성 · AX 요약 / 카톡: AX 둘.
+ * 스레드 패널 안(답글·부모)에서는 「스레드에 답글」 이 빠진다(OQ-813). 로컬 줄(보내는 중·실패)에는 막대가 없다.
+ */
+type MessageActions = { onThread?: () => void; onAxTask?: () => void; onAxSummary?: () => void };
 
 function toLine(message: InboxRoomMessage, kind: "slack" | "kakao", people: InboxPeople): ChatLine {
   const raw = message.raw ?? {};
@@ -81,6 +89,7 @@ function toLine(message: InboxRoomMessage, kind: "slack" | "kakao", people: Inbo
       thread: null,
       status: null,
       local: null,
+      madeTaskCount: message.made_task_count ?? 0,
     };
   }
   const person = slackAuthor(raw, message.author, people);
@@ -107,6 +116,7 @@ function toLine(message: InboxRoomMessage, kind: "slack" | "kakao", people: Inbo
         : null,
     status: null,
     local: null,
+    madeTaskCount: message.made_task_count ?? 0,
   };
 }
 
@@ -126,7 +136,27 @@ function localLine(local: LocalLine, meName: string): ChatLine {
     thread: null,
     status: local.status === "sent" ? null : local.status,
     local,
+    madeTaskCount: 0,
   };
+}
+
+/**
+ * 호버 막대 — 행 오른쪽 위에 겹쳐 뜨는 **아이콘만** 있는 작은 막대(1차 호버 · 본문을 밀지 않는다).
+ * 아이콘에 호버(또는 포커스)하면 그 위에 툴팁(2차 — `data-tip`). 행에 키보드로 들어와도 막대가 선다(`:focus-within`).
+ */
+function MessageBar({ actions }: { actions: MessageActions }) {
+  const tool = (tip: string, icon: "message" | "sparkle" | "document", onClick: () => void) => (
+    <span className="scax-imsg__tool" data-tip={tip} key={tip}>
+      <IconButton label={tip} name={icon} onClick={onClick} size={16} />
+    </span>
+  );
+  return (
+    <div aria-label={copy.messageBar} className="scax-imsg__bar" role="toolbar">
+      {actions.onThread ? tool(copy.threadReply, "message", actions.onThread) : null}
+      {actions.onAxTask ? tool(copy.axTask, "sparkle", actions.onAxTask) : null}
+      {actions.onAxSummary ? tool(copy.axSummary, "document", actions.onAxSummary) : null}
+    </div>
+  );
 }
 
 /* ===== 서식 ===== */
@@ -302,6 +332,8 @@ function Message({
   onOpenThread,
   inPanel,
   nameOf,
+  actions,
+  focused,
 }: {
   line: ChatLine;
   grouped: boolean;
@@ -316,13 +348,20 @@ function Message({
   onOpenThread?: () => void;
   inPanel?: boolean;
   nameOf: (id: string) => string;
+  /** 호버 막대 행동 — 없으면 막대가 서지 않는다. 로컬 줄에는 부르는 쪽이 넘기지 않는다. */
+  actions?: MessageActions | null;
+  /** 출처 링크로 들어와 짚은 메시지 — 잠깐 강조한다(OQ-817). */
+  focused?: boolean;
 }) {
   const classes = ["scax-imsg"];
+  const bar = actions && !line.local && (actions.onThread || actions.onAxTask || actions.onAxSummary) ? actions : null;
+  if (focused) classes.push("scax-imsg--focus");
   if (grouped) classes.push("scax-imsg--grouped");
   if (line.status) classes.push(`scax-imsg--${line.status}`);
   if (threadOpen && !inPanel) classes.push("scax-imsg--active");
   return (
-    <div className={classes.join(" ")} data-message-key={line.key}>
+    <div className={classes.join(" ")} data-message-id={line.local ? undefined : line.id} data-message-key={line.key} tabIndex={bar ? 0 : undefined}>
+      {bar ? <MessageBar actions={bar} /> : null}
       <div className="scax-imsg__gutter">
         {grouped ? <span className="scax-imsg__at-side">{clockOf(line.at)}</span> : <Avatar isBot={line.isBot} name={line.name} userId={line.userId} />}
       </div>
@@ -332,8 +371,11 @@ function Message({
             <span className="scax-imsg__name">{line.name}</span>
             {line.isBot ? <span className="scax-imsg__app">{copy.app}</span> : null}
             <span className="scax-imsg__at">{clockOf(line.at)}</span>
+            {line.madeTaskCount > 0 ? <span className="scax-imsg__made">{copy.madeTask}</span> : null}
           </div>
         )}
+        {/* 묶인 줄은 머리가 없다 — 표지를 본문 위 한 줄로 */}
+        {grouped && line.madeTaskCount > 0 ? <span className="scax-imsg__made scax-imsg__made--line">{copy.madeTask}</span> : null}
         {line.blocks.length ? (
           <div className="scax-imsg__body">
             <Blocks blocks={line.blocks} />
@@ -442,6 +484,7 @@ function ThreadPanel({
   thumbOf,
   onClose,
   nameOf,
+  onAsk,
 }: {
   roomId: string;
   title: string;
@@ -457,6 +500,8 @@ function ThreadPanel({
   thumbOf: (aid: string) => string;
   onClose: () => void;
   nameOf: (id: string) => string;
+  /** AX 업무 생성 · AX 요약 — 패널 안 메시지는 스레드 전체가 맥락이다(서버가 조합 · §4.8 ②). */
+  onAsk?: (kind: "task" | "summary", messageId: string) => void;
 }) {
   const [replies, setReplies] = useState<InboxRoomMessage[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -479,10 +524,14 @@ function ThreadPanel({
   useEffect(
     () =>
       hub.subscribe((event) => {
-        if (event.type === "inbox.message_arrived" && event.room_id === roomId) void load();
+        /* 새 답글 · 「업무 만듦」 이 바뀜(`inbox.message_updated`) — 그 방이면 다시 읽는다 */
+        if ((event.type === "inbox.message_arrived" || event.type === "inbox.message_updated") && event.room_id === roomId) void load();
       }),
     [hub, load, roomId],
   );
+  /* 패널 안에서는 「스레드에 답글」 이 빠진다 — 이미 그 스레드다(OQ-813) */
+  const panelActions = (line: ChatLine): MessageActions | null =>
+    onAsk ? { onAxTask: () => onAsk("task", line.id), onAxSummary: () => onAsk("summary", line.id) } : null;
   const lines = [...replies.map((message) => toLine(message, "slack", people)), ...sender.locals.map((local) => localLine(local, meName))];
   return (
     <aside aria-label={copy.threadAria(title)} className="scax-thread-panel">
@@ -493,14 +542,14 @@ function ThreadPanel({
         <IconButton label={copy.threadClose} name="close" onClick={onClose} />
       </header>
       <div className="scax-thread-panel__log">
-        <Message grouped={false} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={parent} nameOf={nameOf} onResend={sender.resend} />
+        <Message actions={panelActions(parent)} grouped={false} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={parent} nameOf={nameOf} onResend={sender.resend} />
         <div className="scax-thread-panel__count">
           <span>{copy.replies(Math.max(replies.length, parent.thread?.count ?? 0))}</span>
         </div>
         {state === "error" ? (
           <Empty actionLabel={copy.retry} description={copy.retryDesc} onAction={() => void load()} title={copy.threadError} variant="error" />
         ) : (
-          <Log dividers={false} lines={lines} render={(line, grouped) => <Message grouped={grouped} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={line} nameOf={nameOf} onResend={sender.resend} />} />
+          <Log dividers={false} lines={lines} render={(line, grouped) => <Message actions={panelActions(line)} grouped={grouped} downloadOf={downloadOf} hrefOf={hrefOf} thumbOf={thumbOf} inPanel line={line} nameOf={nameOf} onResend={sender.resend} />} />
         )}
       </div>
       <div className="scax-thread-panel__compose">
@@ -517,12 +566,21 @@ export function RoomView({
   meName,
   hub,
   onRead,
+  onAsk,
+  focusMessageId = null,
+  onFocusHandled,
 }: {
   card: InboxRoomCard;
   meName: string;
   hub: InboxEventHub;
   /** 그 방을 이 key 까지 읽었다 — 부모가 서버에 알리고 카드 숫자를 고친다. */
   onRead: (roomId: string, upTo: string) => void;
+  /** 호버 막대의 AX 업무 생성 · AX 요약 — 부모가 서랍을 열고 그 메시지를 참고 자료로 보낸다(SPEC-008 §2.9 ③). */
+  onAsk?: (kind: "task" | "summary", messageId: string) => void;
+  /** 출처 링크로 들어왔다 — 이 메시지까지 스크롤하고 잠깐 강조한다(OQ-817). */
+  focusMessageId?: string | null;
+  /** 짚기를 마쳤다(찾았든 못 찾았든) — `found` 가 거짓이면 부모가 「메시지를 찾을 수 없습니다」 를 낸다. */
+  onFocusHandled?: (found: boolean) => void;
 }) {
   const roomId = card.room_id;
   const kakao = card.kind === "kakao";
@@ -559,6 +617,7 @@ export function RoomView({
           const added = next.messages.filter((message) => !current.some((item) => item.id === message.id)).length;
           if (added && !stick.current) setNewCount((count) => count + added);
           const known = new Set(next.messages.map((message) => message.id));
+          /* 새로 읽은 쪽이 이긴다 — 같은 메시지의 바뀐 값(「업무 만듦」 수 등)이 화면에 선다 */
           setMessages([...current.filter((message) => !known.has(message.id)), ...next.messages]);
         }
         if (mode === "first") setCursor(next.next_cursor);
@@ -585,7 +644,8 @@ export function RoomView({
   useEffect(
     () =>
       hub.subscribe((event) => {
-        if (event.type === "inbox.message_arrived" && event.room_id === roomId) void load("refresh");
+        /* 새 메시지 · 「업무 만듦」 이 바뀜(`inbox.message_updated` · SPEC-008 §4.4) — 그 방이면 다시 읽어 새로고침 없이 표지를 세운다 */
+        if ((event.type === "inbox.message_arrived" || event.type === "inbox.message_updated") && event.room_id === roomId) void load("refresh");
       }),
     [hub, load, roomId],
   );
@@ -635,6 +695,53 @@ export function RoomView({
   const roomType = header?.room_type ?? card.room_type;
   const members = header?.member_count ?? card.member_count;
   const parent = threadKey ? lines.find((line) => line.key === threadKey) ?? null : null;
+
+  /*
+   * 호버 막대(SPEC-008 §2.9 ①) — 슬랙: 스레드에 답글 · AX 업무 · AX 요약 / 카톡: AX 둘.
+   * 「스레드에 답글」 은 **답글이 0개여도** 그 메시지로 패널을 연다(D-33 — 입구만 더함, 패널·조회·답장 경로엔 조건이 없다).
+   */
+  const rowActions = (line: ChatLine): MessageActions | null => {
+    if (line.local) return null;
+    return {
+      onThread: kakao ? undefined : () => setThreadKey(line.key),
+      onAxTask: onAsk ? () => onAsk("task", line.id) : undefined,
+      onAxSummary: onAsk ? () => onAsk("summary", line.id) : undefined,
+    };
+  };
+
+  /*
+   * 출처 링크로 들어온 메시지 짚기(OQ-817) — 화면의 최상위 줄에 있으면 거기까지 스크롤 + 잠깐 강조.
+   * 스레드 답글이면 그 스레드 패널을 열고 부모를 짚는다. 처음 페이지에 없으면 위로 몇 쪽 더 읽어 본다(최대 3쪽).
+   */
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const focusTries = useRef(0);
+  useEffect(() => {
+    if (!focusMessageId || state !== "ready") return;
+    const target = messages.find((message) => message.id === focusMessageId);
+    if (!target) {
+      if (cursor && focusTries.current < 3 && !older) {
+        focusTries.current += 1;
+        void loadOlder();
+        return;
+      }
+      onFocusHandled?.(false);
+      return;
+    }
+    const topLevel = isTopLevel(target);
+    const anchorId = topLevel ? target.id : messages.find((message) => message.key === target.thread_key)?.id ?? target.id;
+    if (!topLevel && target.thread_key && !kakao) setThreadKey(target.thread_key);
+    stick.current = false;
+    window.requestAnimationFrame(() => {
+      const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(anchorId) : anchorId.replace(/"/g, '\\"');
+      const row = log.current?.querySelector<HTMLElement>(`[data-message-id="${escaped}"]`);
+      row?.scrollIntoView?.({ block: "center" });
+    });
+    setHighlight(anchorId);
+    const timer = window.setTimeout(() => setHighlight(null), 2500);
+    onFocusHandled?.(true);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 짚기는 «그 메시지가 처음 보일 때» 한 번이다
+  }, [focusMessageId, state, messages.length]);
   const placeholder = roomType === "channel" || roomType === "private" ? copy.composeChannel(title) : copy.composePerson(title);
 
   return (
@@ -718,6 +825,8 @@ export function RoomView({
                     onOpenThread={kakao ? undefined : () => setThreadKey(line.key)}
                     onResend={sender.resend}
                     threadOpen={threadKey === line.key}
+                    actions={rowActions(line)}
+                    focused={highlight === line.id}
                   />
                 )}
               />
@@ -753,6 +862,7 @@ export function RoomView({
           key={parent.key}
           meName={meName}
           nameOf={nameOf}
+          onAsk={onAsk}
           onClose={() => setThreadKey(null)}
           parent={parent}
           people={people}

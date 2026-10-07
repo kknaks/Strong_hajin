@@ -359,3 +359,33 @@ def remote_image_urls(safe_html: str) -> set[str]:
         for value in (image.get(REMOTE_SRC_ATTRIBUTE) for image in root.iter("img"))
         if value
     }
+
+
+#: 맥락 조합(SPEC-008 §4.8 ②)이 싣는 메일 글자의 상한 — 긴 뉴스레터 한 통이 대화 프롬프트를 먹지 않게.
+SAFE_TEXT_LIMIT = 20_000
+
+
+def safe_html_text(safe_html: str, *, limit: int = SAFE_TEXT_LIMIT) -> str:
+    """**소독한 안전본에서 글자만** 뽑는다 — HTML 아님 · 인용 접기(`<details>`)는 뺀다 (SPEC-008 §4.8 ② · OQ-819).
+
+    `<style>` 은 글자가 아니라 버린다. 문단·줄바꿈 자리는 줄로 남기고 빈 줄은 하나로 줄인다.
+    """
+    body = (safe_html or "").removeprefix(SAFE_HTML_PREFIX)
+    if not body.strip():
+        return ""
+    try:
+        root = lxml_html.fragment_fromstring(body, create_parent="div")
+    except (etree.ParserError, ValueError):
+        return ""
+    for element in list(root.iter("details", "style", "script", "head", "title")):
+        if element.getparent() is not None:
+            # `drop_tree` 는 꼬리 글자(인용 뒤에 이어진 본문)를 남기고 요소만 걷는다.
+            element.drop_tree()
+    for element in root.iter("br"):
+        element.tail = "\n" + (element.tail or "")
+    for element in root.iter("p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "blockquote"):
+        element.tail = "\n" + (element.tail or "")
+    text = root.text_content()
+    lines = [re.sub(r"[ \t ]+", " ", line).strip() for line in text.splitlines()]
+    collapsed = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return collapsed[:limit]

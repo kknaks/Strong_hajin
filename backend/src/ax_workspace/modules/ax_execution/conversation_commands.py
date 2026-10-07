@@ -17,7 +17,7 @@ class ConversationCreateInput(BaseModel):
 
 class ConversationContextInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    resource_type: Literal['task', 'work_request'] = Field(title='맥락 종류')
+    resource_type: Literal['task', 'work_request', 'inbox_message'] = Field(title='맥락 종류')
     resource_id: UUID = Field(title='맥락 대상')
     resource_version: int = Field(ge=1, title='맥락 버전')
     included: bool = Field(title='내용 포함')

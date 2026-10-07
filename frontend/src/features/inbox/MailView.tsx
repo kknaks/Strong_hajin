@@ -233,10 +233,13 @@ export function MailView({
   card,
   hub,
   onRead,
+  onAsk,
 }: {
   card: InboxMailCard;
   hub: InboxEventHub;
   onRead: (messageId: string) => void;
+  /** 머리의 [AX 업무 생성] [AX 요약](SPEC-008 §2.9 ②) — 부모가 서랍을 열고 이 메일을 참고 자료로 보낸다. 없으면 단추가 서지 않는다. */
+  onAsk?: (kind: "task" | "summary", messageId: string) => void;
 }) {
   const messageId = card.message_id;
   const [mail, setMail] = useState<InboxMail | null>(null);
@@ -290,8 +293,10 @@ export function MailView({
     () =>
       hub.subscribe((event) => {
         if (event.type === "inbox.reply_result" && event.data?.local_id && event.data.local_id === attempt.current?.localId && event.data.status) settle(event.data.status);
+        /* 이 메일로 업무가 확정됐다(`inbox.message_updated` · 메일은 `room_id` 가 없다) — 다시 읽어 「업무 만듦」 을 새로고침 없이 세운다 */
+        if (event.type === "inbox.message_updated" && !event.room_id && event.message_id === messageId) void load();
       }),
-    [hub, settle],
+    [hub, load, messageId, settle],
   );
 
   const send = async (payload: { to: Address[]; cc: Address[]; body: string; files: File[] }) => {
@@ -356,8 +361,18 @@ export function MailView({
     <div className="scax-inbox-main">
       <article className="scax-mail">
         <div className="scax-mail__top">
-          <h2 className="scax-mail__title">{mail.subject ?? ""}</h2>
+          <h2 className="scax-mail__title">
+            {mail.subject ?? ""}
+            {(mail.made_task_count ?? 0) > 0 ? <span className="scax-imsg__made scax-mail__made">{copy.madeTask}</span> : null}
+          </h2>
           <div className="scax-mail__actions">
+            {/* AX 단추 둘이 답장 앞에 선다(SPEC-008 §2.8 · D-36) — 글자 단추라 툴팁이 없다 */}
+            {onAsk ? (
+              <>
+                <Button label={copy.axTask} onClick={() => onAsk("task", mail.message_id)} size="sm" tone="neutral" variant="outlined" />
+                <Button label={copy.axSummary} onClick={() => onAsk("summary", mail.message_id)} size="sm" tone="neutral" variant="outlined" />
+              </>
+            ) : null}
             <Button disabled={Boolean(compose)} label={copy.reply} onClick={() => setCompose({ mode: "reply", phase: "draft" })} size="sm" tone="neutral" variant="outlined" />
             <Button disabled={Boolean(compose)} label={copy.replyAll} onClick={() => setCompose({ mode: "all", phase: "draft" })} size="sm" tone="neutral" variant="outlined" />
           </div>

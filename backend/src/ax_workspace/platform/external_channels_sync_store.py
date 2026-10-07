@@ -66,6 +66,7 @@ def _room_state(room: ExternalRoomRecord, integration: ExternalIntegrationRecord
         backfill_cursor=room.backfill_cursor, backfill_count=room.backfill_count or 0,
         backfill_done_at=_aware(room.backfill_done_at), access_token_encrypted=integration.access_token_encrypted,
         verified=bool((room.room_meta or {}).get("verified_at")), access_lost=(room.room_meta or {}).get("access_lost"),
+        slack_user_id=(integration.account_meta or {}).get("user_id"),
     )
 
 
@@ -128,6 +129,14 @@ class SqlAlchemyExternalChannelsSyncStore:
             ExternalRoomRecord.external_id == channel,
         )
         return [room for room in rooms if room.verified and not room.access_lost]
+
+    def slack_channel_rooms(self, team_id: str, channel: str) -> list[RoomState]:
+        """그 `(team, channel)` 을 고른 **모든** 연동의 방 — 확인·접근 여부와 무관하다(나간 방·보관·삭제 이벤트가 쓴다 · S8 §5)."""
+        return self._rooms(
+            ExternalIntegrationRecord.kind == "slack",
+            ExternalIntegrationRecord.account_key == team_id,
+            ExternalRoomRecord.external_id == channel,
+        )
 
     def _rooms(self, *conditions) -> list[RoomState]:
         with self._sessions() as session:

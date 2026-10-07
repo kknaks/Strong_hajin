@@ -437,11 +437,19 @@ export type TaskHistoryDiff = {
  * surface has to decide whether a member id means requester, assigner or assignee. `source` is absent when the
  * caller may not read the resource behind it.
  */
+/**
+ * 업무가 나온 **원래 메시지**(SPEC-008 §4.8 ③) — AX 대화의 참고 자료로 메시지·메일을 받아 그 턴의 업무 제안이 확정됐을 때 남는다.
+ * `label` = 「슬랙 #채널명」·「카톡 {방 이름}」·「메일 {제목}」. 메일이면 `room_id` 가 `null`.
+ */
+export type TaskOriginMessage = { message_id: string; source_kind: "mail" | "slack" | "kakao" | string; room_id: string | null; label: string };
+
 export type TaskOrigin = {
   kind: "self_created" | "work_request" | "direct_assignment" | string;
   actor_role: string;
   actor: { member_id: string; display_name: string } | null;
   source: { type: string; id: string; title: string | null } | null;
+  /** 원래 메시지 — 「판단 보기」(`source`)와 **함께** 선다(SPEC-008 §2.9 ④). */
+  message?: TaskOriginMessage | null;
 };
 
 /** One step inside a Task: no assignment, no lineage, no judgement. */
@@ -1029,10 +1037,15 @@ export type Notification = {
 };
 
 export type ConversationContextReference = {
-  resource_type: "task" | "work_request";
+  /** `inbox_message` = 메시지함의 메시지·메일(SPEC-008 §4.8 ① — 서버 메시지 id · 판 `1` 고정). 프론트는 가리키기만 한다. */
+  resource_type: "task" | "work_request" | "inbox_message";
   resource_id: string;
   resource_version: number;
   included: boolean;
+  /** 이 참고 자료를 실은 턴(응답에만 — WP4 계약 고정 1). */
+  turn_id?: string | null;
+  /** 서버가 맥락을 조합할 때 만든 한 줄 — 실제 실은 범위(「슬랙 · #채널 · {첫}~{끝} · N건」 등). 조합 전이면 없다. */
+  label?: string | null;
 };
 
 export type ConversationMessageAcceptance = {
@@ -1631,6 +1644,8 @@ export type InboxMail = {
   safe_html: string;
   attachments: InboxAttachment[];
   sent_replies: InboxSentReply[];
+  /** 이 메일로 확정된 업무 수(SPEC-008 §4.8 ④) — 1 이상이면 머리에 「업무 만듦」. 없거나 0 이면 표지 없음. */
+  made_task_count?: number;
 };
 
 export type InboxRoomHeader = {
@@ -1656,6 +1671,8 @@ export type InboxRoomMessage = {
   thread_key: string | null;
   raw: Record<string, unknown>;
   attachments: InboxAttachment[];
+  /** 이 메시지로 확정된 업무 수(SPEC-008 §4.8 ④) — 1 이상이면 행에 「업무 만듦」. */
+  made_task_count?: number;
 };
 
 /** 이름 풀이표 — 슬랙 사용자 id → 이름·봇 여부. 서버가 싣지 않으면 원문 `user_profile` 로 푼다. */
@@ -1671,7 +1688,8 @@ export type InboxRoomPage = {
 /** 사용자 사건 채널(`/api/inbox/stream`) 한 건 — 본문은 싣지 않고 «무엇이 바뀌었는지»만 온다(NOTIFY 계약). */
 export type InboxStreamEvent = {
   v: number;
-  type: "inbox.message_arrived" | "inbox.reply_result" | "integration.changed" | string;
+  /** `inbox.message_updated` = 메시지(메일)의 `made_task_count` 가 바뀌었다 — `{message_id, room_id|null}`, 본문 없음(SPEC-008 §4.4 · H-5). */
+  type: "inbox.message_arrived" | "inbox.reply_result" | "integration.changed" | "inbox.message_updated" | string;
   member_id: string;
   integration_id?: string;
   room_id?: string;

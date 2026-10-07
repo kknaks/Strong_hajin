@@ -10551,6 +10551,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -10560,7 +10571,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -12143,6 +12155,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -12152,7 +12175,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -15911,6 +15935,49 @@
               "title": "TaskMemberView",
               "type": "object"
             },
+            "TaskOriginMessage": {
+              "description": "원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③).",
+              "properties": {
+                "message_id": {
+                  "title": "Message Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Kind"
+                },
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Room Id"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "source_kind",
+                "room_id",
+                "label"
+              ],
+              "title": "TaskOriginMessage",
+              "type": "object"
+            },
             "TaskOriginSource": {
               "properties": {
                 "type": {
@@ -15977,13 +16044,24 @@
                       "type": "null"
                     }
                   ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskOriginMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "kind",
                 "actor_role",
                 "actor",
-                "source"
+                "source",
+                "message"
               ],
               "title": "TaskOriginView",
               "type": "object"
@@ -16589,6 +16667,49 @@
               "title": "TaskMemberView",
               "type": "object"
             },
+            "TaskOriginMessage": {
+              "description": "원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③).",
+              "properties": {
+                "message_id": {
+                  "title": "Message Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Kind"
+                },
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Room Id"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "source_kind",
+                "room_id",
+                "label"
+              ],
+              "title": "TaskOriginMessage",
+              "type": "object"
+            },
             "TaskOriginSource": {
               "properties": {
                 "type": {
@@ -16655,13 +16776,24 @@
                       "type": "null"
                     }
                   ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskOriginMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "kind",
                 "actor_role",
                 "actor",
-                "source"
+                "source",
+                "message"
               ],
               "title": "TaskOriginView",
               "type": "object"
@@ -17161,6 +17293,49 @@
               "title": "TaskMemberView",
               "type": "object"
             },
+            "TaskOriginMessage": {
+              "description": "원래 메시지(메시지함) — 누르면 메시지함이 그 방·그 메일로 가서 그 메시지를 짚는다(SPEC-008 §4.8 ③).",
+              "properties": {
+                "message_id": {
+                  "title": "Message Id",
+                  "type": "string"
+                },
+                "source_kind": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Source Kind"
+                },
+                "room_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Room Id"
+                },
+                "label": {
+                  "title": "Label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message_id",
+                "source_kind",
+                "room_id",
+                "label"
+              ],
+              "title": "TaskOriginMessage",
+              "type": "object"
+            },
             "TaskOriginSource": {
               "properties": {
                 "type": {
@@ -17227,13 +17402,24 @@
                       "type": "null"
                     }
                   ]
+                },
+                "message": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskOriginMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "kind",
                 "actor_role",
                 "actor",
-                "source"
+                "source",
+                "message"
               ],
               "title": "TaskOriginView",
               "type": "object"
@@ -46763,6 +46949,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -46772,7 +46969,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"
@@ -47667,7 +47865,7 @@
       {
         "name": "conversation_message_send",
         "title": "대화 메시지 접수 준비",
-        "description": "Prepare submitting a message with selected current task/request context to one of this person's conversations. A durable turn is queued; this response is acceptance, not a generated answer. Delegated execution requires human confirmation.",
+        "description": "Prepare submitting a message with selected current task/request/inbox-message context to one of this person's conversations. An inbox_message reference only points at the message (resource_version 1); the server composes its surrounding lines itself. A durable turn is queued; this response is acceptance, not a generated answer. Delegated execution requires human confirmation.",
         "adapter_operation": "accept_conversation_message",
         "exposure": {
           "any_capabilities": [],
@@ -47690,7 +47888,8 @@
                 "resource_type": {
                   "enum": [
                     "task",
-                    "work_request"
+                    "work_request",
+                    "inbox_message"
                   ],
                   "title": "맥락 종류",
                   "type": "string"
@@ -49021,6 +49220,17 @@
                 "included": {
                   "title": "Included",
                   "type": "boolean"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Label"
                 }
               },
               "required": [
@@ -49030,7 +49240,8 @@
                 "resource_id",
                 "resource_version",
                 "summary",
-                "included"
+                "included",
+                "label"
               ],
               "title": "ConversationContextView",
               "type": "object"

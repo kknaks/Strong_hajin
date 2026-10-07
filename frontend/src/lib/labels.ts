@@ -400,6 +400,8 @@ export const taskDetail = {
   /** AX 제안에서 생긴 업무의 출처 — 링크 글자가 업무 제목이 아니라 「판단 보기」다 (§2.10.8 · 결정 e). */
   originAx: "AX 제안",
   originOpenDecision: "판단 보기",
+  /** 원래 메시지로 가는 링크(SPEC-008 §2.9 ④) — 「원래 메시지 · 슬랙 #채널명」 / 「원래 메일 · {제목}」 */
+  originMessage: (sourceKind: string, label: string) => `${sourceKind === "mail" ? "원래 메일" : "원래 메시지"} · ${label}`,
 
   /* 인라인 즉시 저장 (SPEC-007 §2.10.4 · WORK-010 2a-3) — 편집 모드·「변경 저장」이 없다 */
   /** 머리 제목을 그 자리에서 고치는 칸의 읽어 주는 이름. */
@@ -1500,6 +1502,17 @@ export const inboxScreen = {
   /* 메일 */
   reply: "답장",
   replyAll: "전체 답장",
+  /* 메시지함 → AX(SPEC-008 §2.9 · OQ-908) — 막대 아이콘의 툴팁 · 메일 머리 단추 · 말풍선 본문 넷 · 「업무 만듦」 */
+  axTask: "AX 업무 생성",
+  axSummary: "AX 요약",
+  threadReply: "스레드에 답글",
+  messageBar: "메시지 행동",
+  askTaskMessage: "이 메시지 읽고 업무를 생성해 줘",
+  askSummaryMessage: "이 메시지 요약해 줘",
+  askTaskMail: "이 메일 읽고 업무를 생성해 줘",
+  askSummaryMail: "이 메일 요약해 줘",
+  madeTask: "업무 만듦",
+  focusMissing: "메시지를 찾을 수 없습니다",
   from: "보낸 사람",
   to: "받는 사람",
   cc: "참조",

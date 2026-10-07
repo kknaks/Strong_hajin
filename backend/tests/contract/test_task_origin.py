@@ -279,6 +279,8 @@ def test_a_direct_assigner_can_follow_the_work_they_handed_out_without_holding_i
         "actor_role": "배정자",
         "actor": {"member_id": "jiho", "display_name": "지호 (팀장)"},
         "source": None,
+        # 메시지함 메시지에서 온 업무가 아니다 (SPEC-008 §4.8 ③ · WORK-012 WP4-BE).
+        "message": None,
     }
     assert detail["assignee"] == {"member_id": "mina", "display_name": "민아 (구성원)"}
     assert detail["state"] == "open"

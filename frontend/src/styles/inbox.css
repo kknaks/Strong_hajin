@@ -311,3 +311,19 @@ ol.scax-imsg-list{list-style:decimal}
 .scax-inbox-warn__list{display:flex;flex-direction:column;gap:var(--scax-space-150);margin:0;padding:var(--scax-space-100);list-style:none}
 .scax-inbox-warn__row{display:flex;align-items:center;gap:var(--scax-space-200)}
 .scax-inbox-warn__text{flex:1 1 auto;min-width:0;font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);color:var(--scax-color-ink)}
+/* ===== 메시지함 → AX (SPEC-008 §2.9 · WORK-012 WP4) =====
+   호버 막대 — 행 오른쪽 위에 **겹쳐** 뜬다(본문을 밀지 않는다). 1차 = 행 호버·키보드 포커스로 막대, 2차 = 아이콘 호버·포커스로 툴팁(`data-tip`).
+   시안 없이 슬랙 모양 그대로(D-34) — DS 아이콘 단추를 흰 판 위에 줄 세운다. */
+.scax-imsg{position:relative}
+.scax-imsg:focus-visible{outline:0;box-shadow:var(--scax-focus-ring);border-radius:var(--scax-radius-md)}
+.scax-imsg__bar{position:absolute;top:calc(-1 * var(--scax-space-300));right:0;z-index:2;display:none;align-items:center;gap:2px;padding:2px;border:1px solid var(--scax-color-line);border-radius:var(--scax-radius-md);background:var(--scax-color-surface);box-shadow:var(--scax-shadow-raised)}
+.scax-imsg:hover > .scax-imsg__bar,.scax-imsg:focus-within > .scax-imsg__bar{display:flex}
+.scax-imsg__tool{position:relative;display:inline-flex}
+.scax-imsg__tool::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);display:none;padding:4px 8px;border-radius:var(--scax-radius-sm);color:var(--scax-color-surface);background:var(--scax-color-ink);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh);white-space:nowrap;pointer-events:none}
+.scax-imsg__tool:hover::after,.scax-imsg__tool:focus-within::after{display:block}
+/* 「업무 만듦」 — 그 메시지로 업무가 하나 이상 확정됐다(막지는 않는다 · OQ-907) */
+.scax-imsg__made{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:var(--scax-radius-chip);color:var(--scax-color-ink-alt);background:var(--scax-color-surface-alt);font-size:var(--scax-text-caption1-size);font-weight:var(--scax-fw-medium)}
+.scax-imsg__made--line{justify-self:start;margin-bottom:var(--scax-space-100)}
+.scax-mail__made{margin-left:var(--scax-space-200);vertical-align:middle}
+/* 출처 링크로 들어와 짚은 메시지 — 잠깐 강조(OQ-817) */
+.scax-imsg--focus{margin:0 calc(-1 * var(--scax-space-300));padding-left:var(--scax-space-300);padding-right:var(--scax-space-300);border-radius:var(--scax-radius-md);background:var(--scax-color-accent-soft);transition:background 0.6s}

@@ -433,33 +433,32 @@ fn spawn_main_window(
             // incognito 를 켜면 실행할 때마다 로그아웃된다 — 켜지 않는다.
             .incognito(false)
             .on_navigation(move |url| {
-                // 셸 자기 화면은 언제나 허용한다 — 커맨드 권한과는 무관하다.
-                if url.scheme() == SHELL_SCHEME {
-                    return true;
-                }
-                let origin = guard::origin_of(url);
-                let allowed = nav_allow.iter().any(|entry| entry == &origin);
-                if !allowed {
-                    // `E-05` — 취소하고 기본 브라우저로 넘긴다.
-                    // **점유는 그대로다**(L-11 · I-4): 막힌 이동은 문서 교체가 아니다.
-                    if matches!(url.scheme(), "http" | "https") {
-                        if let Err(error) =
-                            tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
-                        {
-                            log_event("nav", &format!("외부 열기 실패: {error}"));
-                        }
+                // 판정은 `guard::navigation_verdict` 한 곳 — 순서(셸 화면 → 빈 프레임 문서 → 허용 목록 → `/api/` → 허용)가
+                // 계약이고 단위 시험이 지킨다. 여기서는 판정대로 «한다»(외부 열기 · 가로채기 · 기록)만.
+                match guard::navigation_verdict(url, &nav_allow, nav_origin.as_deref(), SHELL_SCHEME) {
+                    guard::NavVerdict::Allow => {
+                        // 011 — 하위 프레임의 `about:blank` · `about:srcdoc` 도 여기로 온다(프레임 구분 없음 · I-1).
+                        log_event("nav", &format!("allowed url-scheme={} origin={}", url.scheme(), guard::origin_of(url)));
+                        true
                     }
-                    log_event("nav", &format!("blocked origin={origin} — 점유는 유지한다(L-11)"));
-                    return false;
+                    guard::NavVerdict::Block { origin, open_external } => {
+                        // `E-05` — 취소하고 (http(s) 면) 기본 브라우저로 넘긴다.
+                        // **점유는 그대로다**(L-11 · I-4): 막힌 이동은 문서 교체가 아니다.
+                        if open_external {
+                            if let Err(error) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
+                                log_event("nav", &format!("외부 열기 실패: {error}"));
+                            }
+                        }
+                        log_event("nav", &format!("blocked origin={origin} — 점유는 유지한다(L-11)"));
+                        false
+                    }
+                    guard::NavVerdict::TakeOverApi => {
+                        // U-5 — 같은 origin 의 `/api/` 이동은 **셸이 받아 본다.** 창은 그대로 둔다.
+                        // macOS 는 `_blank` 도 여기를 먼저 지난다 — 그래서 두 번째 창도 뜨지 않는다.
+                        take_over_api_link(nav_app.clone(), nav_origin.clone(), url.clone(), "navigation");
+                        false
+                    }
                 }
-                // U-5 — 같은 origin 의 `/api/` 이동은 **셸이 받아 본다.** 창은 그대로 둔다.
-                // macOS 는 `_blank` 도 여기를 먼저 지난다 — 그래서 두 번째 창도 뜨지 않는다.
-                if download::is_api_request(url, nav_origin.as_deref()) {
-                    take_over_api_link(nav_app.clone(), nav_origin.clone(), url.clone(), "navigation");
-                    return false;
-                }
-                log_event("nav", &format!("allowed origin={origin}"));
-                true
             })
             // U-5 · AC-T45 — 새 창 링크(Windows 는 `_blank` 가 이쪽으로만 온다).
             // `/api/` 가 아니면 **지금 동작을 그대로** 둔다: 핸들러가 없을 때 macOS(wry)는 새 창을
@@ -993,9 +992,13 @@ mod tests {
             assert!(builder.contains(hook), "{hook} 가 창 빌더에 없다");
         }
         // fix1 W3 — 가로채기 기준은 인증 흐름용 허용 목록(`nav_allow`)이 아니라 앱 origin 하나다.
-        assert!(builder.contains("download::is_api_request(url, nav_origin.as_deref())"));
+        // 이동 판정은 `guard::navigation_verdict` 로 옮겼다(WORK-012 SHELL 011) — 창 빌더는 앱 origin 을 그 판정에 넘기고,
+        // 판정 안에서 `/api/` 가로채기가 앱 origin 으로 갈린다(`guard.rs` 단위 시험이 순서·결과를 지킨다).
+        assert!(builder.contains("guard::navigation_verdict(url, &nav_allow, nav_origin.as_deref(), SHELL_SCHEME)"));
         assert!(builder.contains("download::is_api_request(&url, popup_origin.as_deref())"));
         assert!(!builder.contains("is_api_request(url, &nav_allow)"));
+        let guard_source = include_str!("guard.rs");
+        assert!(guard_source.contains("crate::download::is_api_request(url, app_origin)"));
         // 저장 결과는 eval 사건으로 간다 — 이벤트 수신 권한(core:event)도 웹에 열지 않는다.
         for capability in [PERSONAL_CAPABILITY, COMPANY_CAPABILITY] {
             assert!(!capability.contains("core:"), "기본 권한이 열렸다");

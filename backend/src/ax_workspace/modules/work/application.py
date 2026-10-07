@@ -193,6 +193,16 @@ class ActionSourcePort(Protocol):
     def subject_label(self, action: Any) -> str: ...
 
 
+class MessageOriginPort(Protocol):
+    """업무의 **원래 메시지**(메시지함) 표시 — 메시지함이 답한다(SPEC-008 §4.8 ③). 업무 모듈은 메시지를 모른다.
+
+    돌려주는 값은 `{message_id: {message_id, source_kind, room_id, label}}` — 보는 사람이 그 메시지의 주인이 아니거나
+    메시지·방·연동이 지워졌으면 이름 없는 글자(「원래 메시지」·「원래 메일」)만 싣는다(링크는 서되 열면 404).
+    """
+
+    def message_origins(self, member_id: str, message_ids: set[UUID]) -> dict[UUID, dict[str, Any]]: ...
+
+
 class WorkRequestSourcePort(Protocol):
     """The authorized WorkRequest lookup a Task's origin needs."""
 
@@ -235,8 +245,11 @@ class TaskApplication:
         directory: MemberDirectoryPort | None = None,
         schedules: TaskScheduleRepository | None = None,
         time_blocks: TimeBlockRepository | None = None,
+        message_origins: MessageOriginPort | None = None,
     ) -> None:
         self.repository = repository
+        # 메시지함 메시지에서 온 업무의 「원래 메시지」 — 메시지함 모듈의 조회로만 읽는다(SPEC-008 §4.8 ③).
+        self._message_origins = message_origins
         # 시간 배정 — **업무의 자식**이라 자기 가시성 규칙을 갖지 않는다 (SPEC-004 §4 Data Contract).
         self._schedules = schedules
         # 겹침을 읽는 **문 하나**. 두 표를 함께 조회한다 — 회의 쪽도 같은 문을 쓴다 (증보 K22).
@@ -2467,8 +2480,18 @@ class TaskApplication:
         """
         facts = self.repository.origin_facts(tasks)
         readable_requests = self._readable_request_ids(principal, {fact["source_work_request_id"] for fact in facts.values()})
+        message_ids = {
+            task.source_inbox_message_id for task in tasks if getattr(task, "source_inbox_message_id", None) is not None
+        }
+        messages = (
+            self._message_origins.message_origins(str(principal.id), message_ids)
+            if message_ids and self._message_origins is not None
+            else {}
+        )
         projections: dict[UUID, dict[str, Any]] = {}
         for task in tasks:
+            # 메시지함 메시지에서 확정된 업무면 원래 메시지 링크가 **함께** 선다 — 「판단 보기」(source)는 그대로(OQ-907).
+            message = messages.get(getattr(task, "source_inbox_message_id", None))
             fact = facts.get(task.id, {})
             request_id = fact.get("source_work_request_id")
             if request_id is not None:
@@ -2487,7 +2510,7 @@ class TaskApplication:
                 kind, actor_role, actor_id, source = "direct_assignment", "배정자", fact.get("assigned_by"), None
             else:
                 kind, actor_role, actor_id, source = "self_created", None, None, None
-            if actor_id is None and source is None:
+            if actor_id is None and source is None and message is None:
                 # Nobody asked for it and nobody assigned it. There is no origin to state, and inventing one would
                 # put a person in a role they never played.
                 continue
@@ -2496,6 +2519,7 @@ class TaskApplication:
                 "actor_role": actor_role,
                 "actor": self._actor(actor_id),
                 "source": source,
+                "message": message,
             }
         return projections
 

@@ -219,7 +219,12 @@ from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequ
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from ax_workspace.platform import user_events
+from ax_workspace.platform.external_channels_inbox_store import SqlAlchemyInboxStore
+from ax_workspace.modules.external_channels.events import USER_EVENTS_CHANNEL, UserEvent, UserEventType
 from ax_workspace.platform.persistence import (
+    ExternalIntegrationRecord,
+    ExternalMessageRecord,
     ActionItemRecord,
     AppointmentRecord,
     AttachmentRecord,
@@ -1129,6 +1134,8 @@ class WorkflowApplication(ExternalInboxOperations):
         self._room_gateway: MeetingRoomGateway | None = None
         self._room_sync_locks: dict[UUID, threading.RLock] = {}
         self._room_sync_locks_guard = threading.Lock()
+        #: PostgreSQL 이 아닐 때(시험) 낸 사용자 사건 — NOTIFY 가 없으니 여기에 남는다(메시지함 저장소의 `local_events` 와 같은 자리).
+        self.local_user_events: list[str] = []
         self._room_creation_locks: dict[tuple[str, str], threading.RLock] = {}
         self._room_creation_locks_guard = threading.Lock()
         # 외부 채널 OAuth 어댑터. **시험이 대역을 끼우는 자리**이고, 비어 있으면 client 값이 갖춰진 종류만 실물을 만든다.
@@ -1760,6 +1767,36 @@ class WorkflowApplication(ExternalInboxOperations):
                 attempt.updated_at = datetime.now(UTC)
                 session.commit()
                 return reservation
+
+    def _announce_message_updated(self, session: Any, principal: Principal, message_id: UUID) -> None:
+        """그 메시지의 「업무 만듦」 수가 바뀌었다 — **업무 확정 커밋 뒤** `inbox.message_updated` 를 낸다 (S8 §4.4 · H-5 · W-r2-7).
+
+        커밋 전에 내면 화면이 다시 읽어도 수가 안 바뀐다. 그래서 확정 세션의 커밋 뒤 훅으로 미루고, 새 세션에서 NOTIFY 한다.
+        받는 사람은 그 메시지의 연동 주인이다(남의 메시지는 참고 자료가 될 수 없다 — 접수·실행 때 소유를 확인했다).
+        """
+
+        def publish() -> None:
+            with self._session_factory() as fresh:
+                row = fresh.execute(
+                    select(ExternalMessageRecord.room_id, ExternalIntegrationRecord.member_id)
+                    .join(ExternalIntegrationRecord, ExternalIntegrationRecord.id == ExternalMessageRecord.integration_id)
+                    .where(ExternalMessageRecord.id == message_id)
+                ).first()
+                if row is None:
+                    return
+                event = UserEvent(
+                    type=UserEventType.MESSAGE_UPDATED,
+                    member_id=str(row.member_id),
+                    message_id=str(message_id),
+                    room_id=str(row.room_id) if row.room_id is not None else None,
+                )
+                if fresh.get_bind().dialect.name == "postgresql":
+                    user_events.publish(fresh, USER_EVENTS_CHANNEL, event.to_payload())
+                    fresh.commit()
+                else:
+                    self.local_user_events.append(event.to_payload())
+
+        self._after_session_commit(session, publish)
 
     def _room_name_or_none(self, room_id: int) -> str | None:
         """예약 시스템 목록에서 그 방의 이름 — 시스템이 없거나 닿지 않으면 `None`(카드가 번호로 보인다)."""
@@ -4881,6 +4918,9 @@ class WorkflowApplication(ExternalInboxOperations):
         """Every delayed dependency remains bound to this transaction's session."""
         return ActionServices(
             meeting_room_name=self._room_name_or_none,
+            message_origin_recorded=lambda principal, message_id: self._announce_message_updated(
+                session, principal, message_id
+            ),
             tasks=lambda: self._tasks(session),
             assignments=lambda: self._assignments(session),
             task_creation=lambda: self._task_creation(session),
@@ -4929,6 +4969,8 @@ class WorkflowApplication(ExternalInboxOperations):
             schedules=SqlAlchemyTaskScheduleRepository(session),
             # 겹침을 읽는 **문 하나** — 같은 session 이라 **검사와 저장이 한 트랜잭션**에 있다 (증보 K22).
             time_blocks=SqlAlchemyTimeBlockRepository(session),
+            # 메시지함 메시지에서 온 업무의 「원래 메시지」(SPEC-008 §4.8 ③) — 메시지함 저장소가 답한다.
+            message_origins=SqlAlchemyInboxStore(session),
         )
 
     def _projects(self, session: Any) -> ProjectApplication:

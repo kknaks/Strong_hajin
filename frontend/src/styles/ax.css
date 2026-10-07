@@ -685,3 +685,5 @@
    흐린 머리(`.action-progress-batch-card[data-state="approved"] …`, 0,3,1)는 이 규칙(0,2,1)보다 높아 그대로 남는다. */
 .scax-drawer--chat .scax-preview>summary{color:var(--scax-color-ink-neutral)}
 .scax-drawer--chat .scax-preview>summary:hover{color:var(--scax-color-ink)}
+/* 말풍선 아래 참고 자료 한 줄(SPEC-008 §2.9 ③-2) — 서버가 조합한 «실제 실은 범위» 글자 그대로 */
+.scax-msg__references{display:grid;justify-items:end;gap:2px;margin:calc(-1 * var(--scax-space-400)) 0 var(--scax-space-500) auto;padding:0;list-style:none;color:var(--scax-color-ink-assistive);font-size:var(--scax-text-caption1-size);line-height:var(--scax-text-caption1-lh)}

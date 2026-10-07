@@ -202,7 +202,7 @@ from ax_workspace.modules.meetings.stream import (
     TranscriptPartialFrame,
 )
 from ax_workspace.modules.work.projects import ProjectAccessDenied, ProjectError, ProjectNotFound
-from ax_workspace.modules.ax_execution.conversations import DEFAULT_CONVERSATION_LIST_LIMIT, ConversationError, ConversationQueueOverflow
+from ax_workspace.modules.ax_execution.conversations import DEFAULT_CONVERSATION_LIST_LIMIT, ContextMessageNotFound, ConversationError, ConversationQueueOverflow
 from ax_workspace.modules.ax_execution.actions import ActionAccessDenied, ActionCapabilityDenied, ActionError
 from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
@@ -435,7 +435,7 @@ class _WebSocketStreamClient:
 
 
 class ConversationContextReferenceRequest(BaseModel):
-    resource_type: Literal["task", "work_request"]
+    resource_type: Literal["task", "work_request", "inbox_message"]
     resource_id: UUID
     resource_version: int = Field(ge=1)
     included: bool
@@ -520,6 +520,9 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail=str(error))
     if isinstance(error, ValidationError):
         return HTTPException(status_code=422, detail=error.errors(include_input=False, include_context=False))
+    if isinstance(error, ContextMessageNotFound):
+        # 참고한 메시지가 사라졌다 — 대화가 사라진 것이 아니다(SPEC-008 §4.8 ① · 검수 W-6).
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": error.code, "message": error.message})
     if isinstance(error, ResourceNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RESOURCE_NOT_FOUND_MESSAGE)
     if isinstance(error, NotificationNotFound):

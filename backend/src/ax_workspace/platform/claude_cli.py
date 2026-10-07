@@ -353,6 +353,13 @@ class ClaudeCliProviderAdapter:
                 for item in request.context_references
             )
             sections.append(f"Context references authorized for this turn:\n{references}")
+            # 메시지함 메시지는 서버가 조합한 맥락 JSON 을 **덩어리로** 따로 싣는다(SPEC-008 §4.8 ② · 한 줄 요약과 별도).
+            blocks = [item["context"] for item in request.context_references if item.get("context")]
+            if blocks:
+                sections.append(
+                    "Inbox message context (server-composed from this person's own inbox; `target: true` marks the "
+                    "message they picked — read it, then follow the user message):\n" + "\n".join(blocks)
+                )
         sections.append(f"User message:\n{request.prompt}")
         return "\n\n".join(sections)
 

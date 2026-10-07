@@ -769,6 +769,9 @@ class ContextReferenceRecord(Base):
     resource_version: Mapped[int] = mapped_column(Integer, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     included: Mapped[bool] = mapped_column(nullable=False)
+    #: 메시지함 메시지(`inbox_message`)를 실행 직전에 조합하며 만든 「실제로 실은 범위」 한 줄 — 말풍선 아래에 선다
+    #: (SPEC-008 §2.9 ③-2 · WP4 계약 고정 1). 조합 전·다른 종류는 NULL.
+    label: Mapped[str | None] = mapped_column(String(300))
 
 
 class ToolInvocationRecord(Base):
@@ -930,6 +933,14 @@ class TaskRecord(Base):
             sqlite_where=text("source_work_request_id IS NOT NULL"),
             postgresql_where=text("source_work_request_id IS NOT NULL"),
         ),
+        # 「업무 만듦」 수(`made_task_count`)를 메시지마다 센다(SPEC-008 §4.8 ④). **기존 표에 더하는 인덱스라
+        # `schema_sync` 가 만들지 않는다** — 이미 사는 DB 는 `migrations/manual/2026-10-07-inbox-message-origin*.sql`.
+        Index(
+            "ix_tasks_source_inbox_message_id",
+            "source_inbox_message_id",
+            sqlite_where=text("source_inbox_message_id IS NOT NULL"),
+            postgresql_where=text("source_inbox_message_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -957,6 +968,10 @@ class TaskRecord(Base):
     #: 받는 사람이 왜 이 일이 생겼는지를 업무 화면에서 그대로 좇는다.
     source_meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
     source_agenda_id: Mapped[UUID | None] = mapped_column(ForeignKey("meeting_agendas.id"))
+    #: 메시지함 메시지를 참고 자료로 받은 AX 대화에서 확정된 일이면 **원래 메시지**(SPEC-008 §4.8 ③ · OQ-907).
+    #: 외래 키를 걸지 않는다 — 메시지는 다른 모듈(메시지함)의 것이고, 나중에 소프트 딜리트돼도 출처 사실은 남는다
+    #: (링크는 서되 누르면 「메시지를 찾을 수 없습니다」).
+    source_inbox_message_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     #: The work this one is a part of. One level only for now: a child never becomes a parent, and the parent is
     #: context and a place to see progress — never the truth about this Task's own state.
     parent_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id"), index=True)
@@ -1703,6 +1718,10 @@ class WorkRequestRecord(Base):
     #: 수락으로 업무가 설 때 이 두 값이 업무로 옮겨진다 (§9-7).
     source_meeting_id: Mapped[UUID | None] = mapped_column(ForeignKey("meetings.id"))
     source_agenda_id: Mapped[UUID | None] = mapped_column(ForeignKey("meeting_agendas.id"))
+    #: 메시지함 메시지를 참고 자료로 받은 AX 대화에서 확정된 일이면 **원래 메시지**(SPEC-008 §4.8 ③ · OQ-907).
+    #: 외래 키를 걸지 않는다 — 메시지는 다른 모듈(메시지함)의 것이고, 나중에 소프트 딜리트돼도 출처 사실은 남는다
+    #: (링크는 서되 누르면 「메시지를 찾을 수 없습니다」).
+    source_inbox_message_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     #: 회의 승격으로 생긴 요청이면 **누른 사람** (사용자 결정 D40, 2026-09-11). 요청자는 시스템이므로
     #: 「누가 이 요청을 있게 했는가」가 `requester_id` 에 남지 않는다 — 그 사실을 여기 남긴다.
     #: 요청자 전용 조작(수정·재상신·거두기·증빙)은 이 사람도 요청자와 같게 본다.

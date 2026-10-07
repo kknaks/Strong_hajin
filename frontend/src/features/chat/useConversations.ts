@@ -80,7 +80,8 @@ function mergeConversationWindow(existing: Conversation, fresh: Conversation): C
     messages: mergeUnique(existing.messages, fresh.messages, (m) => m.message_id),
     turns: mergeUnique(existing.turns, fresh.turns, (t) => t.turn_id),
     tool_invocations: mergeUnique(existing.tool_invocations, fresh.tool_invocations, (t) => `${t.turn_id}:${t.sequence}`),
-    context_references: mergeUnique(existing.context_references, fresh.context_references, (r) => `${r.resource_type}:${r.resource_id}:${r.included}`),
+    /* 턴까지 키에 넣는다 — 같은 메시지를 두 턴에서 가리키면 줄도 둘이다(말풍선 아래 참고 자료 한 줄 · WP4 계약 고정 1) */
+    context_references: mergeUnique(existing.context_references, fresh.context_references, (r) => `${r.turn_id ?? ""}:${r.resource_type}:${r.resource_id}:${r.included}`),
     answer_resources: mergeUnique(existing.answer_resources ?? [], fresh.answer_resources ?? [], (r) => r.reference_id),
     graph_receipts: mergeUnique(existing.graph_receipts ?? [], fresh.graph_receipts ?? [], (r) => r.receipt_id),
     material_evidence: mergeUnique(existing.material_evidence ?? [], fresh.material_evidence ?? [], (r) => r.evidence_id),
