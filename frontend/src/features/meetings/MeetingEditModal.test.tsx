@@ -22,6 +22,7 @@ import type React from "react";
 
 import { MeetingListPage } from "./MeetingListPage";
 import { addPersonOnce } from "./PeoplePicker";
+import { pickRoom, roomOptions, roomTrigger, roomValue, waitForRoom } from "./roomSelectTestKit";
 import { resetRoster } from "./roster";
 
 /**
@@ -131,7 +132,7 @@ describe("회의 정보 수정 — 목록 카드의 [수정]이 여는 모달", 
     expect((within(modal).getByLabelText(meetingScreen.titleField) as HTMLInputElement).value).toBe("주간 회의");
     // 장소는 글자 칸이 아니라 회의실 셀렉트다(SPEC-010 §2.2 · OQ-1005) — 예약 없던 회의는 「회의실 예약 없음」 에서 연다
     expect(modal.querySelector("#meeting-head-place")).toBeNull();
-    expect((within(modal).getByLabelText(meetingScreen.noRoom) as HTMLInputElement).checked).toBe(true);
+    expect(roomValue(modal)).toBe(meetingScreen.noRoom);
     // 일시는 30분 눈금의 공용 부품이다 — 브라우저 기본 달력·드롭다운이 아니다
     expect(within(modal).getByRole("button", { name: /시작 시각/ }).textContent).toContain("15:00");
     expect(within(modal).getByRole("button", { name: /종료 시각/ }).textContent).toContain("16:00");
@@ -325,13 +326,13 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
     vi.mocked(api.readMeetingRooms).mockResolvedValue(roomList);
     renderList();
     const modal = await openEdit();
-    await within(modal).findByText(meetingScreen.roomKeep("회의실 3"));
+    await waitForRoom(modal, meetingScreen.roomKeep("회의실 3"));
     return modal;
   }
 
   it("방이 잡힌 회의는 맨 위 「기존 — 회의실 3 (변경 안 함)」 에서 열리고, 조회에 meeting_id · 인원을 싣는다", async () => {
     const modal = await openBooked();
-    expect((within(modal).getByLabelText(meetingScreen.roomKeep("회의실 3")) as HTMLInputElement).checked).toBe(true);
+    expect(roomValue(modal)).toBe(meetingScreen.roomKeep("회의실 3"));
     await waitFor(() => expect(api.readMeetingRooms).toHaveBeenCalledWith(expect.objectContaining({ meeting_id: "p1", people: 2 })));
     // 아무것도 안 바꾸면 저장할 수 없다
     expect(saveButton(modal).disabled).toBe(true);
@@ -339,7 +340,7 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
 
   it("다른 방을 고르면 `room: {room_id}` 만 보내고(새 예약일 수 있어) 멱등 키를 싣는다", async () => {
     const modal = await openBooked();
-    fireEvent.click(await within(modal).findByLabelText("회의실 1 (6인)"));
+    await pickRoom(modal, "회의실 1 (6인)");
     vi.mocked(api.updateMeetingInfo).mockResolvedValue(booked());
     fireEvent.click(saveButton(modal));
     await waitFor(() => expect(api.updateMeetingInfo).toHaveBeenCalled());
@@ -351,7 +352,7 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
 
   it("「회의실 예약 없음」 을 고르면 `room: {room_id: null}`(예약 취소) — 멱등 키 없음", async () => {
     const modal = await openBooked();
-    fireEvent.click(within(modal).getByLabelText(meetingScreen.noRoom));
+    await pickRoom(modal, meetingScreen.noRoom);
     vi.mocked(api.updateMeetingInfo).mockResolvedValue(record());
     fireEvent.click(saveButton(modal));
     await waitFor(() => expect(api.updateMeetingInfo).toHaveBeenCalledWith("p1", { room: { room_id: null } }, undefined));
@@ -370,17 +371,17 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
 
   it("기존 방을 새 조건에 못 쓰면 [저장]이 막히고 그 옆에 이유 한 줄 (H-2)", async () => {
     const modal = await openBooked(rooms({ available: false, unavailable_reason: "time_conflict" }));
-    // 비활성 기존 줄은 이유(「새 시간에 예약 불가」)가 라벨 안에 함께 선다 — 첫 라디오로 짚는다
-    const keep = () => modal.querySelector<HTMLInputElement>('input[name="meeting-edit-room"]') as HTMLInputElement;
-    await waitFor(() => expect(keep().disabled).toBe(true));
-    expect(keep().checked).toBe(true);
+    // 비활성 기존 줄 — 목록 안에는 비활성 + 이유, 고른 채라 목록 밖에도 이유 한 줄(2루프 E-3)
+    await waitFor(() => expect(within(modal).getByText("새 시간에 예약 불가")).toBeTruthy());
+    expect(roomOptions(modal).rows[0]).toMatchObject({ label: meetingScreen.roomKeep("회의실 3"), disabled: true, selected: true });
+    expect(roomValue(modal)).toBe(meetingScreen.roomKeep("회의실 3"));
     expect(within(modal).getByText("새 시간에 예약 불가")).toBeTruthy();
     // 제목을 고쳐도 저장이 막혀 있다 — 조용히 예약이 풀리지 않는다
     fireEvent.change(within(modal).getByLabelText(meetingScreen.titleField), { target: { value: "옮긴 회의" } });
     expect(saveButton(modal).disabled).toBe(true);
     const foot = modal.querySelector(".modal-foot") as HTMLElement;
     expect(within(foot).getByText(meetingScreen.roomPickAgain)).toBeTruthy();
-    fireEvent.click(within(modal).getByLabelText("회의실 1 (6인)"));
+    await pickRoom(modal, "회의실 1 (6인)");
     await waitFor(() => expect(saveButton(modal).disabled).toBe(false));
   });
 
@@ -391,16 +392,16 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
     vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [row({ meeting_id: "p1" })], past: { items: [], next_cursor: null } });
     render(<ListHost onError={vi.fn()} onMeetingUpdated={vi.fn()} onNotice={onNotice} onOpenMeeting={vi.fn()} selected={null} />);
     const modal = await openEdit();
-    fireEvent.click(await within(modal).findByLabelText("회의실 1 (6인)"));
+    await pickRoom(modal, "회의실 1 (6인)");
     vi.mocked(api.updateMeetingInfo).mockRejectedValue(
       new api.ApiError(409, "Conflict", { code: "ROOM_BOOKING_REFUSED", message: "taken", available_rooms: [{ room_id: 5, name: "회의실 5 (8인)", capacity: 8 }] }),
     );
     fireEvent.click(saveButton(modal));
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith(meetingScreen.roomRejected.ROOM_BOOKING_REFUSED));
-    expect(await within(modal).findByText("회의실 5 (8인)")).toBeTruthy();
+    expect(await waitForRoom(modal, "회의실 5 (8인)")).toBeTruthy();
     expect(within(modal).queryByText("회의실 1 (6인)")).toBeNull();
     expect(saveButton(modal).disabled).toBe(true);
-    fireEvent.click(within(modal).getByLabelText("회의실 5 (8인)"));
+    await pickRoom(modal, "회의실 5 (8인)");
     await waitFor(() => expect(saveButton(modal).disabled).toBe(false));
   });
 
@@ -411,7 +412,7 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
     vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [row({ meeting_id: "p1" })], past: { items: [], next_cursor: null } });
     render(<ListHost onError={vi.fn()} onMeetingUpdated={vi.fn()} onNotice={onNotice} onOpenMeeting={vi.fn()} selected={null} />);
     const modal = await openEdit();
-    await within(modal).findByText(meetingScreen.roomKeepUnchecked("회의실 3"));
+    await waitForRoom(modal, meetingScreen.roomKeepUnchecked("회의실 3"));
     expect(within(modal).getByText(meetingScreen.roomsFailed)).toBeTruthy();
     fireEvent.click(within(modal).getByRole("button", { name: /종료 시각/ }));
     fireEvent.click(await screen.findByRole("option", { name: "16:30" }));
@@ -427,7 +428,7 @@ describe("WP3-FE — 수정 모달 회의실 셀렉트 · 바뀐 값만", () => 
     vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [row({ meeting_id: "p1" })], past: { items: [], next_cursor: null } });
     render(<ListHost onError={vi.fn()} onMeetingUpdated={vi.fn()} onNotice={onNotice} onOpenMeeting={vi.fn()} selected={null} />);
     const modal = await openEdit();
-    fireEvent.click(await within(modal).findByLabelText("회의실 1 (6인)"));
+    await pickRoom(modal, "회의실 1 (6인)");
     vi.mocked(api.updateMeetingInfo).mockResolvedValue(record({ room_reservation: { status: "failed", room_name: null, reason: "reservation_unavailable" } }));
     fireEvent.click(saveButton(modal));
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith(meetingScreen.roomSyncFailed));
@@ -441,9 +442,8 @@ describe("WP3 수정 1 — 실패한 예약의 기존 방 (W-6)", () => {
     vi.mocked(api.readMeetingRooms).mockRejectedValue(new api.ApiError(503, "Service Unavailable", { code: "ROOM_SERVICE_UNAVAILABLE" }));
     renderList();
     const modal = await openEdit();
-    const keep = (await within(modal).findByLabelText(meetingScreen.roomKeepUnchecked("회의실 3"))) as HTMLInputElement;
-    expect(keep.checked).toBe(true);
-    expect(keep.disabled).toBe(false);
+    await waitFor(() => expect(roomValue(modal)).toBe(meetingScreen.roomKeepUnchecked("회의실 3")));
+    expect((await waitForRoom(modal, meetingScreen.roomKeepUnchecked("회의실 3"))).disabled).toBe(false);
     // 아무것도 안 바꾸면 저장할 것이 없다 — 조용히 「예약 없음」 으로 열려 예약을 지우지 않는다
     expect((within(modal).getByRole("button", { name: meetingScreen.save }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -452,7 +452,7 @@ describe("WP3 수정 1 — 실패한 예약의 기존 방 (W-6)", () => {
     vi.mocked(api.readMeeting).mockResolvedValue(record({ room_reservation: { status: "failed", room_name: null, reason: "room_unavailable" } }));
     renderList();
     const modal = await openEdit();
-    expect((await within(modal).findByLabelText(meetingScreen.noRoom) as HTMLInputElement).checked).toBe(true);
+    await waitFor(() => expect(roomValue(modal)).toBe(meetingScreen.noRoom));
     expect(within(modal).queryByText(/기존 —/)).toBeNull();
   });
 });
@@ -464,8 +464,7 @@ describe("WP3 수정 2 — 확인 중인 예약의 기존 방 · 확인 중 409"
     vi.mocked(api.readMeetingRooms).mockRejectedValue(new api.ApiError(503, "Service Unavailable", { code: "ROOM_SERVICE_UNAVAILABLE" }));
     renderList();
     const modal = await openEdit();
-    const keep = (await within(modal).findByLabelText(meetingScreen.roomKeepUnchecked("회의실 3"))) as HTMLInputElement;
-    expect(keep.checked).toBe(true);
+    await waitFor(() => expect(roomValue(modal)).toBe(meetingScreen.roomKeepUnchecked("회의실 3")));
   });
 
   it("저장이 409 ROOM_RESERVATION_UNCONFIRMED 면 코드별 문구를 낸다 — 모달은 열린 채 (W-r2-1)", async () => {
@@ -478,7 +477,7 @@ describe("WP3 수정 2 — 확인 중인 예약의 기존 방 · 확인 중 409"
     vi.mocked(api.listMeetings).mockResolvedValue({ upcoming: [row({ meeting_id: "p1" })], past: { items: [], next_cursor: null } });
     render(<ListHost onError={onError} onMeetingUpdated={vi.fn()} onNotice={vi.fn()} onOpenMeeting={vi.fn()} selected={null} />);
     const modal = await openEdit();
-    fireEvent.click(await within(modal).findByLabelText("회의실 1 (6인)"));
+    await pickRoom(modal, "회의실 1 (6인)");
     vi.mocked(api.updateMeetingInfo).mockRejectedValue(new api.ApiError(409, "Conflict", { code: "ROOM_RESERVATION_UNCONFIRMED", message: "reservation is being confirmed" }));
     fireEvent.click(within(modal).getByRole("button", { name: meetingScreen.save }));
     await waitFor(() => expect(onError).toHaveBeenCalledWith(meetingScreen.saveErrors.ROOM_RESERVATION_UNCONFIRMED));

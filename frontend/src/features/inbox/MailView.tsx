@@ -9,7 +9,7 @@ import { getInboxMail, inboxMailAttachmentDownloadUrl, inboxMailAttachmentUrl, r
 import { createIdempotencyKey } from "../../lib/idempotency";
 import { inboxScreen as copy } from "../../lib/labels";
 import type { InboxMail, InboxMailCard, InboxSentReply } from "../../lib/viewModels";
-import { FileCard, FileMark, Thumb } from "./InboxAttachments";
+import { DownloadLink, FileCard, FileMark, Thumb } from "./InboxAttachments";
 import {
   extOf,
   fileTypeOf,
@@ -416,9 +416,8 @@ export function MailView({
                           <span className="scax-fcard__name">{image.name}</span>
                           <span className="scax-fcard__type">{fmtSize(image.size)}</span>
                         </span>
-                        <a aria-label={copy.download(image.name)} className="scax-icon-button" href={download} rel="noreferrer">
-                          <Icon name="arrow-down" size={20} />
-                        </a>
+                        {/* 받기 단추 — 파일 카드와 같은 부품(앱에서는 받는 동안 도는 원 · E-2) */}
+                        <DownloadLink href={download} name={image.name} />
                       </figcaption>
                     </figure>
                   );

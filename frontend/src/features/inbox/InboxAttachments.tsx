@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { Icon } from "../../ds/icons/Icon";
 import { inboxScreen as copy } from "../../lib/labels";
 import { hasShell } from "../../lib/shell";
+import { startShellDownload, useShellDownloading } from "../../lib/shellDownloads";
 import type { InboxAttachment } from "../../lib/viewModels";
 import { fileTypeOf, fmtSize, isPdf, type Reaction, type Unfurl } from "./inboxModel";
 
@@ -42,13 +43,28 @@ export function FileMark({ type, size = "md" }: { type: string; size?: "md" | "s
  * 받기 — 아이콘 단추 모양의 링크. 주소가 없으면(보낸 답장의 첨부처럼 받을 길이 없는 것) 그리지 않는다.
  * `href` 는 **받기 주소**(`?download=1`)다 — 같은 탭 링크라 웹은 `attachment` 응답을 받아도 화면을 떠나지 않고, 앱은 셸이 가로챈다.
  */
-function DownloadLink({ href, name }: { href?: string | null; name: string }) {
+export function DownloadLink({ href, name }: { href?: string | null; name: string }) {
+  /* 앱에서는 누른 순간부터 셸 알림이 올 때까지 「받는 중」(2루프 E-2 · `lib/shellDownloads.ts`). 웹은 브라우저가 표시한다 */
+  const busy = useShellDownloading(href);
   if (!href) return null;
   return (
-    <a aria-label={copy.download(name)} className="scax-icon-button" href={href} rel="noreferrer" title={copy.download(name)}>
-      <Icon name="arrow-down" size={20} />
+    <a
+      aria-busy={busy || undefined}
+      aria-label={busy ? copy.downloading(name) : copy.download(name)}
+      className="scax-icon-button"
+      href={href}
+      onClick={() => startShellDownload(href, name)}
+      rel="noreferrer"
+      title={busy ? copy.downloading(name) : copy.download(name)}
+    >
+      {busy ? <ShellSpinner /> : <Icon name="arrow-down" size={20} />}
     </a>
   );
+}
+
+/** 받는 중의 작은 도는 원 — DS `Spinner` 의 원(`.scax-spinner`)만 아이콘 자리에 쓴다(말은 링크의 이름이 한다). */
+export function ShellSpinner({ size = 16 }: { size?: number }) {
+  return <span aria-hidden className="scax-spinner" data-testid="download-spinner" style={{ width: size, height: size }} />;
 }
 
 /** 파일 카드 — 유형 색 표식 · 굵은 이름(말줄임) · 아래 유형명·크기 · 받기. `href` = 받기 주소(`?download=1`). */
@@ -84,8 +100,12 @@ function FoldHead({ label, open, onToggle, end }: { label: string; open: boolean
   );
 }
 
-/** 「모두 다운로드」 — 받기 링크(`?download=1` · 같은 탭 · `download` 속성 없음)를 차례로 누른다(하나씩 내려받는다). */
-function downloadAll(list: Array<{ href: string }>) {
+/**
+ * 「모두 다운로드」 — 받기 링크(`?download=1` · 같은 탭 · `download` 속성 없음)를 차례로 누른다(하나씩 내려받는다).
+ * 앱이면 누른 순간 **전부** 「받는 중」 으로 세운다 — 셸 알림이 하나씩 올 때마다 하나씩 걷힌다(E-2).
+ */
+function downloadAll(list: Array<{ href: string; name: string }>) {
+  list.forEach((item) => startShellDownload(item.href, item.name));
   list.forEach((item, index) => {
     window.setTimeout(() => {
       const anchor = document.createElement("a");
@@ -107,9 +127,8 @@ type Linked = InboxAttachment & { href: string | null; downloadHref: string | nu
 function FileGroup({ files }: { files: Linked[] }) {
   const [open, setOpen] = useState(true);
   const linked = files
-    .map((file) => file.downloadHref)
-    .filter((href): href is string => Boolean(href))
-    .map((href) => ({ href }));
+    .filter((file): file is Linked & { downloadHref: string } => Boolean(file.downloadHref))
+    .map((file) => ({ href: file.downloadHref, name: file.name }));
   return (
     <div className="scax-attach">
       <FoldHead
@@ -187,16 +206,25 @@ export function Thumb({
   size?: "lg" | "md" | "sm" | "cell";
 }) {
   const saveInApp = Boolean(download) && hasShell();
+  /* 앱에서 썸네일을 누르면 받기다 — 받는 동안 그림 위에 도는 원(E-2) */
+  const busy = useShellDownloading(saveInApp ? download : null);
   return (
     <span className={`scax-thumb scax-thumb--${size}`}>
       {src ? (
         <a
+          aria-busy={busy || undefined}
           className="scax-thumb__link"
           href={saveInApp ? (download as string) : href ?? src}
+          onClick={saveInApp ? () => startShellDownload(download as string, alt) : undefined}
           rel="noreferrer"
           target={saveInApp ? undefined : "_blank"}
         >
           <img alt={alt} className="scax-thumb__img" loading="lazy" src={src} />
+          {busy ? (
+            <span className="scax-thumb__busy">
+              <ShellSpinner size={20} />
+            </span>
+          ) : null}
         </a>
       ) : (
         <Icon name="blank" size={size === "lg" ? 24 : 20} />

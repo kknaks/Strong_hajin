@@ -327,3 +327,6 @@ ol.scax-imsg-list{list-style:decimal}
 .scax-mail__made{margin-left:var(--scax-space-200);vertical-align:middle}
 /* 출처 링크로 들어와 짚은 메시지 — 잠깐 강조(OQ-817) */
 .scax-imsg--focus{margin:0 calc(-1 * var(--scax-space-300));padding-left:var(--scax-space-300);padding-right:var(--scax-space-300);border-radius:var(--scax-radius-md);background:var(--scax-color-accent-soft);transition:background 0.6s}
+/* 앱에서 썸네일을 눌러 받는 동안 — 그림 위 가운데 도는 원(2루프 E-2) */
+.scax-thumb__link{position:relative}
+.scax-thumb__busy{position:absolute;inset:0;display:grid;place-items:center;background:color-mix(in srgb,var(--scax-color-surface) 60%,transparent)}

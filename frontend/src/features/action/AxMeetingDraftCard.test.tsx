@@ -17,6 +17,7 @@ import * as api from "../../lib/api";
 import { axDraftCard } from "../../lib/labels";
 import type { ActionItem } from "../../lib/viewModels";
 import { resetRoster } from "../meetings/roster";
+import { pickRoom, roomOptions, roomTrigger, roomValue } from "../meetings/roomSelectTestKit";
 import { AxDraftCard, axDraftFromAction, isAxDraftAction, isAxTaskDraftKind } from "./AxDraftCard";
 
 /*
@@ -140,7 +141,7 @@ describe("AX 회의 생성 카드 — 머리 · 쪽", () => {
   it("회의실·안건 — 공용 셀렉트에 AX 가 제안한 방이 미리 골라져 있고, 안건은 넘어온 것을 표시한다", async () => {
     renderCard();
     goTo("회의실·안건");
-    await waitFor(() => expect((within(panel()).getByLabelText("회의실 3 (6인)") as HTMLInputElement).checked).toBe(true));
+    await waitFor(() => expect(roomValue(panel())).toBe("회의실 3 (6인)"));
     expect(api.readMeetingRooms).toHaveBeenCalledWith(expect.objectContaining({ people: 2, meeting_id: null }));
     const text = panel().textContent ?? "";
     expect(text).toContain("지난주 미결 · 지난 회의에서 넘어옴");
@@ -157,7 +158,7 @@ describe("AX 회의 생성 카드 — 명령", () => {
     cleanup();
     const second = renderCard();
     goTo("회의실·안건");
-    fireEvent.click(await within(panel()).findByLabelText("회의실 1 (8인)"));
+    await pickRoom(panel(), "회의실 1 (8인)");
     fireEvent.click(within(card()).getByRole("button", { name: axDraftCard.confirm }));
     await waitFor(() => expect(second.onCommand).toHaveBeenCalled());
     const payload = second.onCommand.mock.calls[0][1] as { draft: Record<string, unknown> };

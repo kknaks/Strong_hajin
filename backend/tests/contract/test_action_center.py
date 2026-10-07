@@ -776,10 +776,11 @@ def test_ax_drafts_refuse_only_what_new_task_creation_refuses(tmp_path) -> None:
     [item] = [row for row in _pending(client, MINA) if row["action_item_id"] == request["action_id"]]
     fields = {field["id"]: field for field in item["edit_contract"]["fields"]}
     assert {key for key, field in fields.items() if field["required"]} == {"title", "assignee_id"}
+    # 초안은 **바뀐 칸만 덮는다**(E-6) — 담당자를 빼려면 비운다고 말해야 한다(`null`). 안 보내면 지금 회차 그대로다.
     nobody = _command(
         client, MINA, item["action_item_id"], "confirm",
         expected_version=item["expected_version"], base_submission_version=1,
-        draft={"title": "기한 없는 요청"},
+        draft={"title": "기한 없는 요청", "assignee_id": None},
     )
     assert nobody.status_code == 422
     assert client.get("/api/work-requests", headers=MINA).json() == []

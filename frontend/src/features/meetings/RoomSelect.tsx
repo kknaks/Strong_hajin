@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "../../ds/Button";
+import { Select, type SelectOption } from "../../ds/Select";
 import { readMeetingRooms } from "../../lib/api";
-import { meetingScreen } from "../../lib/labels";
+import { emptyActionLabel, meetingScreen, selectLabel } from "../../lib/labels";
 import type { MeetingRoom } from "../../lib/viewModels";
 
 /**
@@ -157,33 +158,42 @@ export function RoomSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusKey]);
 
-  const line = (choice: RoomChoice, label: string, extra?: { disabled?: boolean; reason?: string | null; testId?: string }) => (
-    <label
-      className={[value === choice ? "meeting-room on" : "meeting-room", extra?.disabled ? "disabled" : ""].filter(Boolean).join(" ")}
-      key={choice}
-    >
-      <input
-        checked={value === choice}
-        disabled={disabled || extra?.disabled}
-        name={name}
-        onChange={() => onChange(choice)}
-        type="radio"
-      />
-      <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700 }}>{label}</span>
-      {extra?.reason && <span className="meeting-room__reason">{extra.reason}</span>}
-    </label>
-  );
+  /*
+   * 모양 = **드롭다운 셀렉트**(DS `Select` · 2루프 E-3 — 사용자 결정 SH-IMP-003 「셀렉트」). 목록 줄은 SPEC-010 §2.2 그대로:
+   * 수정 때만 맨 위 「기존 — 회의실 N (변경 안 함)」(쓸 수 없으면 비활성 + 그 아래 이유 한 줄) → 구분(묶음 머리) → 「회의실 예약 없음」 → 가능한 방.
+   * 생성 때는 첫 줄이 없다. 값 `"unset"`(거절 뒤 아직 안 고름)은 어느 줄도 아니라 트리거에 안내 글자가 선다.
+   */
+  const group = showKeep ? meetingScreen.roomGroup : undefined;
+  const selectOptions: SelectOption[] = [
+    ...(showKeep
+      ? [
+          {
+            value: "keep",
+            label: state === "failed" ? meetingScreen.roomKeepUnchecked(keepName!) : meetingScreen.roomKeep(keepName!),
+            disabled: !keepUsable,
+            description: keepUsable ? undefined : keepReason ?? undefined,
+          },
+        ]
+      : []),
+    { value: "none", label: meetingScreen.noRoom, group },
+    ...options.map((room) => ({ value: String(room.room_id), label: room.name, group })),
+  ];
 
   return (
-    <div aria-busy={state === "loading"} className="meeting-room-select" role="radiogroup" aria-label={meetingScreen.place}>
-      {showKeep &&
-        line("keep", state === "failed" ? meetingScreen.roomKeepUnchecked(keepName!) : meetingScreen.roomKeep(keepName!), {
-          disabled: !keepUsable,
-          reason: keepUsable ? null : keepReason,
-        })}
-      {showKeep && <hr className="meeting-room-sep" />}
-      {line("none", meetingScreen.noRoom)}
-      {options.map((room) => line(String(room.room_id) as RoomChoice, room.name))}
+    <div aria-busy={state === "loading"} className="meeting-room-select" data-room-select={name}>
+      <Select
+        disabled={disabled}
+        emptyActionLabel={emptyActionLabel.filter}
+        id={name}
+        label={meetingScreen.place}
+        labels={selectLabel}
+        onChange={(next) => onChange(next as RoomChoice)}
+        options={selectOptions}
+        placeholder={meetingScreen.roomPickPlaceholder}
+        value={value === "unset" ? "" : value}
+      />
+      {/* 기존 방을 고른 채인데 새 조건에 못 쓴다 — 목록을 열지 않아도 이유가 보이게(목록 안 회색 글자만으로 두지 않는다 · H-2) */}
+      {value === "keep" && showKeep && !keepUsable && keepReason ? <p className="meeting-room-note meeting-room-note--warn">{keepReason}</p> : null}
       {state === "ok" && options.length === 0 && <p className="meeting-room-note">{meetingScreen.roomsEmpty}</p>}
       {state === "failed" && (
         <p className="meeting-room-note meeting-room-note--failed" role="alert">
