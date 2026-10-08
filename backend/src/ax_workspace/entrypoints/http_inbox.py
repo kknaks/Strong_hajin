@@ -21,6 +21,7 @@ from starlette.websockets import WebSocketState
 from ax_workspace.entrypoints.http_auth import connection_principal, developer_principal, device_principal, session_id_from
 from ax_workspace.modules.errors import ResourceNotFound
 from ax_workspace.modules.external_channels import inbox as inbox_rules
+from ax_workspace.modules.external_channels.events import INBOX_EVENT_TYPES
 from ax_workspace.modules.external_channels.inbox import (
     AttachmentGone,
     Download,
@@ -339,6 +340,9 @@ def register_inbox_routes(app: FastAPI) -> None:
     async def inbox_stream(websocket: WebSocket) -> None:
         """사용자 사건 채널(P-4) — 핸드셰이크의 세션 쿠키로 사람을 풀고 **그 사람 것만** 민다.
 
+        ⚠ **화면은 더 쓰지 않는다** — 대체는 SSE `GET /api/events/stream`(`http_events.py` · SPEC-011 §4.1). 옛 front 를 위한
+        되돌림 여지로만 남는다(WORK-013 Rollback · 제거는 운영 반영 1회 뒤 다음 판).
+
         내려가는 것은 `{"type":"ready"}` 다음 `UserEvent` 의 JSON(`type`·`integration_id`·`room_id`·`message_id`·
         `source_kind`·`data`). 본문은 싣지 않는다 — 화면이 API 로 다시 읽는다. 올라오는 프레임은 읽고 버린다.
         """
@@ -373,6 +377,8 @@ def register_inbox_routes(app: FastAPI) -> None:
                     client_left = True
                     return
                 event = getter.result()
+                if event.type not in INBOX_EVENT_TYPES:
+                    continue  # 알림 사건은 SSE 만 — 옛 화면이 받던 넷만 그대로 민다(SPEC-008 v0.7.0 §4.4)
                 body: dict[str, Any] = {"type": event.type}
                 for key in ("integration_id", "room_id", "message_id", "source_kind"):
                     value = getattr(event, key)

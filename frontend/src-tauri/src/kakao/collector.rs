@@ -363,6 +363,7 @@ mod tests {
             ktype: 2,
             text: None,
             attachments: atts,
+            from_me: None,
         }
     }
 

@@ -107,3 +107,5 @@
    메시지함의 슬랙 대화 줄은 AX 대화(`ax.css` 의 `.scax-msg`)와 이름이 겹쳐 `.scax-imsg` 로 바꿔 실었다. */
 @import "./inbox.css";
 @import "./settings.css";
+/* 알림 화면 (WORK-013 WP3-FE) — 시안 handoff/alerts/css/alerts.css 를 옮겼다. 클래스 `.scax-alert*` 는 다른 파일과 겹치지 않는다. */
+@import "./alerts.css";

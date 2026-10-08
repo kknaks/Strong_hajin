@@ -31,6 +31,11 @@ def test_stack_and_acceptance_targets_start_every_required_process() -> None:
     assert "to_regclass('action_material_drafts')" in recipe
     assert "to_regclass('notifications')" in recipe
     assert "grep -qx 'notifications'" in recipe
+    # 알림 사건 순번 — 시퀀스와 칸이 함께 있어야 알림을 쓰고 이어 받는다(WORK-013 WP1-BE · SPEC-011 §4.1-3).
+    # 없으면 업무 요청 발송이 500 이다 — `make sync-demo-schema` 가 둘 다 더한다.
+    # WP2-BE 의 알림 설정 표 · 메시지 `from_me` 칸도 같은 줄이 본다 — 없으면 설정 API · 메시지 저장이 500 이다.
+    assert "to_regclass('notification_seq')" in recipe and "to_regclass('notification_settings')" in recipe
+    assert "grep -qx 'notification_seq|seq|notification_settings|from_me'" in recipe
     # 시간 배정 표지 — 표지와 **그 표지를 세는 grep 패턴**을 함께 본다 (WORK-004 Phase BE-2).
     # 한쪽만 고치면 psql 이 내는 열 수와 grep 이 기다리는 글자가 어긋나 preflight 가 영원히 거절한다.
     assert "to_regclass('task_schedules')" in recipe

@@ -19,7 +19,7 @@ import { useRoster, type RosterPerson } from "./roster";
  * 같은 「사람을 고른다」인데 두 모달이 다르게 생기면 두 번 배워야 한다.
  *
  * 「볼 수 있는 사람」은 참석과 공유가 한 목록에 서고 `basis` 가 둘을 가른다 — **거둘 수 있는 것은 공유뿐이다**
- * (참석을 빼는 자리는 회의 정보 편집이고 서버도 409 로 막는다). **알림은 가지 않는다** (§2.2).
+ * (참석을 빼는 자리는 회의 정보 편집이고 서버도 409 로 막는다). 공유받은 사람의 알림은 그 사람의 알림 설정이 정한다(SPEC-011 M12).
  */
 export function ShareModal({ meeting, onClose, onNotice }: { meeting: MeetingInfo; onClose: () => void; onNotice: (message: string) => void }) {
   const [query, setQuery] = useState("");

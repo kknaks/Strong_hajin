@@ -1,7 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useCallback, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { EventStreamProvider } from "../../lib/eventStreamContext";
+import { FakeEventSource } from "../../lib/fakeEventSource.test-utils";
 import type { Integration, OrganizationProfile } from "../../lib/viewModels";
 import { SettingsPage, type SettingsTab } from "./SettingsPage";
 
@@ -54,7 +56,7 @@ function Harness({ tab = "mail", onChoose = noop, onImage = noop }: { tab?: Sett
   const registerRails = useCallback((next: { left?: ReactNode }) => setRails(next), []);
   const registerTitle = useCallback((next: string | null) => setTitle(next), []);
   return (
-    <>
+    <EventStreamProvider onSessionLost={noop}>
       <h1>{title}</h1>
       <div data-testid="rail">{rails.left}</div>
       <SettingsPage
@@ -69,7 +71,7 @@ function Harness({ tab = "mail", onChoose = noop, onImage = noop }: { tab?: Sett
         onRegisterTitle={registerTitle}
         session={session}
       />
-    </>
+    </EventStreamProvider>
   );
 }
 const noop = () => undefined;
@@ -85,7 +87,7 @@ beforeEach(() => {
   consent.begin.mockClear();
   notices.error.mockClear();
   notices.notice.mockClear();
-  vi.stubGlobal("WebSocket", undefined);
+  vi.stubGlobal("EventSource", undefined);
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -159,34 +161,25 @@ describe("메일 연동", () => {
 });
 
 /*
- * WORK-012 WP1-FE — SH-IMP-010(SPEC-008 §4.4). 설정 화면은 이미 `/api/inbox/stream` 을 구독하고 `integration.changed` 에
- * 다시 읽는다 — 화면 코드는 그대로이고, 서버(WP1-BE)가 수집·백필 저장마다 그 사건을 내면 숫자가 새로고침 없이 는다.
- * 이 잠금은 «화면 쪽 절반» 이다: 사건 하나에 목록을 다시 읽고 새 숫자를 그린다 · 다른 사건으로는 다시 읽지 않는다.
+ * WORK-012 WP1-FE — SH-IMP-010(SPEC-008 §4.4). 설정 화면은 사용자 사건 채널을 구독하고 `integration.changed` 에 다시 읽는다.
+ * WORK-013 WP1-FE 부터 받는 길이 앱 전역 SSE(`/api/events/stream`)다 — 사건 이름·필드는 그대로라 이 잠금도 그대로다:
+ * 사건 하나에 목록을 다시 읽고 새 숫자를 그린다 · 다른 사건으로는 다시 읽지 않는다 · `resync` 에는 다시 읽는다.
  */
 describe("연동 숫자 — `integration.changed` 에 다시 읽는다 (SH-IMP-010)", () => {
-  class FakeSocket {
-    static all: FakeSocket[] = [];
-    onopen: (() => void) | null = null;
-    onmessage: ((message: { data: string }) => void) | null = null;
-    onclose: (() => void) | null = null;
-    constructor(public url: string) {
-      FakeSocket.all.push(this);
-    }
-    close() {}
-  }
+  const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/api/integrations").length;
 
   it("사건이 오면 숫자가 새로고침 없이 바뀐다 · 메시지 도착 사건으로는 다시 읽지 않는다", async () => {
-    FakeSocket.all = [];
-    vi.stubGlobal("WebSocket", FakeSocket);
+    FakeEventSource.all = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
     integrations = [integ({ id: "m1", display_name: "haram@company.example", status: "backfilling", backfill_count: 312 })];
     render(<Harness />);
     const card = await screen.findByRole("region", { name: "연결된 메일 계정" });
     expect(within(card).getByText("과거 메일 채우는 중 · 312건")).toBeTruthy();
-    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0));
-    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/api/integrations").length;
+    await waitFor(() => expect(FakeEventSource.all.length).toBe(1));
+    expect(FakeEventSource.latest().url).toBe("/api/events/stream");
     const before = reads();
 
-    const emit = (event: unknown) => FakeSocket.all.at(-1)!.onmessage?.({ data: JSON.stringify(event) });
+    const emit = (event: { type: string; [key: string]: unknown }) => act(() => FakeEventSource.latest().emit(event.type, event));
     emit({ type: "inbox.message_arrived", source: "mail" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(reads()).toBe(before);
@@ -195,6 +188,33 @@ describe("연동 숫자 — `integration.changed` 에 다시 읽는다 (SH-IMP-0
     emit({ type: "integration.changed", integration_id: "m1" });
     await waitFor(() => expect(within(card).getByText("과거 메일 채우는 중 · 480건")).toBeTruthy());
     expect(reads()).toBe(before + 1);
+  });
+
+  it("다시 붙은 연결(`resync` · 순번 없는 둘째 `ready`)에서 연동을 한 번씩 다시 읽는다 · 첫 `ready` 로는 읽지 않는다(SPEC-011 §4.1-3 ⑤)", async () => {
+    FakeEventSource.all = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    integrations = [integ({ id: "m1", display_name: "haram@company.example" })];
+    overrides["GET /api/auth/me"] = () => json(session); // 세션은 살아 있다 — 서버 쪽 일시 장애로 닫힌 것
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<Harness />);
+      await screen.findByRole("region", { name: "연결된 메일 계정" });
+      act(() => FakeEventSource.latest().ready());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const before = reads();
+      act(() => FakeEventSource.latest().emit("resync", { v: 1, reason: "dropped" }));
+      await waitFor(() => expect(reads()).toBe(before + 1));
+
+      act(() => FakeEventSource.latest().fail(2));
+      // 세션 확인(200) → 백오프 1초 ±20% → 새 연결(순번 없음)
+      await act(() => vi.advanceTimersByTimeAsync(3_000));
+      expect(FakeEventSource.all).toHaveLength(2);
+      expect(FakeEventSource.latest().url).toBe("/api/events/stream");
+      act(() => FakeEventSource.latest().ready());
+      await waitFor(() => expect(reads()).toBe(before + 2));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -352,10 +372,25 @@ describe("프로필 설정", () => {
     expect(JSON.parse(String(calls.find((call) => call.path === "/api/profile/password")!.body))).toEqual({ current: "wrongpass", new: "newpass2026!" });
   });
 
-  it("알림 설정은 범위 밖이라 메뉴 자리만 서고 눌리지 않는다(D-37)", async () => {
+  /* WORK-013 WP3-FE — 알림 설정이 열렸다(SPEC-011 §2.3). 옛 단언 「범위 밖이라 눌리지 않는다(D-37)」 를 바꾼다. */
+  it("알림 설정 메뉴가 열려 있다 — 누르면 그 탭이 서고 머리 제목이 「알림 설정」 이다", async () => {
+    overrides["GET /api/me/notification-settings"] = () =>
+      json({
+        enabled: true,
+        themes: {
+          work: { on: true, items: { request: true, assign: true, answer: true, report: true, rework: true, change: true, comment: false, unblock: true } },
+          message: { on: true, items: { mail: true, slack: true, kakao: true } },
+          meeting: { on: true, items: { invite: true, change: true, minutes: true, "minutes-fail": true, share: true } },
+        },
+        version: 0,
+      });
     render(<Harness tab="account" />);
     const rail = within(screen.getByTestId("rail"));
-    expect((rail.getByRole("button", { name: "알림 설정" }) as HTMLButtonElement).disabled).toBe(true);
+    const notify = rail.getByRole("button", { name: "알림 설정" }) as HTMLButtonElement;
+    expect(notify.disabled).toBe(false);
+    fireEvent.click(notify);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("알림 설정");
+    expect(await screen.findByRole("switch", { name: "알림 받기" })).toBeTruthy();
     fireEvent.click(rail.getByRole("button", { name: "카카오톡 연동" }));
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("카카오톡 연동");
   });

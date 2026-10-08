@@ -1,71 +1,25 @@
-import { useEffect, useRef } from "react";
-
-import { inboxStreamUrl } from "../../lib/api";
+import { useEventStream } from "../../lib/eventStreamContext";
 import { openExternal } from "../../lib/shell";
 import type { InboxStreamEvent } from "../../lib/viewModels";
 import { safeHref } from "./inboxModel";
 
 /**
- * 사용자 사건 채널 `/api/inbox/stream` 구독 (SPEC-008 §4.4 실시간 갱신 · AC-10b).
+ * 메시지함 사건 구독 (SPEC-008 §4.4 실시간 갱신 · AC-10b) — **앱 전역 사건 채널**(SSE `/api/events/stream`)을 듣는다.
  *
- * 사건은 «무엇이 바뀌었는지»만 싣는다(본문 없음) — 받는 쪽이 API 로 다시 읽는다. 끊기면 물러서며 다시 붙는다
- * (2s → 4s → … 30s). 붙어 있는 동안 놓친 사건은 다시 붙을 때 `onReconnect` 로 한 번 다시 읽어 메운다.
+ * 연결은 이 훅이 만들지 않는다 — App 이 로그인한 동안 하나를 갖고(`lib/eventStreamContext.tsx` · SPEC-011 §4.1-6),
+ * 화면이 떠나면 구독만 푼다. 사건은 «무엇이 바뀌었는지»만 싣는다(본문 없음) — 받는 쪽이 API 로 다시 읽는다.
+ * 메시지함 사건 넷(`inbox.message_arrived` · `inbox.reply_result` · `integration.changed` · `inbox.message_updated`)만 `onEvent` 로 온다.
  *
- * `WebSocket` 이 없는 환경(시험 일부)에서는 아무것도 하지 않는다.
+ * `onReconnect` 는 채널의 **`resync`** 에 불린다 — 다시 붙은 연결에서 놓친 사건을 한 번 다시 읽어 메운다(한 연결에 한 번 · §4.1-3 ⑤).
+ * Provider 밖(로그인 전 · 단독 시험)에서는 아무것도 하지 않는다.
  */
 export function useInboxStream(onEvent: (event: InboxStreamEvent) => void, options: { enabled?: boolean; onReconnect?: () => void } = {}) {
-  const handler = useRef(onEvent);
-  handler.current = onEvent;
-  const reconnect = useRef(options.onReconnect);
-  reconnect.current = options.onReconnect;
   const enabled = options.enabled ?? true;
-
-  useEffect(() => {
-    if (!enabled || typeof WebSocket === "undefined") return;
-    let socket: WebSocket | null = null;
-    let timer: number | null = null;
-    let attempt = 0;
-    let closed = false;
-
-    const connect = () => {
-      try {
-        socket = new WebSocket(inboxStreamUrl());
-      } catch {
-        schedule();
-        return;
-      }
-      socket.onopen = () => {
-        if (attempt > 0) reconnect.current?.();
-        attempt = 0;
-      };
-      socket.onmessage = (message) => {
-        try {
-          const event = JSON.parse(String(message.data)) as InboxStreamEvent;
-          if (event && typeof event.type === "string") handler.current(event);
-        } catch {
-          /* 모르는 글자는 버린다 — 채널 하나가 화면을 죽이지 않는다 */
-        }
-      };
-      socket.onclose = () => {
-        socket = null;
-        if (!closed) schedule();
-      };
-    };
-    const schedule = () => {
-      attempt += 1;
-      const delay = Math.min(30_000, 2_000 * 2 ** Math.min(attempt - 1, 4));
-      timer = window.setTimeout(connect, delay);
-    };
-    connect();
-    return () => {
-      closed = true;
-      if (timer !== null) window.clearTimeout(timer);
-      if (socket) {
-        socket.onclose = null;
-        socket.close();
-      }
-    };
-  }, [enabled]);
+  useEventStream((signal) => {
+    if (!enabled) return;
+    if (signal.kind === "inbox") onEvent(signal.event);
+    else if (signal.kind === "resync") options.onReconnect?.();
+  });
 }
 
 /** 사건을 여러 자식(대화방·메일·스레드)에 나눠 주는 작은 통 — 부모 하나가 WS 를 갖고 자식은 듣기만 한다. */

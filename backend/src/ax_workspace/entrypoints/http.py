@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import asyncio
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from starlette.websockets import WebSocketState
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -109,6 +109,7 @@ from ax_workspace.modules.organization_access.application import (
     UnsupportedAssistantCharacter,
 )
 from ax_workspace.modules.organization_access.domain import Principal
+from ax_workspace.entrypoints.http_events import register_event_routes
 from ax_workspace.entrypoints.http_inbox import register_inbox_routes
 from ax_workspace.entrypoints.http_auth import (
     SESSION_COOKIE,
@@ -208,7 +209,12 @@ from ax_workspace.bootstrap.seed import DEMO_PASSWORD, SEEDED_MEMBERS
 from ax_workspace.bootstrap.settings import Settings
 from ax_workspace.modules.ax_execution.ai import AiProvider
 from ax_workspace.modules.ax_execution.conversation_commands import (ConversationCreateInput as CreateConversationRequest, ConversationMessageInput as SendConversationMessageRequest, ConversationCancelInput as ConversationCancelRequest)
-from ax_workspace.modules.notifications import NotificationNotFound
+from ax_workspace.modules.notifications import (
+    NotificationNotFound,
+    NotificationQueryInvalid,
+    NotificationSettingsConflict,
+    NotificationSettingsInvalid,
+)
 from ax_workspace.modules.external_channels.application import (
     AddRoomsCommand as AddIntegrationRoomsRequest,
     ConnectStart,
@@ -527,6 +533,10 @@ def _runtime_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=RESOURCE_NOT_FOUND_MESSAGE)
     if isinstance(error, NotificationNotFound):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
+    if isinstance(error, (NotificationQueryInvalid, NotificationSettingsInvalid)):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"code": "invalid_request", "message": str(error)})
+    if isinstance(error, NotificationSettingsConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": error.code, "message": str(error)})
     if isinstance(error, ConversationQueueOverflow):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1379,8 +1389,47 @@ def create_app(
             raise _runtime_error(error) from error
 
     @app.get("/api/notifications")
-    def list_notifications(principal: Principal = Depends(developer_principal)) -> list[dict[str, object]]:
-        return app.state.workflow_application.list_notifications(principal)
+    def list_notifications(
+        theme: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        principal: Principal = Depends(developer_principal),
+    ) -> dict[str, object]:
+        """알림 목록(SPEC-011 §4.5-1) — 최신(사건 순번) 먼저 · `theme` · 서버가 준 `cursor` · `limit` 1~100(기본 30)."""
+        try:
+            return app.state.workflow_application.list_notifications(principal, theme=theme, cursor=cursor, limit=limit)
+        except Exception as error:
+            raise _runtime_error(error) from error
+
+    @app.get("/api/notifications/summary")
+    def notification_summary(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        """안 읽은 수 — 전체 · 테마 셋(알림 화면 머리 「안 읽음 N」 · 탭 수)."""
+        return app.state.workflow_application.notification_summary(principal)
+
+    @app.post("/api/notifications/read-all")
+    def mark_all_notifications_read(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        """본문 없음 — 그 회원의 안 읽은 알림 **전부**를 읽음(D-40). 성공하면 `notification.read {all: true}`."""
+        return app.state.workflow_application.mark_all_notifications_read(principal)
+
+    @app.get("/api/me/badges")
+    def my_badges(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        """사이드바 점 둘(SPEC-011 §2.2) — `{notifications, inbox}`."""
+        return app.state.workflow_application.my_badges(principal)
+
+    @app.get("/api/me/notification-settings")
+    def notification_settings(principal: Principal = Depends(developer_principal)) -> dict[str, object]:
+        """알림 설정(SPEC-011 §4.4) — 저장한 적 없으면 기본값 · `version: 0`."""
+        return app.state.workflow_application.notification_settings(principal)
+
+    @app.put("/api/me/notification-settings")
+    def save_notification_settings(
+        body: dict[str, Any] = Body(...), principal: Principal = Depends(developer_principal)
+    ) -> dict[str, object]:
+        """전체 모양 + 마지막으로 읽은 `version`. 테마 · 항목이 정확해야 하고(422) 회차가 다르면 409."""
+        try:
+            return app.state.workflow_application.save_notification_settings(principal, body)
+        except Exception as error:
+            raise _runtime_error(error) from error
 
     @app.post("/api/notifications/{notification_id}/read")
     def mark_notification_read(
@@ -2796,6 +2845,7 @@ def create_app(
         return {"status": "ok", "profile": settings.profile}
 
     register_inbox_routes(app)  # 메시지함·답장·사용자 WS·카톡 수신·프로필 설정 (WORK-011 BE-3 · entrypoints/http_inbox.py)
+    register_event_routes(app)  # 사용자 사건 채널 SSE `/api/events/stream` (SPEC-011 §4.1 · WORK-013 WP1-BE · entrypoints/http_events.py)
     return app
 
 

@@ -53,6 +53,7 @@ from ax_workspace.platform.external_inbox_upstream import GmailInboxApi, SafeIma
 from ax_workspace.platform.external_storage import LocalDirectoryExternalStorage
 from ax_workspace.platform import user_events
 from ax_workspace.platform.persistence import ExternalSentReplyRecord
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository, notification_generator
 from ax_workspace.platform.user_event_hub import UserEventHub
 
 T = TypeVar("T")
@@ -120,6 +121,9 @@ class ExternalInboxOperations:
             images=self.inbox_image_fetcher,
             storage=self.external_storage,
             relay_cache=self.inbox_relay_cache,
+            # 알림 — 연동 끊김(X10) · 메시지함 읽음 → 알림 읽음(D-37). 같은 session 이라 한 트랜잭션이다.
+            notifier=notification_generator(store.session),
+            notification_reads=SqlAlchemyNotificationRepository(store.session),
         )
 
     @property
@@ -326,7 +330,7 @@ class ExternalInboxOperations:
     # ── 카톡 수신(기기 토큰) ────────────────────────────────────────────────────────────────
 
     def _kakao(self, store: SqlAlchemyInboxStore) -> KakaoIngestApplication:
-        return KakaoIngestApplication(store, storage=self.external_storage)
+        return KakaoIngestApplication(store, storage=self.external_storage, notifier=notification_generator(store.session))
 
     def kakao_ingest_messages(self, principal: Principal, command: KakaoMessagesCommand) -> KakaoMessagesAccepted:
         return self._inbox_unit(lambda store: self._kakao(store).ingest_messages(str(principal.id), command))

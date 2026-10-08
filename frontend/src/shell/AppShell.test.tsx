@@ -60,10 +60,14 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   for (const absent of ["수신함", "진행 현황", "자료"]) expect(nav.queryByRole("button", { name: absent }), absent).toBeNull();
 
   /* 시안 31 의 기둥 머리 — 알림·설정 두 줄이 구분선 «위» 에 선다.
-     알림은 갈 화면이 없으므로 **진짜 disabled** 다: 눌리지도 키보드로 실행되지도 않는다.
-     (예전에는 「만들지 않았다」로 아예 없었다 — 자리는 시안대로 서되 기능은 만들지 않는 쪽으로 바뀌었다) */
+     알림은 이제 **화면이다**(WORK-013 WP3-FE · SPEC-011 §2.1) — `disabled` 를 걷었다. 누르면 알림 목록이 서고
+     머리 제목은 「알림」, 화면은 «한 화면에 갇히는» 쪽(목록이 자기 안에서 스크롤한다)이다. */
   const notifications = nav.getByRole("button", { name: "알림" });
-  expect(notifications.hasAttribute("disabled")).toBe(true);
+  expect(notifications.hasAttribute("disabled")).toBe(false);
+  fireEvent.click(notifications);
+  await waitFor(() => expect(container.querySelector(".scax-page-header__title")?.textContent).toBe("알림"));
+  expect(container.querySelector(".scax-page-scroll")?.classList.contains("scax-page-scroll--fixed")).toBe(true);
+  expect(notifications.getAttribute("aria-current")).toBe("page");
   const settingsRow = nav.getByRole("button", { name: "설정" });
   expect(settingsRow.hasAttribute("disabled")).toBe(false);
   /* 설정은 이제 **화면이다**(WORK-011 FE-b) — 모달이 아니다. 좌 레일에 설정 메뉴가 서고 머리 제목은 고른 메뉴 이름이다. */
@@ -73,11 +77,11 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   expect(screen.queryByRole("dialog", { name: "내 AX 캐릭터" })).toBeNull();
 
   /* 접기 — 시안 31 의 머리 오른쪽 단추다. 접어도 «갈 수 있어야» 한다: 라벨이 사라져도
-     글리프 단추의 접근성 이름은 남고, 눌러서 화면이 바뀐다. 알림은 접혀서도 여전히 못 누른다. */
+     글리프 단추의 접근성 이름은 남고, 눌러서 화면이 바뀐다. 알림도 접혀서 그대로 누를 수 있다. */
   fireEvent.click(screen.getByRole("button", { name: "메뉴 접기" }));
   const collapsed = within(screen.getByRole("navigation", { name: "제품 탐색" }));
   expect(screen.getByRole("button", { name: "메뉴 펴기" })).toBeTruthy();
-  expect(collapsed.getByRole("button", { name: "알림" }).hasAttribute("disabled")).toBe(true);
+  expect(collapsed.getByRole("button", { name: "알림" }).hasAttribute("disabled")).toBe(false);
   fireEvent.click(collapsed.getByRole("button", { name: "회의" }));
   await waitFor(() => expect(container.querySelector(".scax-page-scroll--fixed")).not.toBeNull());
   fireEvent.click(screen.getByRole("button", { name: "메뉴 펴기" }));

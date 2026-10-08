@@ -32,6 +32,7 @@ from uuid import UUID
 
 from typing_extensions import TypedDict
 
+from ax_workspace.modules.notification_events import NO_NOTIFIER, Notifier, integration_lost_notification
 from ax_workspace.modules.errors import ResourceNotFound
 from ax_workspace.modules.external_channels.domain import ExternalChannelError, IntegrationKind, IntegrationStatus
 from ax_workspace.modules.external_channels.events import USER_EVENTS_CHANNEL, UserEvent, UserEventType
@@ -475,7 +476,12 @@ class InboxApplication:
         storage: BlobStorage,
         relay_cache: RelayCache | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        notifier: Notifier | None = None,
+        notification_reads: "NotificationReadPort | None" = None,
     ) -> None:
+        # 알림(SPEC-011) — 연동 끊김(X10)은 생성기로, 메시지함 읽음은 그 메시지의 알림 줄 읽음으로(D-37 · §4.5-3).
+        self._notifier = notifier or NO_NOTIFIER
+        self._notification_reads = notification_reads
         self._relay_cache = relay_cache
         self._repository = repository
         self._cipher = cipher
@@ -522,7 +528,8 @@ class InboxApplication:
                     "subject": row.subject,
                     "sender": row.author,
                     "at": at.isoformat(),
-                    "unread": row.id not in read,
+                    # 내가 보낸 메일은 안 읽음이 아니다(SPEC-008 v0.7.0 §4.4) — 레일 숫자 · 「안 읽음만」 과 같은 셈.
+                    "unread": row.id not in read and getattr(row, "from_me", None) is not True,
                     "attach_count": attach.get(row.id, 0),
                     "snippet": row.preview,
                 }))
@@ -578,7 +585,7 @@ class InboxApplication:
             "reply_to": split_addresses(headers.get("reply-to")),
             "date": headers.get("date"),
             "at": iso(message.sent_at) or "",
-            "unread": message.id not in read,
+            "unread": message.id not in read and getattr(message, "from_me", None) is not True,
             "safe_html": safe,
             "attachments": [_attachment_view(row) for row in attachments],
             "sent_replies": [_reply_view(row) for row in self._repository.replies_for_message(str(principal.id), message.id)],
@@ -658,6 +665,9 @@ class InboxApplication:
     def mark_mail_read(self, principal: Principal, message_id: UUID) -> None:
         message, _ = self._owned_mail(principal, message_id)
         self._repository.mark_message_read(str(principal.id), message.id, self._clock())
+        # 같은 트랜잭션에서 그 메일의 알림 줄도 읽음(D-37). 반대 방향은 없다.
+        if self._notification_reads is not None:
+            self._notification_reads.mark_message_notifications_read(str(principal.id), message_ids=[str(message.id)])
 
     def mark_room_read(self, principal: Principal, room_id: UUID, up_to_ts: str) -> None:
         room, _ = self._owned_room(principal, room_id)
@@ -666,12 +676,20 @@ class InboxApplication:
         if message is None:
             raise InvalidInboxRequest("up_to_ts 가 그 방의 메시지가 아닙니다")
         self._repository.mark_room_read(str(principal.id), room.id, key, aware(message.sent_at), self._clock())
+        # 그 방의 메시지 알림 줄 가운데 메시지 시각 ≤ up_to(합친 채널 줄은 마지막 시각 ≤ up_to)를 함께 읽음(D-37).
+        if self._notification_reads is not None:
+            self._notification_reads.mark_message_notifications_read(
+                str(principal.id), room_id=str(room.id), up_to=aware(message.sent_at)
+            )
 
     def read_all(self, principal: Principal, source: str = "all") -> None:
         kinds = _kinds_for(source)
         member_id = str(principal.id)
         integrations = [row for row in self._repository.active_integrations(member_id) if row.kind in kinds]
         self._repository.read_all(member_id, integrations, self._clock())
+        # 그 출처(없으면 전부)의 메시지 알림 줄 전부 — 연동 끊김 줄은 메시지가 아니라 빠진다(§4.5-3).
+        if self._notification_reads is not None:
+            self._notification_reads.mark_message_notifications_read(member_id, sources={str(kind) for kind in kinds})
 
     # ── 첨부 · 이미지 프록시 ─────────────────────────────────────────────────────────────────
 
@@ -1065,6 +1083,25 @@ class InboxApplication:
                 UserEventType.INTEGRATION_CHANGED, integration.member_id, integration_id=str(integration.id), source_kind=integration.kind
             ).to_payload(),
         )
+        # X10 — 연동 끊김(API 쪽 갈래: 첨부 중계 · 답장 전송이 401 을 만났다) → 연동 소유자.
+        self._notifier.notify(
+            integration_lost_notification(
+                kind=str(integration.kind), member_id=str(integration.member_id), integration_id=str(integration.id),
+                account_label=integration.display_name, occurred_at=now.isoformat(),
+            )
+        )
+
+
+class NotificationReadPort(Protocol):
+    def mark_message_notifications_read(
+        self,
+        recipient_member_id: str,
+        *,
+        message_ids: list[str] | None = None,
+        room_id: str | None = None,
+        up_to: datetime | None = None,
+        sources: set[str] | None = None,
+    ) -> list[str]: ...
 
 
 InboxSource = Literal["all", "mail", "slack", "kakao"]

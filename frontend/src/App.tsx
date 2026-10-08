@@ -3,7 +3,7 @@ import type React from "react";
 
 import { Button } from "./ds/Button";
 import { BrowserOperationScope, hasPendingBrowserOperation } from "./lib/browserOperationGuard";
-import { getMemberDirectory, getSession, isStaleActionError, logout, setAssistantCharacterPreference } from "./lib/api";
+import { getMemberDirectory, getNavBadges, getSession, isStaleActionError, logout, markNotificationRead, setAssistantCharacterPreference } from "./lib/api";
 import { AppBody, AppHeader, AppShell } from "./shell/AppShell";
 import { AssistantLauncher } from "./features/assistant/AssistantCharacter";
 import {
@@ -17,9 +17,12 @@ import { ChatDrawer } from "./features/chat/ChatDrawer";
 import { NEW_DRAFT_KEY, useConversations } from "./features/chat/useConversations";
 import { DailyReportPage } from "./features/report/DailyReportPage";
 import { InboxPage } from "./features/inbox/InboxPage";
+import { NotificationsPage } from "./features/notifications/NotificationsPage";
 import { SettingsPage, type SettingsTab } from "./features/settings/SettingsPage";
-import { axDraftCard, inboxScreen, personName, shellDownload } from "./lib/labels";
-import { onShellDownload, openExternal } from "./lib/shell";
+import { axDraftCard, inboxScreen, notificationScreen, personName, shellDownload } from "./lib/labels";
+import { hasShellNotifications, notifyPermission, notifyShow, onShellDownload, onShellNotificationClick, openExternal } from "./lib/shell";
+import { isViewingTarget } from "./lib/currentView";
+import { createOsNotifier } from "./lib/osNotifier";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MeetingWorkspace } from "./features/meetings/MeetingWorkspace";
 import { Toast } from "./ds/Modal";
@@ -29,10 +32,11 @@ import { ProjectPage } from "./features/project/ProjectPage";
 import { RelationGraphPage } from "./features/graph/RelationGraphPage";
 import { SideNav } from "./shell/SideNav";
 import { TodayPage } from "./features/today/TodayPage";
-import type { ConversationContextReference, OrganizationProfile, Persona, ProductSurface, TaskOriginMessage } from "./lib/viewModels";
+import type { ConversationContextReference, NavBadges, Notification, NotificationTarget, OrganizationProfile, Persona, ProductSurface, TaskOriginMessage } from "./lib/viewModels";
 import { type IconName } from "./ds/icons/Icon";
 import { shellNav } from "./lib/labels";
 import { forgetScreenCache, scopeScreenCache } from "./lib/screenCache";
+import { EventStreamProvider, useEventStream } from "./lib/eventStreamContext";
 
 /* 표시 순서는 시안에 맞추고 기존 화면 id·권한 필터·동작은 유지한다. */
 const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: string; icon: IconName; disabled?: boolean }> = [
@@ -62,6 +66,7 @@ const surfaceLabel: Record<ProductSurface, string> = {
   graph: "관계 탐색",
   inbox: "메시지함",
   settings: "설정",
+  notifications: "알림",
 };
 
 /**
@@ -73,7 +78,7 @@ function readLanding(): { surface: ProductSurface; tab?: SettingsTab; connect: "
   if (params.get("surface") !== "settings") return { surface: "today", connect: null };
   const tabParam = params.get("tab");
   const tab: SettingsTab | undefined =
-    tabParam === "mail" || tabParam === "slack" || tabParam === "kakao" || tabParam === "account" ? tabParam : undefined;
+    tabParam === "mail" || tabParam === "slack" || tabParam === "kakao" || tabParam === "account" || tabParam === "notify" ? tabParam : undefined;
   const connectParam = params.get("connect");
   /* `error` = 서버의 토큰 교환 실패(BE-1 `complete_callback` · 검수 W-1) — 조용히 버리지 않는다 */
   const connect = connectParam === "ok" || connectParam === "denied" || connectParam === "error" ? connectParam : null;
@@ -81,6 +86,48 @@ function readLanding(): { surface: ProductSurface; tab?: SettingsTab; connect: "
   ["surface", "tab", "connect"].forEach((key) => url.searchParams.delete(key));
   window.history.replaceState(null, "", url);
   return { surface: "settings", tab, connect };
+}
+
+/**
+ * 사이드바 점을 다시 읽을 때(SPEC-011 §2.2) — SSE `ready`·`resync` · `notification.upserted`·`notification.read` ·
+ * `inbox.message_arrived`·`inbox.message_updated`. 사건 채널 Provider 안에서만 들을 수 있어 작은 부품으로 둔다.
+ */
+function NavBadgeWatcher({ onStale }: { onStale: () => void }) {
+  useEventStream((signal) => {
+    if (signal.kind === "ready" || signal.kind === "resync" || signal.kind === "notification.upserted" || signal.kind === "notification.read") onStale();
+    else if (signal.kind === "inbox" && (signal.event.type === "inbox.message_arrived" || signal.event.type === "inbox.message_updated")) onStale();
+  });
+  return null;
+}
+
+/**
+ * 새 알림 → OS 알림(WORK-013 WP4 · SPEC-011 §2.5). 데스크톱 셸이 `notification` 기능을 말할 때만 돈다 — 브라우저 · 옛 dmg 는 목록 · 점만.
+ * 무엇을 띄우고 무엇을 묶는지는 `lib/osNotifier.ts`(D-39) — 여기서는 사건 채널과 「지금 보는 화면」 을 이어 줄 뿐이다.
+ */
+function OsNotificationBridge({ surface }: { surface: ProductSurface }) {
+  const surfaceRef = useRef(surface);
+  surfaceRef.current = surface;
+  const enabled = useRef(false);
+  const [notifier] = useState(() =>
+    createOsNotifier({
+      show: (input) => void notifyShow(input),
+      isViewing: (target) => isViewingTarget(target, surfaceRef.current),
+    }),
+  );
+  useEffect(() => {
+    let alive = true;
+    void hasShellNotifications().then((able) => {
+      if (alive) enabled.current = able;
+    });
+    return () => {
+      alive = false;
+      notifier.dispose();
+    };
+  }, [notifier]);
+  useEventStream((signal) => {
+    if (signal.kind === "notification.upserted" && enabled.current) notifier.offer(signal.event);
+  });
+  return null;
 }
 
 export default function App() {
@@ -204,6 +251,9 @@ export default function App() {
   /* 머리 제목을 화면이 바꿔 다는 자리 — 설정은 고른 메뉴 이름(「메일 연동」…)이 제목이다(시안). 떠날 때 지운다. */
   const [surfaceTitle, setSurfaceTitle] = useState<string | null>(null);
   const registerSurfaceTitle = useCallback((title: string | null) => setSurfaceTitle(title), []);
+  /* 제목 바로 옆 자리(`AppHeader` `titleEnd`) — 알림 화면의 「안 읽음 N」 이 쓴다(WORK-013 WP3-FE). 떠날 때 지운다. */
+  const [surfaceTitleEnd, setSurfaceTitleEnd] = useState<React.ReactNode>(null);
+  const registerSurfaceTitleEnd = useCallback((node: React.ReactNode) => setSurfaceTitleEnd(node), []);
   const surfaceRefresh = useRef<(() => Promise<void>) | null>(null);
   const registerSurfaceRefresh = useCallback((refresh: (() => Promise<void>) | null) => {
     surfaceRefresh.current = refresh;
@@ -326,6 +376,123 @@ export default function App() {
     [canNavigate],
   );
 
+  /** 설정을 그 탭으로 연다 — 알림의 「연동 끊김」 대상(SPEC-011 §4.5-2 3). 이미 설정이면 다시 세워 그 탭으로. */
+  const [settingsFocus, setSettingsFocus] = useState<{ tab: SettingsTab; seq: number } | null>(null);
+
+  /**
+   * **대상을 고른 상태로 연다 — 한 함수다**(SPEC-011 §4.5-2 3 · D-31). 알림 줄(이 화면) · OS 알림 클릭(WP4) · AX 서랍의
+   * `onOpenResource`(업무 · 요청 · 회의 · 프로젝트 · 보고)가 모두 이것을 부른다. 이동 가드(`canNavigate`)는 부르는 쪽이 한다.
+   */
+  const openFocus = useCallback(
+    (target: NotificationTarget | { surface: "project"; project_id: string } | { surface: "report" }, label = "") => {
+      switch (target.surface) {
+        case "work":
+          if (target.task_id) {
+            setFocusWorkRequestId(null);
+            setSurface("work");
+            setFocusTaskId(target.task_id);
+          } else if (target.work_request_id) {
+            setFocusTaskId(null);
+            setSurface("work");
+            setFocusWorkRequestId(target.work_request_id);
+          }
+          return;
+        case "meetings":
+          setFocusMeetingId(target.meeting_id);
+          setSurface("meetings");
+          return;
+        case "project":
+          // 프로젝트 화면의 「보던 프로젝트」 경로로 그 프로젝트를 연다 — 화면이 이 사람의 권한으로 다시 읽는다.
+          setFocusProjectId(target.project_id);
+          setSurface("project");
+          return;
+        case "report":
+          setSurface("report");
+          return;
+        case "inbox":
+          // 메시지함은 출처 링크(SPEC-008 §2.9 ④)와 같은 길 — 그 방·메일을 열고, 메시지가 있으면 그 줄로 스크롤 · 잠깐 강조
+          setInboxFocus({
+            message_id: target.message_id ?? "",
+            source_kind: target.source,
+            room_id: target.source === "mail" ? null : target.room_id,
+            label,
+          });
+          changeSurface("inbox");
+          return;
+        case "settings":
+          setSettingsFocus((current) => ({ tab: target.tab, seq: (current?.seq ?? 0) + 1 }));
+          setSurface("settings");
+          return;
+        case "notifications":
+          setSurface("notifications");
+          return;
+      }
+    },
+    /* `changeSurface` 는 useState 의 setter 라 바뀌지 않지만, 안에서 부르므로 의존에 적는다(검수 W-5 — 낡은 클로저 방지) */
+    [changeSurface, setSurface],
+  );
+
+  /* 사이드바 점 둘(SPEC-011 §2.2) — `GET /api/me/badges` 를 앱 시작 · 사건(아래 `NavBadgeWatcher`) · 이 화면의 읽음 API 뒤에 다시 읽는다.
+     겹쳐 불리면 하나만 날리고, 그사이 또 불렸으면 끝난 뒤 한 번 더 읽는다. 못 읽으면 점을 그대로 둔다. */
+  const [badges, setBadges] = useState<NavBadges>({ notifications: false, inbox: false });
+  const badgeLoad = useRef({ running: false, again: false, owner: "" });
+  const refreshBadges = useCallback(async () => {
+    const slot = badgeLoad.current;
+    if (slot.running) {
+      slot.again = true;
+      return;
+    }
+    slot.running = true;
+    const owner = slot.owner;
+    try {
+      do {
+        slot.again = false;
+        try {
+          const next = await getNavBadges();
+          if (badgeLoad.current.owner === owner) setBadges({ notifications: Boolean(next?.notifications), inbox: Boolean(next?.inbox) });
+        } catch {
+          /* 점은 보조 정보다 — 못 읽으면 그대로 */
+        }
+      } while (slot.again && badgeLoad.current.owner === owner);
+    } finally {
+      slot.running = false;
+    }
+  }, []);
+  useEffect(() => {
+    badgeLoad.current.owner = personaId;
+    setBadges({ notifications: false, inbox: false });
+    if (personaId) void refreshBadges();
+  }, [personaId, refreshBadges]);
+
+  /* OS 알림 권한 — 로그인 뒤 첫 화면에서 한 번 묻는다(OQ-1102 제안). 이미 답했으면 OS 가 다시 묻지 않는다(거부면 그대로 · 목록·점만). */
+  useEffect(() => {
+    if (personaId) void notifyPermission(true);
+  }, [personaId]);
+
+  /**
+   * 알림 하나를 연다(SPEC-011 §2.1 「누르면」) — ① 읽음(`notificationId` 가 있을 때 · 묶음 OS 알림은 없다) ② 대상을 고른 상태로.
+   * `target` 이 `null` 이면(지금 열 수 없는 자원 · §4.5-4) 읽음만 하고 「열 수 없는 항목입니다」. OS 알림 클릭(WP4)도 이것이다.
+   */
+  const openNotification = useCallback(
+    (notificationId: string | null, target: NotificationTarget | null, label = "") => {
+      if (notificationId) {
+        void markNotificationRead(notificationId).then(
+          () => void refreshBadges(),
+          () => setError(notificationScreen.readError),
+        );
+      }
+      if (!target) {
+        setError(notificationScreen.cannotOpen);
+        return;
+      }
+      if (!canNavigate("workspace")) return;
+      openFocus(target, label);
+    },
+    [canNavigate, openFocus, refreshBadges, setError],
+  );
+  /* OS 알림을 눌렀다(셸 → 웹 사건 · 셸이 창을 이미 앞으로 가져왔다) — 목록 줄을 누른 것과 같은 일. 묶음(`id: null`)은 읽음 없이 목록만. */
+  useEffect(() => onShellNotificationClick((click) => openNotification(click.notification_id, click.target)), [openNotification]);
+
   async function sendMessage(bodyOverride?: string) {
     const body = bodyOverride ?? chat.draft;
     if (!body.trim()) return;
@@ -433,28 +600,46 @@ export default function App() {
   }} />;
 
   return (
+    /*
+     * 사용자 사건 채널(SSE)의 주인 — 로그인한 동안 연결 **하나**(SPEC-011 §4.1-6 · D-10). 화면이 바뀌어도 닫지 않고,
+     * 로그아웃·세션 상실로 로그인 화면을 그리면 이 Provider 가 내려가며 닫는다. 세션 확인이 401 이면 회의 스트림의
+     * 4401 과 같은 길(아래 `onSessionLost`)로 로그인 화면에 보낸다.
+     */
+    <EventStreamProvider
+      onSessionLost={() => {
+        resetWorkspace();
+        setSession(null);
+      }}
+    >
+    <NavBadgeWatcher onStale={() => void refreshBadges()} />
+    <OsNotificationBridge surface={surface} />
     <AppShell
       nav={
         <SideNav
           activeId={surface}
           collapsed={navCollapsed}
-          items={visibleNavigation.map((item) => ({ id: item.id, label: item.label, icon: item.icon, disabled: item.disabled }))}
+          /* 메시지함 점 = 안 읽은 메시지가 하나라도(SPEC-011 §2.2 · 레일 숫자와 같은 셈) */
+          items={visibleNavigation.map((item) => ({ id: item.id, label: item.label, icon: item.icon, disabled: item.disabled, dot: item.id === "inbox" && badges.inbox }))}
           label="제품 탐색"
           logo="MEDISOLVE"
           onCollapse={() => setNavCollapsed((collapsed) => !collapsed)}
-          onSelect={(id) => setSurface(id as ProductSurface)}
+          onSelect={(id) => {
+            // 사이드바로 설정에 들어오면 알림이 고른 탭(연동 끊김)을 들고 가지 않는다
+            if (id === "settings") setSettingsFocus(null);
+            setSurface(id as ProductSurface);
+          }}
           /*
            * 시안 31 의 기둥 «머리» — 신원 줄 아래에 알림·설정 두 줄이 서고 그 밑을 가로선이 가른다.
            * 자리는 `SideNav` 가 이미 갖고 있던 `utilityItems`(구분선 위 그룹)다 — 새로 만들지 않았다.
            *
-           * · 알림: **갈 화면이 없다.** 그래서 «진짜» disabled 로 세운다 — 눌리지도, 키보드로 실행되지도
-           *   않는다. 시안의 파란 점(안 읽은 것)은 셀 값이 없으므로 넣지 않는다. 기능을 새로 만들지 않았다.
+           * · 알림: 알림 목록 화면이다(WORK-013 WP3-FE · SPEC-011 §2.1) — id 는 화면 이름 `notifications` 그대로(시안 `alert`).
+           *   안 읽은 알림이 하나라도 있으면 점이 선다(§2.2 · `GET /api/me/badges`).
            * · 설정: 이제 **화면이다**(WORK-011 FE-b · SPEC-008 §5 프론트) — 메일·슬랙·카톡 연동과 프로필 설정.
            *   예전에 이 줄과 신원 줄이 열던 「내 AX 캐릭터」 모달은 **없앴다** — 캐릭터는 프로필 설정에서 고른다
            *   (D-48 · 검수 W-14 「진입점 둘 다」). 그래서 신원 줄은 누를 수 없는 글자로 선다.
            */
           utilityItems={[
-            { id: "notifications", label: shellNav.notifications, icon: "bell", disabled: true },
+            { id: "notifications", label: shellNav.notifications, icon: "bell", dot: badges.notifications },
             { id: "settings", label: shellNav.settings, icon: "setting" },
           ]}
           user={{
@@ -476,6 +661,7 @@ export default function App() {
     >
       <AppHeader
         actions={surfaceActions}
+        titleEnd={surfaceTitleEnd}
         /* 바퀴 6a M-3: 브레드크럼을 지웠다. 회의 상세에서 목록으로 돌아가는 유일한 길이라 바퀴 2 가
            살려 뒀던 것인데, 이제 목록 칸이 상시 옆에 서서 돌아갈 길이 UI 에 들어 있다. 시안도 머리는 한 줄이다. */
         title={surfaceTitle ?? surfaceLabel[surface]}
@@ -489,7 +675,7 @@ export default function App() {
               자기 안에서 스크롤한다(`styles/calendar.css` 의 `.scax-cal-main`). 바깥이 스크롤하면 주인이 둘이 된다. */}
           {/* 프로젝트도 «한 화면에 갇히는» 화면이다 (WORK-005) — 요약 스트립과 진행 라인이 칸을 채우고
               `.scax-pj-view` 가 자기 안에서 스크롤한다. 바깥이 또 스크롤하면 주인이 둘이 된다. */}
-          <div className={surface === "meetings" || surface === "calendar" || surface === "project" || surface === "inbox" || surface === "settings" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
+          <div className={surface === "meetings" || surface === "calendar" || surface === "project" || surface === "inbox" || surface === "settings" || surface === "notifications" ? "scax-page-scroll scax-page-scroll--fixed" : surface === "work" ? "scax-page-scroll scax-page-scroll--work" : "scax-page-scroll"}>
           {surface === "today" && (
             <TodayPage
               {...pageProps}
@@ -579,7 +765,18 @@ export default function App() {
               }}
               onRegisterHeaderActions={registerSurfaceActions}
               onRegisterRails={registerSurfaceRails}
+              onReadChanged={() => void refreshBadges()}
               onRegisterRefresh={registerSurfaceRefresh}
+            />
+          )}
+          {/* 알림 목록(WORK-013 WP3-FE · SPEC-011 §2.1) — 레일 없는 한 단 · 자기 안에서 스크롤한다 */}
+          {surface === "notifications" && (
+            <NotificationsPage
+              onError={setError}
+              onOpen={(item: Notification) => openNotification(item.notification_id, item.target, item.subject?.title ?? "")}
+              onReadChanged={() => void refreshBadges()}
+              onRegisterHeaderActions={registerSurfaceActions}
+              onRegisterTitleEnd={registerSurfaceTitleEnd}
             />
           )}
           {surface === "settings" && (
@@ -587,7 +784,8 @@ export default function App() {
               characterBusy={characterPreferenceBusy}
               characterError={characterPreferenceError}
               connectResult={landing.connect}
-              initialTab={landing.tab}
+              initialTab={settingsFocus?.tab ?? landing.tab}
+              key={settingsFocus ? `focus-${settingsFocus.seq}` : "settings"}
               onChooseCharacter={(characterKey) => void chooseAssistantCharacter(characterKey)}
               onError={setError}
               onNotice={setToast}
@@ -695,21 +893,17 @@ export default function App() {
             if (!canNavigate()) return;
             // Each item opens where it lives. The surface reads it again with this person's access.
             setIsAxOpen(false);
+            /* 업무 · 요청 · 회의 · 프로젝트 · 보고는 알림 대상과 **같은 함수**로 연다(`openFocus` · SPEC-011 §4.5-2 3) */
             if (resource.resource_type === "task") {
-              setFocusWorkRequestId(null);
-              setSurface("work");
-              setFocusTaskId(resource.resource_id);
+              openFocus({ surface: "work", task_id: resource.resource_id });
               return;
             }
             if (resource.resource_type === "work_request") {
-              setFocusTaskId(null);
-              setSurface("work");
-              setFocusWorkRequestId(resource.resource_id);
+              openFocus({ surface: "work", work_request_id: resource.resource_id });
               return;
             }
             if (resource.resource_type === "meeting") {
-              setFocusMeetingId(resource.resource_id);
-              setSurface("meetings");
+              openFocus({ surface: "meetings", meeting_id: resource.resource_id });
               return;
             }
             if (resource.resource_type === "material") {
@@ -734,12 +928,10 @@ export default function App() {
               return;
             }
             if (resource.resource_type === "project") {
-              // 프로젝트 화면의 「보던 프로젝트」 경로로 그 프로젝트를 연다 — 화면이 이 사람의 권한으로 다시 읽는다.
-              setFocusProjectId(resource.resource_id);
-              setSurface("project");
+              openFocus({ surface: "project", project_id: resource.resource_id });
               return;
             }
-            if (resource.resource_type === "report") setSurface("report");
+            if (resource.resource_type === "report") openFocus({ surface: "report" });
           }}
           onOpenTask={(taskId) => {
             if (!canNavigate()) return;
@@ -768,5 +960,6 @@ export default function App() {
         </BrowserOperationScope.Provider>
       )}
     </AppShell>
+    </EventStreamProvider>
   );
 }

@@ -13,6 +13,7 @@
  *  3. **아이콘이 실재하고 형식이 맞다** — 목록에 있으나 없는 파일이면 번들이 거기서 멈춘다
  *  4. **원격 문서 계약이 보존된다** — `frontendDist: shell-noop` · 창은 Rust 가 만든다
  *  5. **권한 경계가 그대로다** — capability `local:false` · `remote.urls` 하나 · 운영 origin 미발명
+ *  6. **셸 → 웹 사건 이름이 양쪽에서 같다** — 다운로드 결과 · 알림 클릭(WORK-013 WP4) — Rust 상수와 `lib/shell.ts` 상수
  *
  * ⚠ **이 스크립트는 「이 호스트에서 무엇을 «구울 수» 있는가」를 구분해 적는다.**
  * macOS 에서 돌렸다고 Windows 설치파일이 검증된 것이 아니다 — 그 칸은 «검증 불가»로 남는다.
@@ -226,10 +227,12 @@ for (const name of capabilities) {
   const urls = capability.remote?.urls ?? [];
   if (urls.length !== 1) fail(`${name}: remote.urls 가 하나가 아니다 (${urls.length})`);
   if (urls.some((url) => url.includes("://*."))) fail(`${name}: 와일드카드 서브도메인을 쓰고 있다`);
-  // 커맨드 수 — strong-hajin = 넷, medi-ax = 일곱(넷 + 카톡 셋 · SPEC-006 v0.6.0 W3-1).
+  // 커맨드 수 — strong-hajin = 여섯(넷 + 알림 둘), medi-ax = 아홉(여섯 + 카톡 셋 · SPEC-006 v0.7.0).
   const perms = capability.permissions ?? [];
   const kakaoPerms = ["allow-kakao-list-rooms", "allow-kakao-collector-status", "allow-kakao-store-device-token"];
-  const wantCount = flavor.name === "medi-ax" ? 7 : 4;
+  const notifyPerms = ["allow-notify-permission", "allow-notify-show"];
+  const wantCount = flavor.name === "medi-ax" ? 9 : 6;
+  for (const p of notifyPerms) if (!perms.includes(p)) fail(`${name}: 알림 커맨드 ${p} 가 없다(두 판 공통 · SPEC-006 v0.7.0)`);
   if (perms.length !== wantCount) {
     fail(`${name}: 판 ${flavor.name} 의 커맨드 수가 ${wantCount} 가 아니다 (${perms.length})`);
   }
@@ -253,6 +256,22 @@ for (const name of capabilities) {
     }
   } else if (!urls.some((url) => url.includes(".invalid"))) {
     fail(`${name}: 여는 주소가 없는(null) 판인데 커맨드 허용 origin 이 실주소다(${urls[0]})`);
+  }
+}
+
+// ── 6. 셸 → 웹 사건 이름 ────────────────────────────────────────────────────
+// 셸이 `eval` 로 쏘는 CustomEvent 이름과 웹이 듣는 이름이 갈리면 사건이 조용히 사라진다 — 굽기 전에 잡는다.
+{
+  const web = readFileSync(resolve(here, "..", "src/lib/shell.ts"), "utf8");
+  const pairs = [
+    ["src/download.rs", /pub const EVENT: &str = "([^"]+)"/, /SHELL_DOWNLOAD_EVENT = "([^"]+)"/],
+    ["src/notify.rs", /pub const CLICK_EVENT: &str = "([^"]+)"/, /SHELL_NOTIFICATION_CLICK_EVENT = "([^"]+)"/],
+  ];
+  for (const [file, rustPattern, webPattern] of pairs) {
+    const rust = readFileSync(join(shell, file), "utf8").match(rustPattern)?.[1];
+    const front = web.match(webPattern)?.[1];
+    if (!rust || !front) fail(`사건 이름을 찾지 못했다: ${file} / shell.ts`);
+    else if (rust !== front) fail(`사건 이름이 갈렸다: ${file}(${rust}) ≠ shell.ts(${front})`);
   }
 }
 

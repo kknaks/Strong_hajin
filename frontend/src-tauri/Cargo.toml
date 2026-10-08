@@ -23,7 +23,8 @@ serde_json = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # SPEC-006 §5: 하한 2.11.1 (GHSA-7gmj-67g7-phm9 — origin 혼동으로 원격 문서가 로컬 전용 커맨드를 부른다).
-tauri = { version = "2.11.1", features = [] }
+# WORK-013 WP4: 2.12 로 올렸다 — Windows 알림 플러그인(`tauri-plugin-notification` 2.5)이 2.12 를 요구한다(사용자 처분 2026-10-08).
+tauri = { version = "2.12", features = [] }
 # 연결 실패 전수(U-2)의 수단. **HTTP 클라이언트가 아니라 TLS 악수까지만** 쓴다.
 # macOS 는 Security.framework, Windows 는 SChannel 로 내려가 **웹뷰와 같은 OS 신뢰 저장소**를 본다 —
 # 그래서 「웹뷰가 거절할 인증서」를 셸도 같은 기준으로 거절한다(Phase 2 의 M-7 대응).
@@ -42,10 +43,28 @@ tauri-plugin-opener = "2"
 # enabled"). http(로컬)에서는 TLS 를 안 타 드러나지 않다가 운영 https 에서 터진다(수집기 스레드 사망).
 ureq = { version = "3.4.2", default-features = false, features = ["native-tls"] }
 
+# ── OS 알림 (WORK-013 WP4 · SPEC-006 「시스템 알림 수용」 · SPEC-011 §4.6 — 두 판 공통) ──────────────────
+# macOS: 공식 플러그인은 데스크톱 클릭 콜백이 없다(P0-2 — Actions 는 모바일 전용 · 응답 핸들을 버림). 그래서
+# **UNUserNotificationCenter 를 objc2 로 셸이 직접** 부른다(OQ-1108 처분 ④ · 2026-10-08) — 권한 프롬프트 · 권한 상태 ·
+# 보내기(userInfo 에 notification_id · target) · delegate 의 클릭(didReceive) · 앞에 있어도 배너(willPresent).
+# 판은 lock 에 이미 있던 objc2 0.6 · objc2-foundation 0.3 · objc2-user-notifications 0.3 · block2 0.6 에 맞춘다.
+# 원격 웹에 플러그인 권한은 열지 않는다 — 웹이 부르는 것은 우리 커맨드 둘(`notify_permission` · `notify_show`)뿐이다.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSDictionary", "NSBundle", "NSError", "NSObject"] }
+objc2-user-notifications = { version = "0.3.2" }
+block2 = "0.6.2"
+
+# Windows: 공식 알림 플러그인(클릭 콜백 없음 — OS 기본 = 앱만 앞으로 · 실기 pending). Rust 쪽에서만 부른다 —
+# capability 에 플러그인 권한을 넣지 않으므로 원격 문서가 플러그인 커맨드를 부를 수 없다.
+[target.'cfg(windows)'.dependencies.tauri-plugin-notification]
+version = "2.5.1"
+
 # Windows(WebView2) 마이크 권한 — 참조 제품 `app/front/src-tauri/src/lib.rs` 의
 # `allow_microphone_on_webview2` 를 이식한다. 없으면 `getUserMedia` 가 **프롬프트 없이** 실패한다.
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38"
+# tauri 2.12 → wry 0.57 → webview2-com 0.39 — 판이 갈리면 `with_webview` 의 타입이 어긋난다(WORK-013 WP4 에서 함께 올림).
+webview2-com = "0.39"
 
 # ── 카톡 수집기 (회사판 medi-ax 전용) 의 선택 의존 ─────────────────────────────
 # SPEC-009 · SPEC-006 v0.6.0 「외부 채널 수집기 수용」. **개인판 strong-hajin 빌드에는

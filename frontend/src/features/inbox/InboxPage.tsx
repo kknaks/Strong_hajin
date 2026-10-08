@@ -20,6 +20,7 @@ import { createInboxEventHub, useInboxStream } from "./inboxStream";
 import { MailView } from "./MailView";
 import { cardKey, MessageRail, type RailState } from "./MessageRail";
 import { RoomView } from "./RoomView";
+import { useViewDetail } from "../../lib/currentView";
 
 /**
  * 「메시지함」 화면 (WORK-011 FE-a · SPEC-008 §2.1·2.2·2.7·2.8) — 좌 레일(쌓인 메시지) + 본문(고른 것의 원문).
@@ -45,6 +46,8 @@ type Props = {
   focus?: TaskOriginMessage | null;
   /** 짚기를 마쳤다 — `found` 가 거짓이면(지워졌거나 남의 것·이미 오래된 쪽) 부르는 쪽이 「메시지를 찾을 수 없습니다」. */
   onFocusHandled?: (found: boolean) => void;
+  /** 읽음 API 가 성공했다 — 사이드바 점 둘을 다시 읽을 때(SPEC-011 §2.2 · 메시지함 읽음은 그 메시지의 알림도 읽는다 §4.5-3). */
+  onReadChanged?: () => void;
 };
 
 /**
@@ -88,7 +91,9 @@ function ConnectionWarnings({ items, onReconnect }: { items: Integration[]; onRe
 
 const zeroCounts = { all: 0, mail: 0, slack: 0, kakao: 0 } as const;
 
-export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderActions, onRegisterRefresh, onAskAx, focus = null, onFocusHandled }: Props) {
+export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderActions, onRegisterRefresh, onAskAx, focus = null, onFocusHandled, onReadChanged }: Props) {
+  const readChanged = useRef(onReadChanged);
+  readChanged.current = onReadChanged;
   const [source, setSource] = useState<InboxSource>("all");
   const [cards, setCards] = useState<InboxCard[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -96,6 +101,9 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
   const [state, setState] = useState<RailState>("loading");
   const [loadingMore, setLoadingMore] = useState(false);
   const [selected, setSelected] = useState<InboxCard | null>(null);
+  /* OS 알림의 「보고 있으면 생략」(SPEC-011 §2.5 ①) — 지금 연 메일 · 방 */
+  useViewDetail("inboxMail", selected?.kind === "mail" ? selected.message_id : null);
+  useViewDetail("inboxRoom", selected && selected.kind !== "mail" ? selected.room_id : null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const hub = useMemo(createInboxEventHub, []);
   const sourceRef = useRef(source);
@@ -181,10 +189,13 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
       if (target && target.kind === "mail" && target.unread) {
         setCounts((current) => (current ? { ...current, mail: Math.max(0, (current.mail ?? 0) - 1), all: Math.max(0, (current.all ?? 0) - 1) } : current));
       }
-      markInboxMailRead(messageId).catch(() => {
-        onError(copy.readFailed);
-        void loadList("quiet");
-      });
+      markInboxMailRead(messageId).then(
+        () => readChanged.current?.(),
+        () => {
+          onError(copy.readFailed);
+          void loadList("quiet");
+        },
+      );
     },
     [loadList, onError],
   );
@@ -196,10 +207,13 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
         const was = target.kind;
         setCounts((current) => (current ? { ...current, [was]: Math.max(0, (current[was] ?? 0) - 1), all: Math.max(0, (current.all ?? 0) - 1) } : current));
       }
-      markInboxRoomRead(roomId, upTo).catch(() => {
-        onError(copy.readFailed);
-        void loadList("quiet");
-      });
+      markInboxRoomRead(roomId, upTo).then(
+        () => readChanged.current?.(),
+        () => {
+          onError(copy.readFailed);
+          void loadList("quiet");
+        },
+      );
     },
     [loadList, onError],
   );
@@ -209,6 +223,7 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
     setCounts((current) => (scope === "all" ? { ...zeroCounts } : current ? { ...current, [scope]: 0, all: Math.max(0, (current.all ?? 0) - (current[scope] ?? 0)) } : current));
     try {
       await markInboxAllRead(scope);
+      readChanged.current?.();
     } catch {
       onError(copy.readFailed);
       void loadList("quiet");
@@ -245,7 +260,8 @@ export function InboxPage({ meName, onError, onRegisterRails, onRegisterHeaderAc
         ? { kind: focus.source_kind === "kakao" ? "kakao" : "slack", room_id: focus.room_id, integration_id: "", room_type: "channel", title: focus.label, member_count: null, unread_count: 0, last_at: now, at: now }
         : { kind: "mail", message_id: focus.message_id, integration_id: "", account: "", subject: focus.label, sender: null, at: now, unread: false, attach_count: 0, snippet: null });
     setSelected(card);
-    if (focus.room_id) setFocusId(focus.message_id);
+    /* 방은 그 메시지를 짚는다 — 짚을 메시지가 없으면(알림의 대상이 방 하나 · SPEC-011 §4.5-2 3) 방을 여는 것이 짚기다 */
+    if (focus.room_id && focus.message_id) setFocusId(focus.message_id);
     else onFocusHandled?.(true); // 메일은 그 메일을 여는 것이 짚기다
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 들어온 출처 하나에 한 번
   }, [focus]);

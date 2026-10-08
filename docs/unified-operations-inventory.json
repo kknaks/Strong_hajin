@@ -666,7 +666,7 @@
         "list_notifications"
       ],
       "acceptance_evidence": "docs/unified-operations.md의 R3a~R3f 경로·권한·동등성 검증",
-      "http_signature": "(principal: Principal) -> list[dict[str, object]]"
+      "http_signature": "(theme: str | None, cursor: str | None, limit: int | None, principal: Principal) -> dict[str, object]"
     },
     {
       "http": "GET /api/organization/activity",
@@ -2972,7 +2972,7 @@
   ],
   "current_runtime": {
     "phase": "main-sync",
-    "http_count": 192,
+    "http_count": 198,
     "tool_count": 129,
     "tools": [
       {
@@ -8449,7 +8449,7 @@
       {
         "name": "list_notifications",
         "title": "내 알림 조회",
-        "description": "Read existing notifications addressed to this person and backed by currently readable sources.",
+        "description": "Read the newest page of this person's notifications (work, message and meeting themes; kinds such as work.request_received, message.slack, meeting.minutes_ready). Each row keeps the title and actor stored when it was made; its target is null when the source can no longer be opened.",
         "adapter_operation": "list_notifications",
         "exposure": {
           "any_capabilities": [],
@@ -8472,17 +8472,14 @@
         },
         "output_schema": {
           "$defs": {
-            "NotificationResource": {
+            "NotificationItem": {
+              "description": "알림 한 줄(SPEC-011 §4.5-2) — 목록 · 읽음 · SSE `notification.upserted` · MCP 가 같은 모양을 쓴다.",
               "properties": {
-                "type": {
-                  "title": "Type",
+                "notification_id": {
+                  "title": "Notification Id",
                   "type": "string"
                 },
-                "id": {
-                  "title": "Id",
-                  "type": "string"
-                },
-                "version": {
+                "seq": {
                   "anyOf": [
                     {
                       "type": "integer"
@@ -8491,45 +8488,75 @@
                       "type": "null"
                     }
                   ],
-                  "title": "Version"
-                },
-                "title": {
-                  "title": "Title",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "id",
-                "version",
-                "title"
-              ],
-              "title": "NotificationResource",
-              "type": "object"
-            },
-            "NotificationView": {
-              "properties": {
-                "notification_id": {
-                  "title": "Notification Id",
-                  "type": "string"
+                  "title": "Seq"
                 },
                 "kind": {
                   "title": "Kind",
                   "type": "string"
                 },
-                "summary": {
-                  "title": "Summary",
+                "theme": {
+                  "title": "Theme",
                   "type": "string"
                 },
-                "actor_id": {
-                  "title": "Actor Id",
+                "item": {
+                  "title": "Item",
                   "type": "string"
                 },
-                "resource": {
-                  "$ref": "#/$defs/NotificationResource"
+                "relation": {
+                  "title": "Relation",
+                  "type": "string"
+                },
+                "failure": {
+                  "title": "Failure",
+                  "type": "boolean"
+                },
+                "actor": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Actor"
+                },
+                "subject": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Subject"
+                },
+                "data": {
+                  "additionalProperties": true,
+                  "title": "Data",
+                  "type": "object"
+                },
+                "target": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Target"
                 },
                 "created_at": {
                   "title": "Created At",
+                  "type": "string"
+                },
+                "updated_at": {
+                  "title": "Updated At",
                   "type": "string"
                 },
                 "read_at": {
@@ -8546,30 +8573,49 @@
               },
               "required": [
                 "notification_id",
+                "seq",
                 "kind",
-                "summary",
-                "actor_id",
-                "resource",
+                "theme",
+                "item",
+                "relation",
+                "failure",
+                "actor",
+                "subject",
+                "data",
+                "target",
                 "created_at",
+                "updated_at",
                 "read_at"
               ],
-              "title": "NotificationView",
+              "title": "NotificationItem",
               "type": "object"
             }
           },
           "properties": {
-            "result": {
+            "items": {
               "items": {
-                "$ref": "#/$defs/NotificationView"
+                "$ref": "#/$defs/NotificationItem"
               },
-              "title": "Result",
+              "title": "Items",
               "type": "array"
+            },
+            "next_cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next Cursor"
             }
           },
           "required": [
-            "result"
+            "items",
+            "next_cursor"
           ],
-          "title": "list_notificationsOutput",
+          "title": "NotificationPage",
           "type": "object"
         }
       },
@@ -40840,7 +40886,7 @@
       {
         "name": "meeting_share",
         "title": "회의 공유 준비",
-        "description": "Prepare granting read access to one or more active members. Sharing does not add attendees or send notifications. Delegated execution requires human confirmation.",
+        "description": "Prepare granting read access to one or more active members. Sharing does not add attendees; each newly shared member receives a meeting.shared notification. Delegated execution requires human confirmation.",
         "adapter_operation": "share_current_meeting",
         "exposure": {
           "any_capabilities": [],
@@ -50701,7 +50747,7 @@
       {
         "name": "notification_mark_read",
         "title": "알림 읽음 처리 준비",
-        "description": "Prepare marking one of this person's notifications as read. Its source resource must remain readable at confirmation. This does not decide, complete or change the underlying work. Delegated execution requires human confirmation.",
+        "description": "Prepare marking one of this person's notifications as read. This does not decide, complete or change the underlying work or message. Delegated execution requires human confirmation.",
         "adapter_operation": "mark_notification_read",
         "exposure": {
           "any_capabilities": [],
@@ -51222,17 +51268,14 @@
               "type": "object"
             },
             "JsonValue": {},
-            "NotificationResource": {
+            "NotificationItem": {
+              "description": "알림 한 줄(SPEC-011 §4.5-2) — 목록 · 읽음 · SSE `notification.upserted` · MCP 가 같은 모양을 쓴다.",
               "properties": {
-                "type": {
-                  "title": "Type",
+                "notification_id": {
+                  "title": "Notification Id",
                   "type": "string"
                 },
-                "id": {
-                  "title": "Id",
-                  "type": "string"
-                },
-                "version": {
+                "seq": {
                   "anyOf": [
                     {
                       "type": "integer"
@@ -51241,45 +51284,75 @@
                       "type": "null"
                     }
                   ],
-                  "title": "Version"
-                },
-                "title": {
-                  "title": "Title",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "id",
-                "version",
-                "title"
-              ],
-              "title": "NotificationResource",
-              "type": "object"
-            },
-            "NotificationView": {
-              "properties": {
-                "notification_id": {
-                  "title": "Notification Id",
-                  "type": "string"
+                  "title": "Seq"
                 },
                 "kind": {
                   "title": "Kind",
                   "type": "string"
                 },
-                "summary": {
-                  "title": "Summary",
+                "theme": {
+                  "title": "Theme",
                   "type": "string"
                 },
-                "actor_id": {
-                  "title": "Actor Id",
+                "item": {
+                  "title": "Item",
                   "type": "string"
                 },
-                "resource": {
-                  "$ref": "#/$defs/NotificationResource"
+                "relation": {
+                  "title": "Relation",
+                  "type": "string"
+                },
+                "failure": {
+                  "title": "Failure",
+                  "type": "boolean"
+                },
+                "actor": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Actor"
+                },
+                "subject": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Subject"
+                },
+                "data": {
+                  "additionalProperties": true,
+                  "title": "Data",
+                  "type": "object"
+                },
+                "target": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Target"
                 },
                 "created_at": {
                   "title": "Created At",
+                  "type": "string"
+                },
+                "updated_at": {
+                  "title": "Updated At",
                   "type": "string"
                 },
                 "read_at": {
@@ -51296,26 +51369,33 @@
               },
               "required": [
                 "notification_id",
+                "seq",
                 "kind",
-                "summary",
-                "actor_id",
-                "resource",
+                "theme",
+                "item",
+                "relation",
+                "failure",
+                "actor",
+                "subject",
+                "data",
+                "target",
                 "created_at",
+                "updated_at",
                 "read_at"
               ],
-              "title": "NotificationView",
+              "title": "NotificationItem",
               "type": "object"
             }
           },
           "anyOf": [
             {
-              "$ref": "#/$defs/NotificationView"
+              "$ref": "#/$defs/NotificationItem"
             },
             {
               "$ref": "#/$defs/ActionProposalResult"
             }
           ],
-          "title": "CommandResult[NotificationView]",
+          "title": "CommandResult[NotificationItem]",
           "type": "object"
         }
       },
@@ -71988,7 +72068,13 @@
       "POST /api/meetings/{meeting_id}/end",
       "POST /api/meetings/{meeting_id}/finalize",
       "POST /api/meetings/{meeting_id}/start",
-      "POST /api/meetings/{meeting_id}/todos/{todo_id}/promote"
+      "POST /api/meetings/{meeting_id}/todos/{todo_id}/promote",
+      "GET /api/notifications/summary",
+      "POST /api/notifications/read-all",
+      "GET /api/me/badges",
+      "GET /api/me/notification-settings",
+      "PUT /api/me/notification-settings",
+      "GET /api/events/stream"
     ],
     "validation": "Final registered schema identity plus domain contract, PostgreSQL, provider, MCP and UI acceptance; see docs/unified-operations.md and Work Brief.",
     "upstream_commit": "0a8a04b11dfccd97ba306e8b3c466a331c29ca68",
@@ -73678,6 +73764,129 @@
           "reconsider_when": "2단계 AX 판단(DEC-008 D-03·D-39)이 외부 메시지를 읽게 될 때"
         },
         "http_signature": "(q: str | None, cursor: str | None, principal: Principal) -> AvailableRoomsPage"
+      },
+      {
+        "http": "GET /api/notifications/summary",
+        "http_handler": "notification_summary",
+        "screen_callers": [],
+        "operation": "notification_summary",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "notification_summary"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "알림 화면 머리 「안 읽음 N」 · 탭 수 — 화면이 그리는 숫자다(SPEC-011 §4.5-1).",
+          "alternative": "알림 목록 화면(WORK-013 WP3-FE)이 부른다. AX 는 list_notifications 로 같은 줄을 읽는다.",
+          "reconsider_when": "알림 화면 · 셸 시스템 알림 다음 판에 AX 가 알림을 다루게 될 때(SPEC-011 §7)"
+        },
+        "http_signature": "(principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "POST /api/notifications/read-all",
+        "http_handler": "mark_all_notifications_read",
+        "screen_callers": [],
+        "operation": "mark_all_notifications_read",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "mark_all_notifications_read"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "[모두 읽음] 머리 단추 — 사람의 화면 조작이다(SPEC-011 §4.5-1 · D-40).",
+          "alternative": "알림 목록 화면이 부른다. 건별 읽음은 notification_mark_read(확인 필요)로 AX 에도 열려 있다.",
+          "reconsider_when": "알림 화면 · 셸 시스템 알림 다음 판에 AX 가 알림을 다루게 될 때(SPEC-011 §7)"
+        },
+        "http_signature": "(principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "GET /api/me/badges",
+        "http_handler": "my_badges",
+        "screen_callers": [],
+        "operation": "my_badges",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "my_badges"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "사이드바 점 둘 — 화면 표시다(SPEC-011 §2.2).",
+          "alternative": "앱 셸(WORK-013 WP3-FE)이 사건 채널 resync 뒤 다시 읽는다.",
+          "reconsider_when": "알림 화면 · 셸 시스템 알림 다음 판에 AX 가 알림을 다루게 될 때(SPEC-011 §7)"
+        },
+        "http_signature": "(principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "GET /api/me/notification-settings",
+        "http_handler": "notification_settings",
+        "screen_callers": [],
+        "operation": "notification_settings",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "notification_settings"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "설정의 알림 탭 — 사람이 스위치를 보는 화면이다(SPEC-011 §4.4).",
+          "alternative": "설정 화면(WORK-013 WP3-FE)이 부른다.",
+          "reconsider_when": "알림 화면 · 셸 시스템 알림 다음 판에 AX 가 알림을 다루게 될 때(SPEC-011 §7)"
+        },
+        "http_signature": "(principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "PUT /api/me/notification-settings",
+        "http_handler": "save_notification_settings",
+        "screen_callers": [],
+        "operation": "save_notification_settings",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "http_application_calls": [
+          "save_notification_settings"
+        ],
+        "exclusion": {
+          "decision": "E2",
+          "reason": "설정 스위치 저장 — 사람의 화면 조작이다(SPEC-011 §4.4).",
+          "alternative": "설정 화면이 부른다. 회차(version)가 다르면 409 로 다시 읽는다.",
+          "reconsider_when": "알림 화면 · 셸 시스템 알림 다음 판에 AX 가 알림을 다루게 될 때(SPEC-011 §7)"
+        },
+        "http_signature": "(body: dict[str, Any], principal: Principal) -> dict[str, object]"
+      },
+      {
+        "http": "GET /api/events/stream",
+        "http_handler": "events_stream",
+        "screen_callers": [],
+        "operation": "events_stream",
+        "owning_calls": [],
+        "baseline_tools": [],
+        "target_tools": [],
+        "policy": "E2",
+        "status": "excluded",
+        "exclusion": {
+          "decision": "E2",
+          "reason": "사용자 사건 채널 SSE — 화면 전역 연결 하나다(SPEC-011 §4.1). 명령도 조회 결과도 아니다.",
+          "alternative": "앱 전역 EventSource(WORK-013 WP1-FE)가 연다. 옛 WS /api/inbox/stream 은 되돌림 여지로 남는다.",
+          "reconsider_when": "알림 화면 · 셸 시스템 알림 다음 판에 AX 가 알림을 다루게 될 때(SPEC-011 §7)"
+        },
+        "http_signature": "(request: Request) -> StreamingResponse | JSONResponse"
       }
     ],
     "status": "verified",

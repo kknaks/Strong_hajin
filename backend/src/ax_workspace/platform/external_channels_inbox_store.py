@@ -116,7 +116,8 @@ class SqlAlchemyInboxStore:
         if condition is not None:
             statement = statement.where(condition)
         if unread_only:
-            statement = statement.where(~self._mail_read_exists(member_id))
+            # 내가 보낸 메일(`from_me = true`)은 안 읽음이 아니다(SPEC-008 v0.7.0 §4.4 · 검수 F-2 ③).
+            statement = statement.where(~self._mail_read_exists(member_id), _not_mine())
         return list(self._session.scalars(statement.order_by(M.sent_at.desc(), M.id.desc()).limit(limit)))
 
     @staticmethod
@@ -131,7 +132,8 @@ class SqlAlchemyInboxStore:
         return int(
             self._session.scalar(
                 select(func.count(M.id)).where(
-                    M.integration_id.in_(list(integration_ids)), M.room_id.is_(None), ~self._mail_read_exists(member_id)
+                    M.integration_id.in_(list(integration_ids)), M.room_id.is_(None), ~self._mail_read_exists(member_id),
+                    _not_mine(),
                 )
             )
             or 0
@@ -158,6 +160,32 @@ class SqlAlchemyInboxStore:
             .group_by(ExternalAttachmentRecord.message_id)
         )
         return {message_id: int(count) for message_id, count in rows}
+
+    def has_unread(self, member_id: str) -> bool:
+        """메시지함에 안 읽은 것이 **하나라도** 있나 — 사이드바 점(SPEC-011 §2.2 · 검수 W-3). 레일 숫자와 같은 규칙을
+        `EXISTS` 하나로 묻는다: 내 활성 연동의 메일 가운데 읽음 표지가 없는 것 · 내 방의 본문 줄 가운데 방 읽음 지점 뒤의 것 —
+        둘 다 내가 보낸 줄(`from_me = true`)은 빼고(`_not_mine`)."""
+        I, R, S = ExternalIntegrationRecord, ExternalRoomRecord, ExternalReadStateRecord
+        mine = select(I.id).where(I.member_id == member_id, I.removed_at.is_(None))
+        mail = (
+            select(M.id)
+            .join(I, I.id == M.integration_id)
+            .where(I.member_id == member_id, I.removed_at.is_(None), I.kind == "mail", M.room_id.is_(None))
+            .where(~self._mail_read_exists(member_id), _not_mine())
+        )
+        read_point = (
+            select(S.read_up_to_at)
+            .where(S.member_id == member_id, S.room_id == M.room_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+        room = (
+            select(M.id)
+            .join(R, R.id == M.room_id)
+            .where(R.integration_id.in_(mine), R.removed_at.is_(None), _top_level(), _not_mine())
+            .where(or_(read_point.is_(None), M.sent_at > read_point))
+        )
+        return bool(self._session.scalar(select(or_(mail.exists(), room.exists()))))
 
     def room_cards(self, member_id: str, integrations: Sequence[Any]) -> list[dict[str, Any]]:
         """고른 방마다 마지막 시각과 «나의» 미읽음 수. 내 연동의 내 계정이 쓴 줄(슬랙 `user_id`)은 미읽음에 넣지 않는다."""
@@ -194,9 +222,9 @@ class SqlAlchemyInboxStore:
             state = reads.get(room.id)
             if state is not None and state.read_up_to_at is not None:
                 statement = statement.where(M.sent_at > state.read_up_to_at)
-            me = (integration.account_meta or {}).get("user_id")
-            if me:
-                statement = statement.where(or_(M.author.is_(None), M.author != me))
+            # 「내 줄 빼기」 = 저장 때 판정한 `from_me`(SPEC-008 v0.7.0 §4.4 · D-34) — 예전엔 이름으로 덮인 `author` 를
+            # 슬랙 id 와 견줘 한 줄도 못 뺐다. `null`(모름)은 센다.
+            statement = statement.where(_not_mine())
             unread = int(self._session.scalar(statement) or 0) if room.id in last else 0
             cards.append({"room": room, "integration": integration, "last_at": last.get(room.id), "unread_count": unread})
         return cards
@@ -554,3 +582,8 @@ class SqlAlchemyProfileSettingsStore:
             statement = statement.where(AuthSessionRecord.id != keep_session_id)
         result = self._session.execute(statement.values(revoked_at=at).execution_options(synchronize_session="fetch"))
         return int(result.rowcount or 0)
+
+
+def _not_mine():
+    """안 읽음에 세는 줄 — 내가 보낸 줄(`from_me = true`)이 아닌 것. `null`(모름)은 센다(SPEC-011 §4.3-6)."""
+    return or_(M.from_me.is_(None), M.from_me.is_(False))

@@ -195,3 +195,18 @@
 .scax-set-row__mark--kakao-direct,.scax-set-row__mark--kakao-group{background:var(--scax-color-warning-soft);color:var(--scax-color-warning-ink)}
 .scax-set-applink{display:inline-flex;align-items:center;gap:var(--scax-space-100);flex:0 0 auto;height:var(--scax-control-height-md);padding:0 var(--scax-space-400);border-radius:var(--scax-radius-md);background:var(--scax-color-accent);font-size:var(--scax-text-label1-size);font-weight:var(--scax-fw-semibold);color:var(--scax-color-ink-inverse);text-decoration:none}
 .scax-set-applink:hover{background:var(--scax-color-accent-strong)}
+
+/* ===== 알림 설정 (WORK-013 WP3-FE · SPEC-011 §2.3) — 시안 `handoff/settings/css/settings.css` 「알림 설정」 블록 그대로 ===== */
+.scax-set-notify__master{padding-top:var(--scax-space-300);padding-bottom:var(--scax-space-300)}
+.scax-set-notify__head{align-items:center}
+.scax-set-notify__head .scax-switch{margin-left:var(--scax-space-100)}
+.scax-set-notify__list{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.scax-set-notify__list>li+li{border-top:1px solid var(--scax-color-line-weak)}
+.scax-set-notify__item{display:flex;align-items:center;gap:var(--scax-space-300);min-height:52px;padding:var(--scax-space-200) 0;cursor:pointer}
+.scax-set-notify__item--off{cursor:default}
+.scax-set-notify__list--off{opacity:.45}
+/* 전체 꺼짐 — 테마 머리(스위치 포함)까지 흐려지고 누를 수 없다 */
+.scax-set-notify--off .scax-set-notify__head{opacity:.45}
+.scax-set-notify--off .scax-set-notify__head .scax-switch{pointer-events:none;cursor:default}
+/* 시안에 없는 것 하나 — 저장 중인 그 칸은 잠근다(§2.3 「저장 중 그 칸만 잠근다」). 색은 그대로 두고 손만 막는다 */
+.scax-switch:disabled{cursor:default}

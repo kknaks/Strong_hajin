@@ -139,11 +139,14 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 | EVIDENCE | `evidence` | `POST /api/work-requests/{id}/evidence`(요청자·담당자만)로 현재 Submission에 채택. `evidence_role`은 담당자면 decision_basis, 요청자면 supporting. `fixed_snapshot_ref`=attachment sha256, `mutable_source=false`. 채택은 **아직 판단받는 중인 최신 회차에만** 허용한다: 수락·거절·조정·철회로 그 회차가 끝나면 거절하고 재상신 뒤 새 회차에 추가하게 한다. 재상신은 직전 회차의 Evidence를 append-only로 복제한다 — 파일이 아니라 채택만 복제하므로 같은 `attachment_id`·`fixed_snapshot_ref`·`evidence_role`을 참조하되 새 row identity와 `adopted_at`을 가지며, 이후 두 회차의 근거 집합은 독립적으로 자란다. timeline `evidence[]`로 회차별 노출, 참여자(cc 포함)는 `GET /api/work-requests/{id}/attachments/{attachment_id}/content`로 열람. **신규 `assigned` 요청에는 회차가 없어 채택 대상 자체가 없다** — `POST /api/work-requests/{id}/evidence` 는 `store_file` 앞에서 422 로 끝나고 첨부도 감사 줄도 남기지 않는다. 그 요청에서 선 업무에는 자료 기능이 그대로 있어 **담당자가** `POST /api/tasks/{id}/materials`(파일)·`/materials/links`(링크)·`/materials/references`(다른 자원)로 붙인다 — `task.self_manage` 와 그 업무의 활성 담당이 조건이라 보낸 사람은 이 길로 붙이지 못한다. 논의에 파일을 다는 길은 `POST /api/work-requests/{id}/comments/{comment_id}/attachments` 로 신규 요청에서도 그대로 산다 |
 | ACTIVITY_EVENT | `activity_events` | append-only, `safe_summary`·before/after ref·actor·reason. Task 생성/상태/수정/자료/배정/배정 수락·거절, WorkRequest 생성/판단/재상신이 기록 |
 | (기존) | `task_activities`, `work_request_audit_events`, `action_item_audit_events`, `report_audit_events` | 첫 slice의 module 감사 로그. `task_activities`는 일일보고 source_refs가 참조하므로 유지 |
+| (알림 · SPEC-011) | `notifications` | 받는 사람 한 명의 알림 한 줄. **사건 자리가 생성기(`modules/notification_events.py`)를 같은 트랜잭션에서 부른다** — 원천 멱등 `uq_notification_recipient_source`(받는 사람 · `source_kind` · `source_id`). 칸: `kind`(19 종류) · `theme` · `item`(설정 항목 id) · `relation`(꼬리표) · `failure` · `actor`(JSON — 만들 때의 행위자) · `resource_type/id/title`(대상 — 만들 때의 제목) · `data` · `target`(누르면 갈 곳 — 읽을 때 인가로 null) · `coalesce_key`(슬랙 채널 합침) · `seq`(전역 시퀀스 `notification_seq` — SSE 사건 id · 이어 받기) · `updated_at` · `read_at`. `actor_member_id` 는 옛 NOT NULL 칸이라 회원 행위자가 없으면 받는 사람을 채운다(API 는 `actor` 만 읽는다). 지우는 규칙 없음 |
+| (알림 설정 · SPEC-011 §4.4) | `notification_settings` | 회원마다 한 벌 — `settings`(JSON: 전체 · 테마 셋 · 항목 16) · `version`(PUT 의 낙관적 잠금 → 409) · `updated_at`. 행이 없으면 기본값(시안 `on` — 업무 댓글만 끔). 생성기가 사건마다 읽는다(캐시 없음) |
 
 ## ERD 밖 테이블
 
 - `auth_sessions`: 로그인 세션(HttpOnly cookie).
 - **외부 채널 연동** (SPEC-008 · WORK-011 BE-1 · DEC-008 D-24~D-27·D-46) — 연동이 aggregate 이고 **연결한 회원 것**이다. 남의 연동·방·기기 토큰은 404 로 가린다. 지우지 않는다: 연결 해제·방 빼기·카톡 계정 reset 은 `removed_at` 소프트 딜리트뿐이고 같은 주소·워크스페이스·방을 다시 고르면 **그 행이 되살아난다**(물리 삭제 없음 · 보존 기한 없음). 같은 방을 동료 둘이 골라도 사람마다 한 벌씩 저장하므로 중복 방지 키가 전부 **연동 범위**다. 모듈은 `modules/external_channels/`(BE-1 `domain`·`events`·`application` / BE-2 `sync` / BE-3 `inbox`·`kakao_ingest`).
+- **「내가 보낸 줄」 `external_messages.from_me`** (SPEC-011 §4.3-6 · SPEC-008 v0.7.0 §4.4) — 저장할 때 한 번 판정한다: 슬랙 `raw.user` == 연동 `account_meta.user_id` · 메일 From == 연동 계정 주소 · 카톡 = 수집기 표지. `null` = 모름 = 「내 것 아님」. 안 읽음 셈(방 카드 · 메일 넷 · 사이드바 점)과 알림 원칙 ① 이 이 칸만 본다. 기존 줄은 `migrations/manual/2026-10-08-notification-from-me-backfill.sql`(두 걸음 · 인자)이 채운다.
   - `external_integrations`: 회원 × `kind`(mail·slack·kakao) × `account_key`(메일 주소·슬랙 team id·카톡 `kakao`) unique. `status` connected·backfilling·disconnected·removed. 토큰은 `AX_EXTERNAL_TOKEN_ENCRYPTION_KEY` Fernet 으로 잠근 값만(`*_token_encrypted`). 동기화 상태 칸(`sync_cursor`=Gmail historyId · `watch_expires_at` · `backfill_*` · `synced_count`·`last_synced_at` · `disconnected_*`)과 카톡 수집기 칸(`selected_rooms_version` · `account_reset_at` · `collector_status`/`collector_reported_at` — 90초 무보고 = 앱 꺼짐)을 함께 갖는다.
   - `external_rooms`: 고른 방(슬랙·카톡 모두 서버 정본). 슬랙 방은 **그 회원 토큰으로 접근이 확인된 것**(`room_meta.verified_at`)만 받고 팬아웃 대상이 된다 — 접근을 잃으면 `paused` + `room_meta.access_lost`. `room_meta.users` 는 보낸 사람·멘션 이름표. `id` = API `room_id`, `external_id` = 슬랙 channel·카톡 chatId, `(integration_id, external_id)` unique. 저장 `status` 는 backfilling·live 이고 `paused` 는 카톡 수집기 상태에서 읽을 때 파생한다. `last_message_key`(슬랙 ts·카톡 logId)가 마지막 반영 지점이다.
   - `external_messages`: 원문 그대로(`raw` JSON · 메일 렌더용 소독본 `safe_html` 은 별개 칸). 중복 키 `(integration_id, container_key, external_key)` — 슬랙 (연동, channel, ts) · Gmail (연동, '', message id) · 카톡 (연동, chatId, logId).
@@ -192,6 +195,8 @@ Projections: `GET /api/work-requests/{id}/timeline`(request_timeline: 회차·�
 - canonical role과 audit(누가 언제 무엇을 했는지)은 그대로 보존한다. 관리자·감사 화면에서만 역할을 명시적으로 드러낸다.
 
 ## 완료·검수·알림 — 결정됨, 아직 구현하지 않음
+
+> **알림은 2026-10-08 WORK-013(SPEC-011)으로 구현됐다** — 다만 아래 「알림」 문단의 모양(`activity_events` 위 파생 projection · `resource_relationships` 에서 대상자 파생)과 다르다: 알림은 **사건 자리가 관련자를 넘겨 생성기가 `notifications` 행을 쓰는** 저장 투영이고(같은 트랜잭션 · 원천 멱등), 대상자는 사건 × 관계 표(SPEC-011 §4.2)가 정한다. 「알림은 판단이 아니다(ActionItem 을 만들지 않는다)」는 그대로다.
 
 2026-09-05 설계 논의에서 확정한 경계다. 코드에는 아직 없고, 착수 전에 정본 Work Brief의 Scope에 반영해야 한다.
 

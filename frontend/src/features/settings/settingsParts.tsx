@@ -23,6 +23,27 @@ export function Card({ title, legend, end, note, children }: { title: string; le
   );
 }
 
+/**
+ * 켬/끔 스위치 — 시안 `settings.v1.jsx:70-75` 모양(`<button role="switch" aria-checked>` + `__knob`) · CSS `.scax-switch*`(40×22).
+ * **DS 에 Toggle 부품이 없다**(`ds/FormControls.tsx:9`) — 쓰는 곳이 설정 알림 하나라 설정 부품으로 둔다(SPEC-011 §2.3).
+ * DS 문서 Toggle 규격(36×20)과 크기가 다르다 — DS-gaps 후보로만 기록한다.
+ */
+export function Switch({ on, label, onToggle, disabled = false }: { on: boolean; label: string; onToggle: () => void; disabled?: boolean }) {
+  return (
+    <button
+      aria-checked={on}
+      aria-label={label}
+      className={`scax-switch${on ? " scax-switch--on" : ""}`}
+      disabled={disabled}
+      onClick={onToggle}
+      role="switch"
+      type="button"
+    >
+      <span className="scax-switch__knob" />
+    </button>
+  );
+}
+
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="scax-field">

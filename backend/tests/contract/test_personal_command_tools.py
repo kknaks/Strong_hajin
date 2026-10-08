@@ -19,9 +19,9 @@ def test_personal_command_effect_is_applied_once_after_confirmation(tmp_path, mo
         arguments = {'request': {'character_key': 'rabbit', 'expected_version': 0}}
         def state(): return application.my_organization_profile(application.authenticated_principal('jiho'))['assistant_character']
     elif tool == 'notification_mark_read':
-        [notification] = client.get('/api/notifications', headers=headers).json()
+        [notification] = client.get('/api/notifications', headers=headers).json()['items']
         arguments = {'notification_id': notification['notification_id']}
-        def state(): return client.get('/api/notifications', headers=headers).json()
+        def state(): return client.get('/api/notifications', headers=headers).json()['items']
     else:
         arguments = {'request_id': request['request_id'], 'body': '일정은 금요일로 확인했습니다.'}
         def state(): return client.get(f"/api/work-requests/{request['request_id']}/timeline", headers=headers).json()
@@ -54,29 +54,28 @@ def test_personal_command_effect_is_applied_once_after_confirmation(tmp_path, mo
         assert unchanged['state'] == request['state'] and unchanged['version'] == request['version']
 
 
-def test_notification_source_denial_is_hidden_but_owner_failure_is_not_empty_success(tmp_path, monkeypatch):
-    from ax_workspace.modules.notifications import NotificationNotFound
-    from ax_workspace.modules.work.requests import WorkRequestAccessDenied, WorkRequestApplication, WorkRequestError
+def test_notification_source_denial_keeps_the_row_without_a_target_but_owner_failure_is_not_empty_success(tmp_path, monkeypatch):
+    """읽기 인가 변경(SPEC-011 §4.5-2-4) — 원천을 못 보게 돼도 줄은 남고 `target` 만 null 이며 읽음도 된다.
+    예상 밖 소유 모듈 오류는 빈 성공으로 삼키지 않는다(옛 계약 그대로)."""
+    from ax_workspace.modules.work.application import TaskApplication
+    from ax_workspace.modules.work.requests import WorkRequestError
     client, application = _stack(tmp_path)
     created = client.post('/api/work-requests', headers={'X-Demo-Persona': 'mina'}, json={'title': '원본 권한 알림', 'assignee_id': 'jiho'})
     assert created.status_code == 201, created.text
     principal = application.authenticated_principal('jiho')
-    [notification] = application.list_notifications(principal)
-
-    def denied(*args, **kwargs):
-        raise WorkRequestAccessDenied('current read permission removed')
+    [notification] = application.list_notifications(principal)['items']
+    assert notification['target'] is not None
 
     with monkeypatch.context() as revoked:
-        revoked.setattr(WorkRequestApplication, 'get', denied)
-        assert application.list_notifications(principal) == []
-        with pytest.raises(NotificationNotFound):
-            application.mark_notification_read(principal, UUID(notification['notification_id']))
-    assert application.list_notifications(principal)[0]['read_at'] is None
+        revoked.setattr(TaskApplication, 'may_read_task', lambda *args, **kwargs: False)
+        [hidden] = application.list_notifications(principal)['items']
+        assert hidden['target'] is None and hidden['subject']['title'] == '원본 권한 알림'
+        assert application.mark_notification_read(principal, UUID(notification['notification_id']))['read_at'] is not None
 
     def failed(*args, **kwargs):
         raise WorkRequestError('owner projection unavailable')
 
     with monkeypatch.context() as unavailable:
-        unavailable.setattr(WorkRequestApplication, 'get', failed)
+        unavailable.setattr(TaskApplication, 'may_read_task', failed)
         with pytest.raises(WorkRequestError, match='unavailable'):
             application.list_notifications(principal)

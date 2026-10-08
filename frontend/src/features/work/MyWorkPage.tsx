@@ -92,6 +92,7 @@ import {
   type SentRow,
 } from "./WorkTables";
 import { chipCounts, isOpenRequest, isRequestOwner, isRequestRecordRequester, isRequestTask, matchesChip, myWorkRows, type WorkRow } from "./workRows";
+import { useViewDetail } from "../../lib/currentView";
 
 type MyWorkPageProps = {
   personaId: string;
@@ -241,6 +242,9 @@ export function MyWorkPage({
   const [generating, setGenerating] = useState(false);
   const [selectedTask, setSelectedTask] = useState<DirectTask | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<WorkRequest | null>(null);
+  /* OS 알림의 「보고 있으면 생략」(SPEC-011 §2.5 ①) — 지금 연 업무 · 요청 상세를 알린다 */
+  useViewDetail("task", selectedTask?.task_id);
+  useViewDetail("workRequest", selectedRequest?.request_id);
   const [requestDerivedTask, setRequestDerivedTask] = useState<DirectTask | null>(null);
   const [requestReadOnly, setRequestReadOnly] = useState(false);
   /**

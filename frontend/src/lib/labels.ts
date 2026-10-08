@@ -1,4 +1,14 @@
-import type { DerivedApproval, DerivedAssignment, DerivedProposal, MeetingStatus, TaskState, WorkRequest } from "./viewModels";
+import type {
+  DerivedApproval,
+  DerivedAssignment,
+  DerivedProposal,
+  MeetingStatus,
+  Notification,
+  NotificationTarget,
+  NotificationTheme,
+  TaskState,
+  WorkRequest,
+} from "./viewModels";
 
 export const taskStateLabel: Record<TaskState, string> = {
   open: "시작 전",
@@ -765,9 +775,8 @@ export function meetingAgendaSourceText(source: string | null): string {
  * 좌측 기둥 머리의 말 (시안 31). 부품(`shell/SideNav`)은 말을 모른다 — 호출부가 여기서 넘긴다.
  */
 export const shellNav = {
+  /** 알림 목록 화면으로 간다(WORK-013 WP3-FE · SPEC-011 §2.1) — 안 읽은 알림이 있으면 점이 선다(§2.2). */
   notifications: "알림",
-  /** 알림은 아직 갈 화면이 없다 — 자리는 시안대로 서되 **실제로 눌리지 않는다**. */
-  notificationsDisabledHint: "알림은 아직 준비 중입니다.",
   settings: "설정",
   signOut: "로그아웃",
 } as const;
@@ -1059,8 +1068,8 @@ export const meetingScreen = {
   shareName: "이름",
   shareUnit: "부서",
   unshareTitle: "삭제한 사람은 이 회의록을 볼 수 없습니다. 삭제할까요?",
-  // 시안(회의실.dc.html)은 「공유했습니다. 알림을 보냈습니다.」였으나 이 제품은 알림을 보내지 않는다
-  // (D10 · SPEC §3.2-5) — 하지 않는 일을 말하지 않는다.
+  // 시안(회의실.dc.html)은 「공유했습니다. 알림을 보냈습니다.」였다. 공유받은 사람에게 알림이 서는지는 그 사람의 알림 설정이
+  // 정한다(SPEC-011 M12 · §4.3-2) — 보낸 사람이 알 수 없는 일을 말하지 않는다.
   shared: "공유했습니다.",
 } as const;
 
@@ -1605,8 +1614,6 @@ export const settingsScreen = {
   rail: "설정 메뉴",
   groups: { link: "연동", account: "계정" },
   menu: { mail: "메일 연동", slack: "슬랙 연동", kakao: "카카오톡 연동", account: "프로필 설정", notify: "알림 설정" },
-  /** 알림 설정은 이번 범위 밖이다(D-37) — 메뉴 자리만 서고 눌리지 않는다. */
-  notifyOutOfScope: "알림 설정은 아직 준비 중입니다.",
   loadError: "설정을 불러오지 못했습니다",
   retry: "다시 시도",
   retryDesc: "잠시 후 다시 시도해 주세요.",
@@ -1782,3 +1789,445 @@ export const settingsScreen = {
   passwordDone: "비밀번호를 바꿨습니다. 다른 기기의 로그인은 해제됐습니다.",
   passwordFailed: "비밀번호를 바꾸지 못했습니다.",
 } as const;
+
+/* ===== 알림 (WORK-013 WP3-FE · SPEC-011 §2.1~§2.3 · §4.2 · §4.4) — 문구는 확정 시안 `handoff/alerts` · `handoff/settings` 그대로 ===== */
+
+export const notificationThemeLabel: Record<NotificationTheme, string> = { work: "업무", message: "메시지", meeting: "회의" };
+
+/** 나와의 관계 꼬리표 — 시안 `RELATIONS` 16. 메시지 테마는 출처를 앞에 붙여 「메일 · 참조」처럼 읽힌다. */
+export const notificationRelationLabel: Record<string, string> = {
+  assignee: "담당",
+  requester: "요청자",
+  assigner: "배정자",
+  cc: "참조(CC)",
+  to: "메일 · 받는 사람",
+  "mail-cc": "메일 · 참조",
+  "mail-other": "메일",
+  dm: "슬랙 · DM",
+  mention: "슬랙 · 멘션",
+  channel: "슬랙 · 채널",
+  "kakao-direct": "카톡 · 1:1",
+  "kakao-group": "카톡 · 단체방",
+  integration: "내 연동",
+  owner: "소유자",
+  attendee: "참석자",
+  shared: "공유받음",
+};
+
+export type NotificationDay = "today" | "yesterday" | "week" | "earlier";
+
+export const notificationScreen = {
+  title: "알림",
+  unread: "안 읽음",
+  readAll: "모두 읽음",
+  filterAria: "알림 분류",
+  filters: [
+    { value: "all", label: "전체" },
+    { value: "work", label: "업무" },
+    { value: "message", label: "메시지" },
+    { value: "meeting", label: "회의" },
+  ] as const,
+  days: [
+    { key: "today", label: "오늘" },
+    { key: "yesterday", label: "어제" },
+    { key: "week", label: "이번 주" },
+    { key: "earlier", label: "이전" },
+  ] as ReadonlyArray<{ key: NotificationDay; label: string }>,
+  loading: "알림을 불러오는 중",
+  loadError: "알림을 불러오지 못했습니다",
+  retryDesc: "잠시 후 다시 시도해 주세요.",
+  retry: "다시 시도",
+  emptyTitle: "받은 알림이 없습니다",
+  emptyDesc: "나에게 온 업무·메시지·회의 소식이 생기면 여기에 쌓입니다.",
+  /** 시안 `EMPTY_BY_FILTER` */
+  emptyByTheme: {
+    work: { title: "업무 알림이 없습니다", desc: "업무 요청·배정·완료 보고처럼 나와 관련된 업무 소식이 여기에 쌓입니다." },
+    message: { title: "메시지 알림이 없습니다", desc: "나에게 온 메일·슬랙·카톡과 연동 끊김 소식이 여기에 쌓입니다." },
+    meeting: { title: "회의 알림이 없습니다", desc: "회의 초대·변경·회의록 소식이 여기에 쌓입니다." },
+  } as Record<NotificationTheme, { title: string; desc: string }>,
+  /** 이어 불러오기 실패(D-36) — 목록 끝 한 줄 */
+  moreError: "더 불러오지 못했습니다",
+  unreadDot: "안 읽음",
+  /** `target: null` — 지금 열 수 없는 자원(§4.5-4) */
+  cannotOpen: "열 수 없는 항목입니다",
+  readError: "알림을 읽음으로 바꾸지 못했습니다.",
+  readAllError: "알림을 모두 읽음으로 바꾸지 못했습니다.",
+  someone: "누군가",
+} as const;
+
+/** 설정 → 알림 설정(§2.3 · §4.4 — 시안 `NOTIFY_GROUPS` 그대로 · design-change-3·4 반영). */
+export const notifySettingsCopy = {
+  intro: "받을 알림을 고른다. 앱이 켜져 있으면 시스템 알림으로도 뜬다.",
+  master: "알림 받기",
+  masterOn: "아래에서 고른 알림을 받는다",
+  masterOff: "알림을 하나도 받지 않는다 — 아래 고른 값은 그대로 남는다",
+  themeSwitch: (title: string) => `${title} 알림`,
+  picked: (total: number, on: number) => `${total}개 중 ${on}개`,
+  themeOff: "꺼짐",
+  saveError: "알림 설정을 저장하지 못했습니다",
+  loadError: "알림 설정을 불러오지 못했습니다",
+  groups: [
+    {
+      id: "work",
+      title: "업무",
+      items: [
+        { id: "request", label: "업무 요청을 받았을 때", desc: "누군가 나에게 업무를 요청하면" },
+        { id: "assign", label: "업무가 배정·넘겨졌을 때", desc: "직접 배정되거나 다른 사람이 담당을 넘기면" },
+        { id: "answer", label: "내가 보낸 요청·배정·제안에 답이 왔을 때", desc: "받는 사람이 수락·거절하거나 제안에 답하면" },
+        { id: "report", label: "완료 보고를 받았을 때", desc: "내가 요청한 업무의 담당이 완료를 보고하면" },
+        { id: "rework", label: "보완 요청을 받았을 때", desc: "내가 보고한 업무에 요청자가 보완을 요청하면" },
+        { id: "change", label: "기한·조건이 바뀌었을 때", desc: "내 업무의 기한·조건이 바뀌거나 취소·재개되면" },
+        { id: "comment", label: "내 업무에 댓글", desc: "내가 담당·요청·참조인 업무에 댓글이 달리면" },
+        { id: "unblock", label: "선행 업무가 끝났을 때", desc: "기다리던 앞 업무가 끝나 내 업무를 시작할 수 있으면" },
+      ],
+    },
+    {
+      id: "message",
+      title: "메시지",
+      note: "연동이 끊기면 해당 채널 알림으로 알려 준다",
+      items: [
+        { id: "mail", label: "메일", desc: "연동한 메일 계정에 새 메일이 오면 (받는 사람·참조 모두)" },
+        { id: "slack", label: "슬랙", desc: "수집 중인 DM·멘션·채널에 새 메시지가 오면" },
+        { id: "kakao", label: "카톡", desc: "수집 중인 1:1·단체방에 새 대화가 오면" },
+      ],
+    },
+    {
+      id: "meeting",
+      title: "회의",
+      items: [
+        { id: "invite", label: "회의에 초대됐을 때", desc: "나를 참석자로 넣은 회의가 생기면" },
+        { id: "change", label: "회의가 바뀌거나 취소됐을 때", desc: "내가 참석하는 회의의 시간·장소가 바뀌거나 취소되면" },
+        { id: "minutes", label: "회의록 정리 완료", desc: "에이전트가 회의록 정리를 마치면" },
+        { id: "minutes-fail", label: "회의록 생성 실패", desc: "회의록을 만들지 못하면" },
+        { id: "share", label: "회의를 공유받았을 때", desc: "다른 사람이 회의를 나에게 공유하면" },
+      ],
+    },
+  ] as ReadonlyArray<{ id: NotificationTheme; title: string; note?: string; items: ReadonlyArray<{ id: string; label: string; desc: string }> }>,
+} as const;
+
+/* ── 알림 문장 — 목록과 OS 알림(WP4)이 같은 함수를 쓴다(SPEC-011 §2.1 · §2.5) ── */
+
+/** 문장 조각 — `{b}` = 누가(굵게) · `{q}` = 무엇을(‘ ’ 로 감싼 이름) · 문자열 = 나머지(시안 `Sentence`). */
+export type NotificationPart = string | { b: string } | { q: string };
+
+export type NotificationDescription = {
+  parts: NotificationPart[];
+  /** 보조 한 줄 — 있을 때만. OS 알림에는 싣지 않는다. */
+  sub: string | null;
+  /** 가는 곳 글자(「메시지함 · 슬랙」) — 아래 줄 끝. */
+  destination: string;
+  /** OS 알림 제목 — 테마 이름 + 꼬리표(「업무 · 담당」 · §2.5). */
+  title: string;
+  /** 문장을 맨 글자로 — OS 알림 본문 · 접근성 이름. */
+  text: string;
+};
+
+const SEOUL = "Asia/Seoul";
+const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+
+function seoulParts(date: Date): { y: number; m: number; d: number; wd: number; hh: string; mm: string } {
+  const pieces = new Intl.DateTimeFormat("en-US", {
+    timeZone: SEOUL,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type: string) => pieces.find((piece) => piece.type === type)?.value ?? "";
+  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(get("weekday"));
+  return { y: Number(get("year")), m: Number(get("month")), d: Number(get("day")), wd, hh: get("hour"), mm: get("minute") };
+}
+
+/** 서울 날짜의 «일 번호» — 날짜끼리 며칠 차이인지 셀 때 쓴다. */
+function seoulDayNumber(date: Date): number {
+  const p = seoulParts(date);
+  return Math.floor(Date.UTC(p.y, p.m - 1, p.d) / 86_400_000);
+}
+
+/** 날짜 구분(오늘 · 어제 · 이번 주 · 이전) — **서울 기준**(§4.5-2 2). 「이번 주」 = 이번 주 월요일부터 그제까지. */
+export function notificationDay(iso: string, now: Date = new Date()): NotificationDay {
+  const at = new Date(iso);
+  const today = seoulDayNumber(now);
+  const day = seoulDayNumber(at);
+  if (day >= today) return "today";
+  if (day === today - 1) return "yesterday";
+  const weekday = seoulParts(now).wd; // 0 = 일
+  const monday = today - ((weekday + 6) % 7);
+  return day >= monday ? "week" : "earlier";
+}
+
+/** 「10월 9일(금)」 */
+function koreanDate(date: Date): string {
+  const p = seoulParts(date);
+  return `${p.m}월 ${p.d}일(${WEEKDAYS[p.wd]})`;
+}
+
+/** 시각 글자 — 오늘이면 상대(「3분 전」 · 「2시간 전」), 어제 「어제 18:20」, 이번 주 「10월 5일(월) 17:30」, 이전 「9월 30일(수)」(시안). */
+export function notificationTime(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  const day = notificationDay(iso, now);
+  const p = seoulParts(at);
+  if (day === "today") {
+    const minutes = Math.max(0, Math.floor((now.getTime() - at.getTime()) / 60_000));
+    if (minutes < 1) return "방금";
+    if (minutes < 60) return `${minutes}분 전`;
+    return `${Math.floor(minutes / 60)}시간 전`;
+  }
+  if (day === "yesterday") return `어제 ${p.hh}:${p.mm}`;
+  if (day === "week") return `${koreanDate(at)} ${p.hh}:${p.mm}`;
+  return koreanDate(at);
+}
+
+/** 날짜(`YYYY-MM-DD`)나 시각(ISO)을 「10월 8일(목)」 으로 — 업무 기한 바뀜의 보조 줄. 날짜만 오면 서울 자정으로 읽는다. */
+function changeValue(value: unknown): string | null {
+  if (typeof value !== "string" || !value) return null;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00+09:00`) : new Date(value);
+  return Number.isNaN(date.getTime()) ? value : koreanDate(date);
+}
+
+function hhmm(date: Date): string {
+  const p = seoulParts(date);
+  return `${p.hh}:${p.mm}`;
+}
+
+/** 회의 일정 객체(`{starts_at, ends_at, place}`)를 읽는다 — 모르는 모양이면 빈 값(`known: false`). */
+function scheduleOf(value: unknown): { start: Date | null; end: Date | null; place: string | null; known: boolean } {
+  if (typeof value !== "object" || value === null) return { start: null, end: null, place: null, known: false };
+  const row = value as { starts_at?: unknown; ends_at?: unknown; place?: unknown };
+  const at = (raw: unknown) => {
+    if (typeof raw !== "string" || !raw) return null;
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  return { start: at(row.starts_at), end: at(row.ends_at), place: typeof row.place === "string" && row.place.trim() ? row.place.trim() : null, known: true };
+}
+
+/** 받침이 있으면 「이」, 없으면 「가」 — 「오지훈님이」 · 「인사팀이」 · 「하나가」. */
+function subjectParticle(word: string): string {
+  const last = word.trim().charCodeAt(word.trim().length - 1);
+  if (last >= 0xac00 && last <= 0xd7a3) return (last - 0xac00) % 28 ? "이" : "가";
+  return "이";
+}
+
+const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+const count = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+const quoteLine = (value: unknown) => (text(value) ? `「${text(value)}」` : null);
+
+/** 누가 — 회원이면 「이름님」, 외부 발신자(메일·슬랙·카톡 이름)는 받은 이름 그대로, 없으면 「누군가」. */
+function actorName(actor: Notification["actor"]): string {
+  if (!actor) return notificationScreen.someone;
+  if ("display_name" in actor) return `${personName(actor.display_name)}님`;
+  return text(actor.external_name) ?? notificationScreen.someone;
+}
+
+const CHANNEL_NAME: Record<string, string> = { mail: "메일", slack: "슬랙", kakao: "카카오톡" };
+const CHANNEL_SHORT: Record<string, string> = { mail: "메일", slack: "슬랙", kakao: "카톡" };
+const LOST_SUB: Record<string, string> = {
+  mail: "새 메일을 받지 못한다 — 설정에서 다시 연결",
+  slack: "새 메시지를 받지 못한다 — 설정에서 다시 연결",
+  kakao: "새 대화를 받지 못한다 — 설정에서 다시 연결",
+};
+
+/** 가는 곳 글자 — `target` 이 있으면 그것으로, 없으면(열 수 없음) 종류로 짐작한다. */
+function destinationOf(n: Notification): string {
+  const target: NotificationTarget | null = n.target;
+  if (target?.surface === "work") return "업무";
+  if (target?.surface === "meetings") return "회의";
+  if (target?.surface === "notifications") return "알림";
+  if (target?.surface === "settings") return `설정 · ${CHANNEL_NAME[target.tab] ?? ""} 연동`;
+  if (target?.surface === "inbox") return `메시지함 · ${CHANNEL_SHORT[target.source] ?? ""}`;
+  if (n.kind === "message.integration_lost") return `설정 · ${CHANNEL_NAME[String(n.data.channel)] ?? ""} 연동`;
+  if (n.kind.startsWith("message.")) return `메시지함 · ${CHANNEL_SHORT[n.kind.slice("message.".length)] ?? ""}`;
+  return notificationThemeLabel[n.theme] ?? "";
+}
+
+/**
+ * 알림 한 줄의 문장 · 보조 줄 · 가는 곳 — `kind` · `data` 로 만든다(SPEC-011 §4.2-1 「문장 모양」 · 시안 `alerts/js/data.js` 의 짜임).
+ * 서버는 종류와 값만 준다. **OS 알림(WP4)도 이 함수**의 `title` · `text` 를 쓴다.
+ */
+export function describeNotification(n: Notification): NotificationDescription {
+  const who = actorName(n.actor);
+  const b = { b: who };
+  const by = subjectParticle(who);
+  const title = text(n.subject?.title) ?? "";
+  const q = { q: title };
+  const d = n.data ?? {};
+  let parts: NotificationPart[];
+  let sub: string | null = null;
+
+  switch (n.kind) {
+    case "work.request_received":
+      parts = [b, `${by} `, q, d.resubmitted ? " 업무를 다시 요청했습니다" : " 업무를 요청했습니다"];
+      break;
+    case "work.request_answered": {
+      const tail = d.answer === "rejected" ? " 업무를 거절했습니다" : d.answer === "negotiated" ? " 업무에 조건을 제시했습니다" : " 업무를 수락했습니다";
+      parts = [b, `${by} 내가 요청한 `, q, tail];
+      break;
+    }
+    case "work.assignment_answered":
+      parts = [b, `${by} 내가 배정한 `, q, ` 업무의 담당을 ${d.answer === "rejected" ? "거절했습니다" : "수락했습니다"}`];
+      break;
+    case "work.assigned":
+      if (d.mode === "displaced") {
+        const next = text(d.new_assignee_name);
+        parts = next ? [q, " 업무의 담당이 ", { b: `${personName(next)}님` }, "으로 바뀝니다"] : [q, " 업무의 담당이 바뀝니다"];
+      } else {
+        const verb = d.mode === "handed_over" ? " 업무를 나에게 넘겼습니다" : d.mode === "change_proposed" ? " 업무의 담당 변경을 제안했습니다" : " 업무를 나에게 배정했습니다";
+        parts = [b, `${by} `, q, verb];
+      }
+      break;
+    case "work.changed": {
+      const tail: Record<string, string> = {
+        amended: " 업무 요청을 수정했습니다",
+        withdrawn: " 업무 요청을 철회했습니다",
+        due_changed: " 업무의 기한을 바꿨습니다",
+        start_changed: " 업무의 시작일을 바꿨습니다",
+        cancelled: " 업무를 취소했습니다",
+        reopened: " 업무를 다시 열었습니다",
+        condition_proposed: " 업무의 조건 변경을 제안했습니다",
+        cancel_proposed: " 업무의 취소를 제안했습니다",
+      };
+      parts = [b, `${by} `, q, tail[String(d.change)] ?? " 업무를 바꿨습니다"];
+      const before = changeValue(d.before);
+      const after = changeValue(d.after);
+      if (before || after) sub = `${before ?? "없음"} → ${after ?? "없음"}`;
+      break;
+    }
+    case "work.proposal_answered": {
+      const tail: Record<string, string> = {
+        agreed: " 업무의 제안에 동의했습니다",
+        declined: " 업무의 제안을 거절했습니다",
+        agreement_cancelled: " 업무를 합의대로 취소했습니다",
+        agreement_changed: " 업무의 조건을 합의대로 바꿨습니다",
+      };
+      parts = [b, `${by} `, q, tail[String(d.answer)] ?? " 업무의 제안에 답했습니다"];
+      break;
+    }
+    case "work.completion_reported":
+      parts = [b, `${by} 내가 요청한 `, q, " 업무 완료를 보고했습니다"];
+      sub = "확인해 주세요 — 승인하거나 보완을 요청한다";
+      break;
+    case "work.rework_requested":
+      parts = [b, `${by} `, q, " 에 보완을 요청했습니다"];
+      sub = quoteLine(d.comment);
+      break;
+    case "work.predecessor_released":
+      parts = [{ q: text(d.predecessor_title) ?? "" }, " 업무가 끝나 ", q, " 업무를 시작할 수 있습니다"];
+      sub = n.actor ? `선행 업무 완료 · ${who}` : "선행 업무 완료";
+      break;
+    case "work.commented":
+      parts = [b, `${by} `, q, " 에 댓글을 남겼습니다"];
+      sub = quoteLine(d.excerpt);
+      break;
+    case "message.mail": {
+      parts = [b, `${by} 메일 `, { q: text(d.subject) ?? title }, " 을 보냈습니다"];
+      const bits: string[] = [];
+      const attachments = count(d.attachment_count);
+      if (attachments) bits.push(`첨부 ${attachments}개`);
+      if (n.relation === "to" && text(d.account)) bits.push(`${text(d.account)} 로 받음`);
+      if (n.relation === "mail-cc") bits.push("나는 참조");
+      if (n.relation === "mail-other") bits.push("나는 받는 사람·참조에 없음");
+      sub = bits.length ? bits.join(" · ") : null;
+      break;
+    }
+    case "message.slack": {
+      const room = text(d.room_name) ?? title;
+      if (n.relation === "channel") {
+        parts = [{ q: room }, ` 에 새 메시지가 ${count(d.count) ?? 1}건 왔습니다`];
+        const senders = Array.isArray(d.senders) ? d.senders.map(text).filter((name): name is string => Boolean(name)) : [];
+        // 보낸 사람 수는 서버의 `sender_count` 가 있으면 그것(서버는 `senders` 를 앞 몇 명으로 자른다 · 검수 W-1), 없으면 목록 길이
+        const total = Math.max(count(d.sender_count) ?? 0, senders.length);
+        sub = senders.length ? `${senders.slice(0, 2).join(" · ")}${total > 2 ? ` 외 ${total - 2}명` : ""}` : null;
+      } else if (n.relation === "mention") {
+        parts = [b, `${by} `, { q: room }, " 에서 나를 멘션했습니다"];
+        sub = quoteLine(d.excerpt);
+      } else {
+        parts = [b, `${by} 슬랙 DM 을 보냈습니다`];
+        sub = quoteLine(d.excerpt);
+      }
+      break;
+    }
+    case "message.kakao": {
+      const room = text(d.room_name) ?? title;
+      parts = n.relation === "kakao-group" && room ? [b, `${by} `, { q: room }, " 에서 카카오톡 메시지를 보냈습니다"] : [b, `${by} 카카오톡 메시지를 보냈습니다`];
+      sub = quoteLine(d.excerpt);
+      break;
+    }
+    case "message.integration_lost": {
+      const channel = String(d.channel ?? "");
+      if (d.reason === "room_access_lost") {
+        parts = [{ q: text(d.room_name) ?? title }, " 에 더 접근할 수 없습니다"];
+        sub = "이 방의 새 메시지를 받지 못한다 — 설정에서 확인";
+      } else {
+        const account = text(d.account);
+        parts = account ? [`${CHANNEL_NAME[channel] ?? ""} 연동 `, { q: account }, " 의 연결이 끊겼습니다"] : [`${CHANNEL_NAME[channel] ?? ""} 연동의 연결이 끊겼습니다`];
+        sub = LOST_SUB[channel] ?? null;
+      }
+      break;
+    }
+    case "meeting.invited": {
+      parts = [b, `${by} `, q, " 회의에 초대했습니다"];
+      const starts = text(d.starts_at) ? new Date(String(d.starts_at)) : null;
+      const ends = text(d.ends_at) ? new Date(String(d.ends_at)) : null;
+      const when = starts && !Number.isNaN(starts.getTime()) ? `${koreanDate(starts)} ${hhmm(starts)}${ends && !Number.isNaN(ends.getTime()) ? ` – ${hhmm(ends)}` : ""}` : null;
+      sub = [when, text(d.place)].filter(Boolean).join(" · ") || null;
+      break;
+    }
+    case "meeting.changed":
+      if (d.change === "removed") parts = [q, " 회의에서 빠졌습니다"];
+      else if (d.change === "cancelled") parts = [q, " 회의가 취소됐습니다"];
+      else {
+        /* 서버는 바뀌기 전·후 일정을 객체로 준다 — `{starts_at, ends_at, place}`(M04 · `_schedule_data`). 시간이 바뀌면 시간 문장,
+           장소만 바뀌면 장소 문장, 둘 다면 시간 문장 + 보조 줄 끝에 새 장소 */
+        const before = scheduleOf(d.before);
+        const after = scheduleOf(d.after);
+        const timed = Boolean(before.start && after.start && (before.start.getTime() !== after.start.getTime() || before.end?.getTime() !== after.end?.getTime()));
+        const placed = (before.place ?? null) !== (after.place ?? null) && (before.known || after.known);
+        if (timed && before.start && after.start) {
+          parts = [b, `${by} `, q, " 회의 시간을 바꿨습니다"];
+          // 시작이 같고 끝만 바뀌면 「11:00–12:00 → 11:00–13:00」 — 시작만 보이면 「11:00 → 11:00」 이 된다
+          const range = (start: Date, end: Date | null) => (before.start!.getTime() === after.start!.getTime() && end ? `${hhmm(start)}–${hhmm(end)}` : hhmm(start));
+          const time =
+            seoulDayNumber(before.start) === seoulDayNumber(after.start)
+              ? `${koreanDate(before.start)} ${range(before.start, before.end)} → ${range(after.start, after.end)}`
+              : `${koreanDate(before.start)} ${hhmm(before.start)} → ${koreanDate(after.start)} ${hhmm(after.start)}`;
+          sub = placed ? `${time} · ${after.place ?? "장소 없음"}` : time;
+        } else if (placed) {
+          parts = [b, `${by} `, q, " 회의 장소를 바꿨습니다"];
+          sub = `${before.place ?? "장소 없음"} → ${after.place ?? "장소 없음"}`;
+        } else {
+          parts = [b, `${by} `, q, " 회의 정보를 바꿨습니다"];
+        }
+      }
+      break;
+    case "meeting.minutes_ready": {
+      parts = [q, " 회의록 정리가 끝났습니다"];
+      const agenda = count(d.agenda_count);
+      const actions = count(d.action_count);
+      sub = [agenda !== null ? `안건 ${agenda}` : null, actions !== null ? `할 일 ${actions}` : null].filter(Boolean).join(" · ") || null;
+      break;
+    }
+    case "meeting.minutes_failed":
+      parts = [q, " 회의록을 만들지 못했습니다"];
+      sub = "회의에서 다시 정리할 수 있다";
+      break;
+    case "meeting.shared":
+      parts = [b, `${by} `, q, " 회의를 공유했습니다"];
+      break;
+    default:
+      parts = title ? [q, " 에 새 소식이 있습니다"] : ["새 알림이 있습니다"];
+  }
+
+  const relation = notificationRelationLabel[n.relation];
+  const themeLabel = notificationThemeLabel[n.theme] ?? "";
+  return {
+    parts,
+    sub,
+    destination: destinationOf(n),
+    title: relation ? `${themeLabel} · ${relation}` : themeLabel,
+    text: parts.map((part) => (typeof part === "string" ? part : "b" in part ? part.b : `‘${part.q}’`)).join(""),
+  };
+}
