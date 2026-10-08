@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, String, Text, Time, Uuid, UniqueConstraint, create_engine, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Integer, JSON, Sequence, String, Text, Time, Uuid, UniqueConstraint, create_engine, text
 from sqlalchemy import text as sql_text  # `text` 를 열 이름으로 쓰는 클래스 안에서 부를 별칭
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -1296,6 +1296,13 @@ class ActivityEventRecord(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+#: 알림의 **사건 순번** — 서버 전역에서 커지기만 하는 수(SPEC-011 §4.1-3). 알림이 서거나 합쳐질 때마다 새 값을 받고,
+#: SSE `notification.upserted` 의 `id:` · 이어 받기(`Last-Event-ID` · `?last_event_id=`)의 기준이 된다. 회원마다 띄엄띄엄이다.
+#: PostgreSQL 은 이 시퀀스의 `nextval` 이고(`platform/notifications.py` `next_notification_seq`), sqlite(시험)는 시퀀스가
+#: 없어 그 표의 최댓값 + 1 이다. 운영 생성은 `migrations/manual/2026-10-08-notifications-v2.sql`.
+NOTIFICATION_SEQ = Sequence("notification_seq", metadata=Base.metadata)
+
+
 class NotificationRecord(Base):
     """A recipient projection of one canonical domain event; content is re-authorized before every read."""
 
@@ -1303,6 +1310,7 @@ class NotificationRecord(Base):
     __table_args__ = (
         UniqueConstraint("recipient_member_id", "source_kind", "source_id", name="uq_notification_recipient_source"),
         Index("ix_notifications_recipient_created", "recipient_member_id", "created_at"),
+        Index("ix_notifications_recipient_seq", "recipient_member_id", "seq"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -1318,6 +1326,37 @@ class NotificationRecord(Base):
     safe_summary: Mapped[str] = mapped_column(String(300), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 사건 순번(`NOTIFICATION_SEQ`) — 새로 서거나 합쳐질 때마다 바뀐다. 옛 행은 마이그레이션이 채운다(그 전엔 비어 있다).
+    seq: Mapped[int | None] = mapped_column(BigInteger)
+    #: 마지막으로 서거나 고쳐진 시각 — 이어 받기의 겹침 창(SPEC-011 §4.1-3-1)이 이 값으로 잰다.
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ── WP2-BE(SPEC-011 §4.2 · §4.5-2) — 옛 행은 마이그레이션이 채운다. 비어 있으면 읽는 쪽이 옛 종류 표로 푼다. ──
+    #: 테마 · 항목(§4.4 의 id) · 꼬리표(§4.2) · 붉은 표식.
+    theme: Mapped[str | None] = mapped_column(String(20))
+    item: Mapped[str | None] = mapped_column(String(30))
+    relation: Mapped[str | None] = mapped_column(String(30))
+    failure: Mapped[bool | None] = mapped_column(Boolean)
+    #: 만들 때의 행위자 — `{member_id, display_name}` · `{external_name}` · null(시스템). `actor_member_id` 는 옛 칸이라
+    #: NOT NULL 을 지키려고 회원 행위자가 없으면 받는 사람을 채운다 — 화면 · API 는 이 칸만 읽는다.
+    actor: Mapped[dict | None] = mapped_column(JSON)
+    #: kind 별 값(§4.2-1 — 합친 줄의 `count` · `senders` 포함).
+    data: Mapped[dict | None] = mapped_column(JSON)
+    #: 만들 때의 「누르면 갈 곳」(§4.5-2-3). 읽을 때 인가로 `null` 이 될 수 있다.
+    target: Mapped[dict | None] = mapped_column(JSON)
+    #: 슬랙 채널 합침 열쇠(`slack-channel:{room_id}` · §4.3-4) — 그 밖은 비어 있다.
+    coalesce_key: Mapped[str | None] = mapped_column(String(200))
+
+
+class NotificationSettingsRecord(Base):
+    """회원마다 한 벌의 알림 설정(SPEC-011 §4.4) — 전체 · 테마 셋 · 항목 16. 없으면 기본값(시안 `on`)."""
+
+    __tablename__ = "notification_settings"
+
+    member_id: Mapped[str] = mapped_column(ForeignKey("members.id"), primary_key=True)
+    #: `{enabled, themes: {work: {on, items: {…}}, message: …, meeting: …}}` — 상위를 꺼도 아래 값은 그대로 남는다(D-18).
+    settings: Mapped[dict] = mapped_column(JSON, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
 class CommentRecord(Base):
@@ -2187,6 +2226,9 @@ class ExternalMessageRecord(Base):
     author: Mapped[str | None] = mapped_column(String(500))
     preview: Mapped[str | None] = mapped_column(Text)
     raw: Mapped[dict] = mapped_column(JSON, nullable=False)
+    #: 「내가 보낸 줄」(SPEC-011 §4.3-6 · SPEC-008 v0.7.0 §4.4) — 저장할 때 채운다: 슬랙 `raw.user` == 연동 `account_meta.user_id` ·
+    #: 메일 From == 연동 계정 주소 · 카톡 = 수집기 표지. `null` = 모름 = 「내 것 아님」(알림을 만들고 안 읽음에 센다).
+    from_me: Mapped[bool | None] = mapped_column(Boolean)
     #: HTML 메일의 **렌더용 안전본**(소독본, F-3). 원문은 `raw` 에 그대로다.
     safe_html: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

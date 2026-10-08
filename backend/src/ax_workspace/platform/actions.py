@@ -1701,8 +1701,12 @@ class ActionPresenter:
             else:
                 self._text(fields, 'cancel', '취소 대상', '현재 처리 중인 응답을 취소합니다')
         elif kind == "notification.mark_read":
-            notification = next((row for row in self._services.notifications().list(principal) if row['notification_id'] == payload['notification_id']), None)
-            subject = notification['resource']['title'] if notification else '볼 수 없는 알림'
+            try:
+                notification = self._services.notifications().event_item(principal, UUID(str(payload['notification_id'])))
+            except ValueError:
+                notification = None
+            subject = ((notification or {}).get('subject') or {}).get('title') if notification else None
+            subject = subject or ('알림' if notification else '볼 수 없는 알림')
             self._text(fields, 'notification', '대상 알림', subject)
             obsolete = notification is None and action.state == 'pending'
         elif kind == "assistant.character.set":

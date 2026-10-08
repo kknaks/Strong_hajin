@@ -68,6 +68,20 @@ def test_the_meeting_stream_refuses_an_unauthenticated_handshake() -> None:
     assert with_persona.value.code == CLOSE_UNAUTHORIZED
 
 
+def test_production_registers_the_user_event_stream_and_it_needs_a_session() -> None:
+    """사용자 사건 채널 SSE(SPEC-011 §4.1) — 래퍼가 여는 앱 전역 연결 하나. 등록되어 있고, 세션 없이는 스트림 없이 401 JSON 이다.
+
+    WS 와 달리 SSE 는 HTTP 상태로 답한다(닫힘 코드가 아니다). 옛 메시지함 WS 도 되돌림 여지로 남는다(WORK-013 Rollback).
+    """
+    app = _production_app()
+    paths = _paths(app)
+    assert "/api/events/stream" in paths and "/api/inbox/stream" in paths
+    for headers in ({}, PERSONA):
+        response = TestClient(app).get("/api/events/stream", headers=headers)
+        assert response.status_code == 401
+        assert response.headers["content-type"].startswith("application/json")
+
+
 def test_health_stays_outside_the_profile_gate() -> None:
     """probe 가 쓰는 경로. 예전에도 게이트 밖이었고 지금도 그대로다."""
     assert TestClient(_production_app()).get("/health").json()["status"] == "ok"

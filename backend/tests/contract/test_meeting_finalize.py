@@ -1773,3 +1773,40 @@ def test_the_final_merge_clears_the_candidates_the_meeting_was_still_making(tmp_
         json={"assignee_id": "jiho"},
     )
     assert promoted.status_code == 201, promoted.text
+
+
+# ── 알림 M09 · M10 · M11 (SPEC-011 §4.2-4 · WORK-013 WP2-BE) — 합성 잡의 세션에서 선다 ──────────
+
+
+def _notes(client: TestClient, headers: dict, kind: str) -> list[dict]:
+    return [row for row in client.get("/api/notifications", headers=headers).json()["items"] if row["kind"] == kind]
+
+
+def test_m09_m10_finished_minutes_reach_the_owner_and_the_attendees_once_each(tmp_path) -> None:
+    client, application, agent = _stack(tmp_path)
+    made = _summarizing(client, application)
+    meeting_id = made["meeting"]["meeting_id"]
+    _blocks(application, meeting_id)
+    agent.script = [_output([_agenda("첫 안건", merged_from=[made["agendas"][0]["agenda_id"]])])]
+    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    assert application.finalize_meeting(UUID(meeting_id)) is True
+
+    [owner] = _notes(client, MINA, "meeting.minutes_ready")  # M09 — 행위자는 시스템이라 소유자도 받는다
+    assert owner["relation"] == "owner" and owner["item"] == "minutes" and owner["actor"] is None
+    assert owner["target"] == {"surface": "meetings", "meeting_id": meeting_id}
+    [attendee] = _notes(client, JIHO, "meeting.minutes_ready")  # M10
+    assert attendee["relation"] == "attendee"
+
+
+def test_m11_failed_minutes_reach_the_owner_with_a_red_mark(tmp_path) -> None:
+    client, application, agent = _stack(tmp_path)
+    made = _summarizing(client, application)
+    meeting_id = made["meeting"]["meeting_id"]
+    _blocks(application, meeting_id)
+    agent.script = [RuntimeError("대역: provider 실패")] * 3
+    client.post(f"/api/meetings/{meeting_id}/end", headers=MINA)
+    assert application.finalize_meeting(UUID(meeting_id)) is False
+
+    [failed] = _notes(client, MINA, "meeting.minutes_failed")
+    assert failed["relation"] == "owner" and failed["failure"] is True and failed["item"] == "minutes-fail"
+    assert _notes(client, JIHO, "meeting.minutes_failed") == []

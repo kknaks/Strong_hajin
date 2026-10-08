@@ -8,6 +8,11 @@
 -- 정의의 SoT 는 모델 metadata 다 — `platform/persistence.py` 의 `External*Record`·`ProfileImageRecord`.
 --            이 파일은 `CreateTable`/`CreateIndex` 를 postgresql dialect 로 컴파일한 결과다.
 -- 재적용 가능: 전부 `IF NOT EXISTS`.
+-- **개정(2026-10-08 · WORK-013 WP2-BE)**: `external_messages.from_me`(nullable bool · 「내가 보낸 줄」 · SPEC-011 §4.3-6)를
+--            이 정의에 더했다 — 이 파일은 **처음 까는 DB 의 모양**이고 모델 metadata 와 같아야 한다
+--            (`tests/architecture/test_external_channel_schema.py`). **이미 이 표가 있는 운영 DB 에는 이 파일이 아무것도 더하지
+--            않는다**(`CREATE TABLE IF NOT EXISTS` 가 건너뛴다) — 그 칸은 `2026-10-08-notifications-v2.sql` 의
+--            `ALTER TABLE external_messages ADD COLUMN IF NOT EXISTS from_me BOOLEAN` 이 더한다. 두 파일을 어느 순서로 돌려도 같다.
 -- 되돌리기: 이미지 롤백만 한다 — 표는 additive 라 남겨 둔다(보존·파기 없음, OQ-805). 정말 걷어야 하면
 --            `DROP TABLE` 을 FK 역순(profile_images … external_integrations)으로 사람이 한다.
 
@@ -93,6 +98,7 @@ CREATE TABLE IF NOT EXISTS external_messages (
 	author VARCHAR(500),
 	preview TEXT,
 	raw JSON NOT NULL,
+	from_me BOOLEAN,
 	safe_html TEXT,
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 	PRIMARY KEY (id),

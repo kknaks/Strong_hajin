@@ -55,6 +55,9 @@ pub struct RawMessage {
     pub ktype: i64,
     pub text: Option<String>,
     pub attachments: Vec<RawAttachment>,
+    /// 지금 로그인한 카톡 계정이 보낸 줄인가 = `NTChatMessage.authorId == NTChatContext.userId`(SPEC-009 v0.6.1 · OQ-K01 닫힘 ·
+    /// P0-1 대조). 내 userId 를 못 읽으면 `None` — 지어내지 않고 싣지 않는다(서버는 `null` · AC-12).
+    pub from_me: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,8 +242,9 @@ pub fn fetch_messages(
     after_log_id: i64,
     limit: usize,
 ) -> Result<Vec<RawMessage>, OpenFailure> {
+    let me = self_user_id(conn);
     let sql = "SELECT m.logId, m.type, m.message, m.attachment, m.sentAt, \
-               u.displayName, u.friendNickName, u.nickName \
+               u.displayName, u.friendNickName, u.nickName, m.authorId \
                FROM NTChatMessage m \
                LEFT JOIN NTUser u ON u.userId = m.authorId AND u.linkId = 0 \
                WHERE m.chatId = ?1 AND m.logId > ?2 \
@@ -258,14 +262,15 @@ pub fn fetch_messages(
                 let display: Option<String> = row.get(5).ok().flatten();
                 let friend: Option<String> = row.get(6).ok().flatten();
                 let nick: Option<String> = row.get(7).ok().flatten();
-                Ok((log_id, ktype, message, attachment, sent_at, display, friend, nick))
+                let author_id: Option<i64> = row.get(8).ok().flatten();
+                Ok((log_id, ktype, message, attachment, sent_at, display, friend, nick, author_id))
             },
         )
         .map_err(|_| OpenFailure::Version)?;
 
     let mut out = Vec::new();
     for row in rows.flatten() {
-        let (log_id, ktype, message, attachment, sent_at, display, friend, nick) = row;
+        let (log_id, ktype, message, attachment, sent_at, display, friend, nick, author_id) = row;
         let ktype = ktype.unwrap_or(1);
         // type 0 = 시스템 메시지(authorId 0) — 업무 내용이 아니라 건너뛴다(DB 조사 §5).
         if ktype == 0 {
@@ -280,6 +285,8 @@ pub fn fetch_messages(
             ktype,
             text: non_empty(message),
             attachments,
+            // 작성자 없는 줄(authorId 0 · type 1999 등)은 내가 아니다 → false
+            from_me: (me != 0).then(|| author_id == Some(me)),
         });
     }
     Ok(out)
@@ -432,6 +439,41 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 복호화된 DB 와 같은 모양의 작은 평문 DB(필요한 칸만) — 이름·id 는 가상이다.
+    fn tiny_db(me: Option<i64>) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE NTChatContext (userId INTEGER);
+             CREATE TABLE NTUser (userId INTEGER, linkId INTEGER, displayName TEXT, friendNickName TEXT, nickName TEXT);
+             CREATE TABLE NTChatMessage (chatId INTEGER, logId INTEGER, authorId INTEGER, type INTEGER, message TEXT, attachment TEXT, sentAt INTEGER);
+             INSERT INTO NTUser VALUES (100, 0, '나', NULL, NULL), (200, 0, '상대', NULL, NULL);
+             INSERT INTO NTChatMessage VALUES
+               (7, 1, 100, 1, '내가 보낸 줄', NULL, 1700000000),
+               (7, 2, 200, 1, '받은 줄', NULL, 1700000001),
+               (7, 3, 0, 1999, NULL, NULL, 1700000002),
+               (7, 4, 0, 0, '시스템', NULL, 1700000003);",
+        )
+        .unwrap();
+        if let Some(id) = me {
+            conn.execute("INSERT INTO NTChatContext VALUES (?1)", rusqlite::params![id]).unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn 내가_보낸_줄은_from_me_참_받은_줄과_작성자_없는_줄은_거짓() {
+        let rows = fetch_messages(&tiny_db(Some(100)), 7, 0, 10).unwrap();
+        // type 0(시스템)은 지금처럼 건너뛴다
+        assert_eq!(rows.iter().map(|m| m.log_id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(rows.iter().map(|m| m.from_me).collect::<Vec<_>>(), vec![Some(true), Some(false), Some(false)]);
+    }
+
+    #[test]
+    fn 내_userid_를_못_읽으면_from_me_를_싣지_않는다() {
+        let rows = fetch_messages(&tiny_db(None), 7, 0, 10).unwrap();
+        assert!(rows.iter().all(|m| m.from_me.is_none()));
+    }
 
     #[test]
     fn 사진_첨부를_뽑는다() {

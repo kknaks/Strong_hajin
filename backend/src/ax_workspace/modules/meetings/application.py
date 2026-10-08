@@ -8,8 +8,9 @@ from __future__ import annotations
 import base64
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from ax_workspace.modules.notification_events import NO_NOTIFIER, NotificationEvent, Notifier, recipients
 from ax_workspace.modules.meetings.domain import (
     MeetingRangeIncomplete,
     MeetingStaleWrite,
@@ -169,14 +170,44 @@ class MeetingRepository(Protocol):
 
 class MeetingApplication:
     def __init__(
-        self, repository: MeetingRepository, recordings: Any = None, time_blocks: TimeBlockRepository | None = None
+        self,
+        repository: MeetingRepository,
+        recordings: Any = None,
+        time_blocks: TimeBlockRepository | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self._repository = repository
+        # 알림 생성기(SPEC-011 §5) — 사건 · 관련자만 넘긴다. 회의록 완료 · 실패는 meeting_worker 의 세션에서 돈다.
+        self._notifier = notifier or NO_NOTIFIER
         # 종료 뒤 재전사가 음원을 읽는 자리 (D44). 없으면 재전사를 건너뛴다 — 나머지 명령은 그대로 돈다.
         self._recordings = recordings
         # 겹침을 읽는 **문 하나** — 배정 쪽(`modules/work`)이 쓰는 것과 **같은 것**이다 (증보 K22).
         # 없으면 겹침 검사가 서지 않는다: 조립이 빠진 경우에만 그렇고, 그때는 명령이 오류를 낸다.
         self._time_blocks = time_blocks
+
+    @staticmethod
+    def _schedule_data(meeting: Any) -> dict[str, Any]:
+        return {
+            # sqlite 는 시간대를 저장하지 않는다 — 같은 순간이 두 글자가 되지 않게 맞춘다.
+            "starts_at": _iso(_aware(meeting.starts_at)) if meeting.starts_at else None,
+            "ends_at": _iso(_aware(meeting.ends_at)) if meeting.ends_at else None,
+            "place": getattr(meeting, "location", None),
+        }
+
+    def _notify_meeting(
+        self, row: str, kind: str, meeting: Any, event: str, principal: Principal | None, people: tuple[Any, ...], data: dict[str, Any]
+    ) -> None:
+        if not people:
+            return
+        self._notifier.notify(
+            NotificationEvent(
+                row=row, kind=kind, source_kind="meeting_event", source_id=f"meeting:{meeting.id}:{event}:{uuid4().hex}",
+                recipients=people,
+                subject={"type": "meeting", "id": str(meeting.id), "title": meeting.title or getattr(meeting, "title_candidate", None) or ""},
+                actor_member_id=str(principal.id) if principal is not None else None, data=data,
+                target={"surface": "meetings", "meeting_id": str(meeting.id)},
+            )
+        )
 
     def list(self, principal: Principal) -> list[dict[str, Any]]:
         """Calendar-safe projection: a meeting this person may not open contributes only a busy block.
@@ -336,6 +367,11 @@ class MeetingApplication:
                 meeting, track=TRACK_MEMO, title=agenda_title, source=source, order_index=order
             )
         self._repository.append_audit(meeting, str(principal.id), "meeting.created", f"회의 생성: {meeting.title or '제목 없는 회의'}")
+        # M01 — 참석자(소유자는 행위자 M02 · 외부 참석자는 회원이 아니다 M03).
+        self._notify_meeting(
+            "M01", "meeting.invited", meeting, "created", principal,
+            recipients(*((member, "attendee") for member in sorted(self._repository.attendee_ids(meeting)))), self._schedule_data(meeting),
+        )
         return self._detail(principal, meeting)
 
     def validate_creation(
@@ -499,6 +535,9 @@ class MeetingApplication:
             raise MeetingError(f"unsupported meeting fields: {sorted(unknown)}")
         if not view.can_edit_info:
             raise MeetingStateConflict("meeting information may be edited only while scheduled or done")
+        # 알림(M04 · M05 · M06)이 비교할 앞 값 — 바꾸기 전에 잡는다.
+        schedule_before = self._schedule_data(meeting)
+        attendees_before = set(self._repository.attendee_ids(meeting))
         starts_at = _aware(changes.get("starts_at") or meeting.starts_at)
         ends_at = _aware(changes.get("ends_at") or meeting.ends_at)
         validate_meeting_schedule(starts_at, ends_at)
@@ -537,6 +576,28 @@ class MeetingApplication:
         meeting.version += 1
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, str(principal.id), "meeting.updated", f"회의 정보 수정: {meeting.title or '제목 없는 회의'}", before_ref=f"meeting:{meeting.id}@{before}")
+        attendees_after = set(self._repository.attendee_ids(meeting))
+        added, removed = attendees_after - attendees_before, attendees_before - attendees_after
+        schedule_after = self._schedule_data(meeting)
+        if schedule_before != schedule_after:
+            # M04 — 시간 · 장소가 바뀌면 남아 있는 참석자(새로 든 사람은 M05 초대로 받는다).
+            self._notify_meeting(
+                "M04", "meeting.changed", meeting, "updated", principal,
+                recipients(*((member, "attendee") for member in sorted(attendees_after - added))),
+                {"change": "updated", "before": schedule_before, "after": schedule_after},
+            )
+        if added:
+            # M05 — 새로 들어온 사람.
+            self._notify_meeting(
+                "M05", "meeting.invited", meeting, "invited", principal,
+                recipients(*((member, "attendee") for member in sorted(added))), schedule_after,
+            )
+        if removed:
+            # M06 — 빠진 사람 · **원칙 ③ 의 예외**(D-33): 빠지는 순간의 관계(참석자)로 받는다.
+            self._notify_meeting(
+                "M06", "meeting.changed", meeting, "removed", principal,
+                recipients(*((member, "attendee") for member in sorted(removed))), {"change": "removed"},
+            )
         return self._detail(principal, meeting)
 
     def apply_legacy_note(
@@ -601,6 +662,11 @@ class MeetingApplication:
         meeting.version += 1
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, str(principal.id), "meeting.cancelled", "회의 취소")
+        # M07 — 참석자(취소한 사람은 행위자).
+        self._notify_meeting(
+            "M07", "meeting.changed", meeting, "cancelled", principal,
+            recipients(*((member, "attendee") for member in sorted(self._repository.attendee_ids(meeting)))), {"change": "cancelled"},
+        )
 
     def delete_note(self, principal: Principal, meeting_id: UUID) -> None:
         """[회의록만 삭제] — 회의록과 자료를 지우고 회의 예약은 남긴다 (SPEC §3.1-9)."""
@@ -967,6 +1033,12 @@ class MeetingApplication:
         meeting.status = ensure_transition(meeting.status, MeetingStatus.DONE).value
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, meeting.owner_id, "meeting.finalized", "회의록 합성 완료")
+        # M09 — 소유자 · M10 — 참석자. 행위자는 시스템(합성 잡) — 소유자도 받는다. 소유자 > 참석자로 한 줄.
+        self._notify_meeting(
+            "M09", "meeting.minutes_ready", meeting, "finalized", None,
+            (*recipients((meeting.owner_id, "owner")), *recipients(*((member, "attendee") for member in sorted(self._repository.attendee_ids(meeting))))),
+            {},
+        )
         return self._detail_for_owner(meeting)
 
     def fail_finalize(self, meeting_id: UUID, reason: str) -> None:
@@ -978,6 +1050,8 @@ class MeetingApplication:
         meeting.failure_reason = (reason or "")[:2000] or None
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, meeting.owner_id, "meeting.finalize_failed", "회의록 합성 실패")
+        # M11 — 소유자(붉은 표식).
+        self._notify_meeting("M11", "meeting.minutes_failed", meeting, "finalize_failed", None, recipients((meeting.owner_id, "owner")), {})
 
     def retry_finalize(self, principal: Principal, meeting_id: UUID) -> dict[str, Any]:
         """[다시 시도] — 「실패」에서만. **최종 벌만 갈아 끼운다** (SPEC-004 §8-8).
@@ -1112,7 +1186,7 @@ class MeetingApplication:
     def share_many(self, principal: Principal, meeting_id: UUID, member_ids: list[str]) -> list[dict[str, Any]]:
         """여러 명에게 한 번에 연다. **이미 참석이거나 이미 열람인 사람은 조용히 건너뛴다** (SPEC-004 §3.2-3).
 
-        알림은 가지 않는다 — 목록에 담기는 것이 유일한 도달 경로다 (§2.2).
+        새로 열린 사람에게 `meeting.shared` 알림이 간다(SPEC-011 M12 — 예전 「알림은 가지 않는다」를 이 판이 바꿨다).
         """
         self._require(principal, MEETING_SHARE)
         meeting = self._readable(principal, meeting_id, lock=True)
@@ -1121,15 +1195,19 @@ class MeetingApplication:
         already = self._repository.attendee_ids(meeting) | {meeting.owner_id} | set(
             self._repository.shared_member_ids(meeting)
         )
-        opened = 0
+        opened: list[str] = []
         for member_id in new_share_targets(member_ids, existing_member_ids=already):
             if not self._repository.is_active_member(member_id):
                 raise MeetingError("share target is not an active member")
             self._repository.add_share(meeting, member_id, str(principal.id))
-            opened += 1
+            opened.append(member_id)
         if opened:
             self._repository.touch(meeting)
             self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유")
+            # M12 — 특정 사람에게 공유(이 길 · `share` 두 길 모두).
+            self._notify_meeting(
+                "M12", "meeting.shared", meeting, "shared", principal, recipients(*((member, "shared") for member in opened)), {}
+            )
         return self.viewers(principal, meeting_id)
 
     def apply_legacy_visibility(
@@ -1139,7 +1217,11 @@ class MeetingApplication:
         visibility: str,
         member_ids: list[str],
     ) -> dict[str, Any]:
-        """Translate legacy public/private into revocable, provenance-tagged current-model readers."""
+        """Translate legacy public/private into revocable, provenance-tagged current-model readers.
+
+        **M15 — 공개 전환은 알리지 않는다**(SPEC-011 §4.2-4 · D-38): 조직 전원에게 열람이 열려도 생성기를 부르지 않는다.
+        특정 사람 공유(`share` · `share_many` — M12)만 알림이다.
+        """
         self._require(principal, MEETING_MANAGE)
         meeting = self._readable(principal, meeting_id, lock=True)
         if str(principal.id) != meeting.owner_id:
@@ -1196,6 +1278,8 @@ class MeetingApplication:
         self._repository.add_share(meeting, member_id, str(principal.id))
         self._repository.touch(meeting)
         self._repository.append_audit(meeting, str(principal.id), "meeting.shared", "회의 열람 공유")
+        # M12 — 특정 사람에게 공유(HTTP `share` · AX 실행이 이 길).
+        self._notify_meeting("M12", "meeting.shared", meeting, "shared", principal, recipients((member_id, "shared")), {})
         return self._row(principal, meeting)
 
     def revoke_share(
@@ -1792,8 +1876,9 @@ class MeetingApplication:
         return {
             "meeting_id": str(meeting.id),
             "title": meeting.title,
-            "starts_at": _iso(meeting.starts_at),
-            "ends_at": _iso(meeting.ends_at),
+            # sqlite 는 시간대를 저장하지 않는다 — 같은 순간이 두 글자가 되지 않게 맞춘다.
+            "starts_at": _iso(_aware(meeting.starts_at)) if meeting.starts_at else None,
+            "ends_at": _iso(_aware(meeting.ends_at)) if meeting.ends_at else None,
             "location": meeting.location,
             "status": meeting.status,
             "viewer_relation": self._viewer_relation(principal, meeting),

@@ -54,7 +54,12 @@ import type {
   Project,
   ProjectDetail,
   ProjectMember,
+  NavBadges,
   Notification,
+  NotificationPage,
+  NotificationSettings,
+  NotificationSummary,
+  NotificationTheme,
   ProjectParticipation,
   WorkRequestMaterial,
   WorkRequestReadReceipt,
@@ -723,12 +728,44 @@ export async function getConversations(limit?: number): Promise<Conversation[]> 
   return request<Conversation[]>(`/api/conversations${query}`);
 }
 
-export async function getNotifications(): Promise<Notification[]> {
-  return request<Notification[]>("/api/notifications");
+/** 알림 목록(SPEC-011 §4.5-1) — 최신(사건 순번) 먼저 · `theme` 이 없으면 전체 · 다음 쪽은 `cursor`. */
+export async function getNotifications(options: { theme?: NotificationTheme | null; cursor?: string | null; limit?: number } = {}): Promise<NotificationPage> {
+  const query = new URLSearchParams();
+  if (options.theme) query.set("theme", options.theme);
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit) query.set("limit", String(options.limit));
+  const suffix = query.toString();
+  return request<NotificationPage>(`/api/notifications${suffix ? `?${suffix}` : ""}`);
 }
 
+/** 안 읽은 수 — 머리 「안 읽음 N」 · 테마 탭 수. */
+export async function getNotificationSummary(): Promise<NotificationSummary> {
+  return request<NotificationSummary>("/api/notifications/summary");
+}
+
+/** 그 줄 읽음(멱등) — 성공하면 서버가 `notification.read` 사건을 낸다. */
 export async function markNotificationRead(notificationId: string): Promise<Notification> {
-  return request<Notification>(`/api/notifications/${notificationId}/read`, { method: "POST", body: "{}" });
+  return request<Notification>(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST", body: "{}" });
+}
+
+/** 안 읽은 알림 **전부** 읽음(D-40 — 테마 필터와 상관없다 · 본문 없음). */
+export async function markAllNotificationsRead(): Promise<{ read: number }> {
+  return request<{ read: number }>("/api/notifications/read-all", { method: "POST" });
+}
+
+/** 사이드바 점 둘(§2.2) — 알림 · 메시지함. */
+export async function getNavBadges(): Promise<NavBadges> {
+  return request<NavBadges>("/api/me/badges");
+}
+
+/** 알림 설정(§4.4-2) — 저장한 적이 없으면 서버가 기본값(`version: 0`)을 준다. */
+export async function getNotificationSettings(): Promise<NotificationSettings> {
+  return request<NotificationSettings>("/api/me/notification-settings");
+}
+
+/** 전체를 한 번에 저장한다 — `version` 이 다르면 `409 SETTINGS_VERSION_CONFLICT`(다른 창이 먼저 저장 — 다시 읽는다). */
+export async function saveNotificationSettings(settings: NotificationSettings): Promise<NotificationSettings> {
+  return request<NotificationSettings>("/api/me/notification-settings", { body: JSON.stringify(settings), method: "PUT" });
 }
 
 /** `beforeSequence` pages further back — the oldest message currently held, to load the batch just before it. */
@@ -1455,7 +1492,7 @@ export async function readMeetingShares(meetingId: string): Promise<MeetingViewe
 
 /**
  * 여러 명에게 한 번에 연다. **이미 참석이거나 이미 열람인 사람은 서버가 조용히 건너뛴다.**
- * 알림은 가지 않는다 — 목록에 담기는 것이 유일한 도달 경로다 (SPEC §2.2).
+ * 공유받은 사람에게 알림이 설 수 있다(SPEC-011 M12 · 그 사람의 알림 설정이 정한다) — 회의 목록에 담기는 것은 그대로다 (SPEC §2.2).
  */
 export async function shareMeetingWith(meetingId: string, memberIds: string[]): Promise<MeetingViewer[]> {
   return request<MeetingViewer[]>(`/api/meetings/${meetingId}/shares`, {
@@ -1750,10 +1787,12 @@ export async function replyToInboxMail(
   return sendForm(`/api/inbox/mail/${encodeURIComponent(messageId)}/reply`, form, { headers: { "Idempotency-Key": idempotencyKey } });
 }
 
-/** 사용자 사건 채널 — 새 메시지·답장 결과·연동 상태 변화가 밀려온다(회의 WS 와 다른 길 · N-6). */
-export function inboxStreamUrl(): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/inbox/stream`;
+/**
+ * 사용자 사건 채널 — 같은 origin 의 SSE(`EventSource` · SPEC-011 §4.1). 메시지함 사건 넷 · 알림 사건 · `resync` 가 온다(회의 WS 와 다른 길 · N-6).
+ * 화면이 새 연결을 만들 때는 받은 마지막 순번을 쿼리로 싣는다(`?last_event_id=` · §4.1-3 ②) — 받은 것이 없으면 쿼리 없이.
+ */
+export function eventStreamUrl(lastEventId: number | null = null): string {
+  return lastEventId === null ? "/api/events/stream" : `/api/events/stream?last_event_id=${encodeURIComponent(String(lastEventId))}`;
 }
 
 /** 프로필 이미지 — 고르면 **바로 저장**(즉시). 정사각형 1MB 이하 PNG·JPG. 초과 413 · 형식 415. */

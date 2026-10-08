@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.schema import Column, CreateColumn, CreateIndex, CreateTable
+from sqlalchemy.schema import Column, CreateColumn, CreateIndex, CreateSequence, CreateTable
 
 from ax_workspace.platform.persistence import Base
 
@@ -23,6 +23,13 @@ def plan(database_url: str) -> dict[str, list[str]]:
     live_tables = set(inspector.get_table_names())
     statements: list[str] = []
     manual: list[str] = []
+
+    if engine.dialect.name == "postgresql":
+        # 모델의 시퀀스(예: 알림 사건 순번 `notification_seq` — SPEC-011 §4.1-3)도 더하기만 한다. 칸보다 먼저 —
+        # 그 시퀀스를 부르는 쓰기가 칸과 함께 선다. sqlite 는 시퀀스가 없다(그 자리는 코드가 최댓값 + 1 로 메운다).
+        for sequence in Base.metadata._sequences.values():
+            if not inspector.has_sequence(sequence.name):
+                statements.append(str(CreateSequence(sequence).compile(engine)).strip() + ";")
 
     for name, table in Base.metadata.tables.items():
         if name not in live_tables:

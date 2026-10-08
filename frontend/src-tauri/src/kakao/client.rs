@@ -20,6 +20,8 @@ pub struct MessageInput {
     pub ktype: i64,
     pub text: Option<String>,
     pub attachments: Vec<AttachmentInput>,
+    /// 「내가 보냄」(SPEC-008 v0.7.0 §4.6 `from_me?` · SPEC-009 v0.6.1) — `None` 이면 싣지 않는다(서버 `null`).
+    pub from_me: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,7 +279,7 @@ impl Client {
 }
 
 fn message_json(m: &MessageInput) -> serde_json::Value {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "logId": m.log_id,
         "author": m.author,
         "at": m.at_secs,
@@ -291,7 +293,11 @@ fn message_json(m: &MessageInput) -> serde_json::Value {
             "mime": a.mime,
             "expired": a.expired,
         })).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(from_me) = m.from_me {
+        value["from_me"] = serde_json::Value::Bool(from_me);
+    }
+    value
 }
 
 /// 서버로 올리는 메시지 입력으로 바꾼다 — 서버로 보내는 첨부는 **url 을 뺀 메타만**(D-16).
@@ -302,6 +308,7 @@ pub fn to_message_input(raw: &RawMessage) -> MessageInput {
         at_secs: raw.at_secs,
         ktype: raw.ktype,
         text: raw.text.clone(),
+        from_me: raw.from_me,
         attachments: raw
             .attachments
             .iter()
@@ -416,6 +423,7 @@ mod tests {
             at_secs: 1_700_000_000,
             ktype: 2,
             text: None,
+            from_me: Some(true),
             attachments: vec![AttachmentInput {
                 kind: AttachKind::Image,
                 seq: 0,
@@ -431,6 +439,12 @@ mod tests {
         assert_eq!(v["type"], 2);
         assert_eq!(v["attachments"][0]["kind"], "image");
         assert_eq!(v["attachments"][0]["seq"], 0);
+        assert_eq!(v["from_me"], true);
+        // 모르면(내 userId 복구 실패) 키 자체를 싣지 않는다 — 서버가 null 로 둔다(SPEC-009 AC-12)
+        let unknown = message_json(&MessageInput { from_me: None, ..m.clone() });
+        assert!(unknown.get("from_me").is_none());
+        let theirs = message_json(&MessageInput { from_me: Some(false), ..m });
+        assert_eq!(theirs["from_me"], false);
     }
 
     #[test]

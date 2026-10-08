@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import Integer, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -24,7 +24,6 @@ from ax_workspace.modules.work.requests import (
     evidence_manifest_entry,
     evidence_manifest_hash,
 )
-from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
 from ax_workspace.platform.persistence import (
     ActivityEventRecord,
     AttachmentBindingRecord,
@@ -2093,8 +2092,11 @@ class SqlAlchemyWorkRequestRepository:
             )
         )
 
-    def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict) -> None:
+    def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict) -> str:
+        """감사 한 줄 — 그 id 를 돌려준다. **알림은 여기서 만들지 않는다**(D-30 흡수): 관련자를 아는 사건 자리
+        (`modules/work/requests.py`)가 이 id 를 원천으로 생성기를 부른다(SPEC-011 §4.3-7)."""
         event = WorkRequestAuditEventRecord(
+            id=uuid4(),
             request_id=request_id,
             actor_id=actor_id,
             event_type=event_type,
@@ -2102,30 +2104,7 @@ class SqlAlchemyWorkRequestRepository:
             occurred_at=datetime.now(UTC),
         )
         self._session.add(event)
-        request = self._session.get(WorkRequestRecord, request_id)
-        if request is None or event_type not in {"work_request.created", "work_request.accepted"}:
-            return
-        self._session.flush()
-        recipient = request.assignee_id if event_type == "work_request.created" else request.requester_id
-        actor_name = _person(self._session, actor_id)
-        summary = (
-            f"{actor_name}님이 ‘{request.title}’ 업무를 요청했습니다."
-            if event_type == "work_request.created"
-            else f"{actor_name}님이 ‘{request.title}’ 업무 요청을 수락했습니다."
-        )
-        SqlAlchemyNotificationRepository(self._session).emit(
-            recipient_member_id=recipient,
-            source_kind="work_request_audit_event",
-            source_id=str(event.id),
-            kind="work_request.received" if event_type == "work_request.created" else event_type,
-            resource_type="work_request",
-            resource_id=str(request.id),
-            resource_version=int(request.version),
-            resource_title=request.title,
-            actor_member_id=actor_id,
-            safe_summary=summary,
-            created_at=event.occurred_at,
-        )
+        return str(event.id)
 
     def rebuild_relationships(self) -> int:
         """Rebuild the access projection from the canonical rows it is derived from.

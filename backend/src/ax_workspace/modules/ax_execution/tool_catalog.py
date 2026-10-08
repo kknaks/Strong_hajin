@@ -54,7 +54,7 @@ _DEFINITIONS = (
     ToolDefinition("conversation_message_send", "대화 메시지 접수 준비", "Prepare submitting a message with selected current task/request/inbox-message context to one of this person's conversations. An inbox_message reference only points at the message (resource_version 1); the server composes its surrounding lines itself. A durable turn is queued; this response is acceptance, not a generated answer. Delegated execution requires human confirmation.", "accept_conversation_message", authenticated_only=True, requires_confirmation=True),
     ToolDefinition("conversation_turn_cancel", "대화 응답 취소 준비", "Prepare cancelling the active turn of one owned conversation using its current version. Delivered answers remain in history. Delegated execution requires human confirmation.", "cancel_conversation_turn", authenticated_only=True, requires_confirmation=True),
     ToolDefinition("conversation_turn_retry", "대화 응답 다시 시도 준비", "Prepare retrying one failed or cancelled turn in an owned conversation. It creates or returns the single retry turn and preserves the original history. Delegated execution requires human confirmation.", "retry_conversation_turn", authenticated_only=True, requires_confirmation=True),
-    ToolDefinition("notification_mark_read", "알림 읽음 처리 준비", "Prepare marking one of this person's notifications as read. Its source resource must remain readable at confirmation. This does not decide, complete or change the underlying work. Delegated execution requires human confirmation.", "mark_notification_read", authenticated_only=True, requires_confirmation=True),
+    ToolDefinition("notification_mark_read", "알림 읽음 처리 준비", "Prepare marking one of this person's notifications as read. This does not decide, complete or change the underlying work or message. Delegated execution requires human confirmation.", "mark_notification_read", authenticated_only=True, requires_confirmation=True),
     ToolDefinition("assistant_character_set", "AX 캐릭터 변경 준비", "Prepare changing this person's assistant character using one of the supported keys and the current preference version from my_organization_profile. This is a personal display preference, not an administrator privilege change. Delegated execution requires human confirmation.", "set_assistant_character", authenticated_only=True, requires_confirmation=True),
     ToolDefinition("work_request_comment_add", "업무 요청 댓글 등록 준비", "Prepare posting a discussion comment on a request in which this person participates. A comment does not accept, reject, negotiate or amend the request. Delegated execution requires human confirmation.", "add_work_request_comment", all_capabilities=("work_request.read",), requires_confirmation=True),
     ToolDefinition("meeting_material_detach", "회의 자료 분리 준비", "Prepare detaching one material selected from meeting_materials_list. Only its uploader may detach it before the meeting starts; original bytes remain. Delegated execution requires human confirmation.", "detach_current_meeting_material", all_capabilities=("meeting.manage",), requires_confirmation=True),
@@ -230,7 +230,7 @@ _DEFINITIONS = (
     ToolDefinition(
         "list_notifications",
         "내 알림 조회",
-        "Read existing notifications addressed to this person and backed by currently readable sources.",
+        "Read the newest page of this person's notifications (work, message and meeting themes; kinds such as work.request_received, message.slack, meeting.minutes_ready). Each row keeps the title and actor stored when it was made; its target is null when the source can no longer be opened.",
         "list_notifications",
         all_capabilities=(),
         authenticated_only=True,
@@ -443,7 +443,7 @@ _DEFINITIONS = (
         adapter_operation="list_members",
     ),
     ToolDefinition("my_meeting_list", "내 회의 조회", "List meetings this person owns or attends. An explicit read share alone does not make a meeting personal.", "my_meetings", all_capabilities=("meeting.read",)),
-    ToolDefinition("meeting_share", "회의 공유 준비", "Prepare granting read access to one or more active members. Sharing does not add attendees or send notifications. Delegated execution requires human confirmation.", "share_current_meeting", all_capabilities=("meeting.share",), requires_confirmation=True),
+    ToolDefinition("meeting_share", "회의 공유 준비", "Prepare granting read access to one or more active members. Sharing does not add attendees; each newly shared member receives a meeting.shared notification. Delegated execution requires human confirmation.", "share_current_meeting", all_capabilities=("meeting.share",), requires_confirmation=True),
     ToolDefinition(
         "my_task_list",
         "내 담당 업무 조회",

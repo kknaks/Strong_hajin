@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import { useBrowserOperationGuard } from './lib/browserOperationGuard';
+import { FakeEventSource } from "./lib/fakeEventSource.test-utils";
 
 const jsonResponse = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -2513,7 +2514,7 @@ describe("메시지함 → AX 서랍", () => {
       return jsonResponse([]);
     });
     vi.stubGlobal("fetch", withSession(fetchMock));
-    vi.stubGlobal("WebSocket", undefined);
+    vi.stubGlobal("EventSource", undefined);
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
@@ -2530,5 +2531,217 @@ describe("메시지함 → AX 서랍", () => {
     expect(payload.context).toEqual([{ resource_type: "inbox_message", resource_id: "msg-7", resource_version: 1, included: true }]);
     // 누를 때마다 새 대화 — 대화를 만드는 POST 가 나갔다
     expect(fetchMock.mock.calls.some(([path, init]) => path === "/api/conversations" && init?.method === "POST")).toBe(true);
+  });
+});
+
+/*
+ * WORK-013 WP1-FE — 사용자 사건 채널(SSE)의 주인은 앱 전역이다(SPEC-011 §4.1-6 · D-10).
+ * 로그인한 동안 연결 하나 · 화면을 오가도 그대로 · 로그아웃이면 닫는다 · 닫힌 뒤 세션 확인이 401 이면 로그인 화면(회의 4401 과 같은 길).
+ */
+describe("사건 채널 — 앱 전역 연결 하나", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  function stack() {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/organization/me") return jsonResponse({ member_id: "mina", display_name: "민아", organizations: [], roles: [], capabilities: ["task.read", "task.self_manage", "action.read"] });
+      if (path.startsWith("/api/inbox/messages")) return jsonResponse({ items: [], next_cursor: null, unread_counts: { all: 0, mail: 0, slack: 0, kakao: 0 } });
+      return jsonResponse([]);
+    });
+    const session = withSession(fetchMock);
+    FakeEventSource.all = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    return session;
+  }
+
+  it("홈 · 업무 · 메시지함 · 설정을 오가도 EventSource 는 하나다 · 로그아웃하면 닫힌다", async () => {
+    vi.stubGlobal("fetch", stack());
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+    expect(FakeEventSource.latest().url).toBe("/api/events/stream");
+    for (const name of ["업무", "메시지함", "홈"]) fireEvent.click(within(navigation).getByRole("button", { name }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "설정" }));
+    await screen.findByRole("button", { name: "알림 설정" });
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(FakeEventSource.latest().closed).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "로그아웃" }));
+    expect(await screen.findByLabelText("이메일")).toBeTruthy();
+    expect(FakeEventSource.latest().closed).toBe(true);
+    expect(FakeEventSource.all).toHaveLength(1);
+  });
+
+  it("비-200 으로 닫힌 뒤 세션 확인이 401 이면 로그인 화면으로 가고 다시 붙지 않는다", async () => {
+    const session = stack();
+    let expired = false;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      expired && String(input) === "/api/auth/me" ? new Response(JSON.stringify({ detail: "로그인이 필요합니다." }), { status: 401 }) : session(input, init),
+    );
+    render(<App />);
+    await screen.findByRole("navigation", { name: "제품 탐색" });
+    await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
+    act(() => FakeEventSource.latest().ready());
+    expired = true;
+    act(() => FakeEventSource.latest().fail(2));
+    expect(await screen.findByLabelText("이메일")).toBeTruthy();
+    expect(FakeEventSource.all).toHaveLength(1);
+  });
+});
+
+/*
+ * WORK-013 WP3-FE — 알림 화면에서 누르면 읽음 + 대상을 고른 상태로(SPEC-011 §2.1 · §4.5-2 3) · 사이드바 점 둘(§2.2).
+ * 대상 열기는 AX 서랍 `onOpenResource` 와 같은 함수(`openFocus`)다.
+ */
+describe("알림 — 누르면 대상으로 · 사이드바 점", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const base = {
+    seq: 1, theme: "work", item: "request", relation: "assignee", failure: false, actor: { member_id: "jiho", display_name: "지호" },
+    data: {}, created_at: "2026-10-07T05:00:00Z", updated_at: "2026-10-07T05:00:00Z", read_at: null,
+  };
+  const ITEMS = [
+    { ...base, notification_id: "n-task", kind: "work.request_received", subject: { type: "task", id: "task-1", title: "견적서 정리" }, target: { surface: "work", task_id: "task-1" } },
+    { ...base, notification_id: "n-room", kind: "message.slack", theme: "message", item: "slack", relation: "mention", subject: { type: "room", id: "r1", title: "#pilot-launch" }, data: { room_name: "#pilot-launch" }, target: { surface: "inbox", source: "slack", room_id: "r1", message_id: "msg-7" } },
+    { ...base, notification_id: "n-meeting", kind: "meeting.shared", theme: "meeting", item: "share", relation: "shared", subject: { type: "meeting", id: "g1", title: "협력사 미팅" }, target: { surface: "meetings", meeting_id: "g1" } },
+    { ...base, notification_id: "n-lost", kind: "message.integration_lost", theme: "message", item: "slack", relation: "integration", failure: true, actor: null, subject: null, data: { channel: "slack", reason: "disconnected" }, target: { surface: "settings", tab: "slack" } },
+    { ...base, notification_id: "n-gone", kind: "work.changed", subject: { type: "task", id: "task-9", title: "지워진 업무" }, data: { change: "cancelled" }, target: null },
+  ];
+
+  function stack(badges: { notifications: boolean; inbox: boolean }) {
+    const calls: Array<{ path: string; method: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      calls.push({ path, method: init?.method ?? "GET" });
+      if (path === "/api/organization/me") return jsonResponse({ member_id: "mina", display_name: "민아", organizations: [], roles: [], capabilities: ["task.read", "task.self_manage", "action.read"] });
+      if (path === "/api/me/badges") return jsonResponse(badges);
+      if (path === "/api/notifications") return jsonResponse({ items: ITEMS, next_cursor: null });
+      if (path === "/api/notifications/summary") return jsonResponse({ unread: { all: 5, work: 2, message: 2, meeting: 1 } });
+      if (path.startsWith("/api/notifications/") && init?.method === "POST") return jsonResponse({ ...ITEMS[0], read_at: "2026-10-07T06:00:00Z" });
+      if (path.startsWith("/api/inbox/messages")) return jsonResponse({ items: [], next_cursor: null, unread_counts: { all: 0, mail: 0, slack: 0, kakao: 0 } });
+      /* 회의 상세(`/api/meetings/g1…`)는 목록 모양으로 주면 상세 화면이 `record.meeting` 을 읽다 던진다(검수 F-3 — vitest exit 1).
+         이 시험이 보는 것은 「그 회의를 읽으러 갔다」 까지라 상세는 「없음」 으로 답한다 — 화면은 오류 상태로 선다 */
+      if (path.startsWith("/api/meetings/g1")) return new Response(JSON.stringify({ detail: "없음" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      if (path.startsWith("/api/meetings")) return jsonResponse({ title: "회의", upcoming: [], past: { items: [], total: 0 } });
+      if (path === "/api/inbox/rooms/r1/messages")
+        return jsonResponse({ room: { room_id: "r1", integration_id: "i", kind: "slack", room_type: "channel", name: "#pilot-launch", member_count: 3, external_id: "C1", read_up_to_key: null, permalink: null }, users: {}, next_cursor: null, messages: [] });
+      return jsonResponse([]);
+    });
+    FakeEventSource.all = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("fetch", withSession(fetchMock));
+    return { calls };
+  }
+
+  async function openAlerts() {
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "알림" }));
+    await waitFor(() => expect(document.querySelector('[data-notification-id="n-task"]')).not.toBeNull());
+  }
+  const click = (id: string) => fireEvent.click(document.querySelector(`[data-notification-id="${id}"]`) as HTMLElement);
+  const title = () => document.querySelector(".scax-page-header__title")?.textContent;
+
+  it("대상마다 고른 상태로 연다 — 업무 · 메시지함 방 · 회의 · 설정 그 연동 탭 · 누를 때마다 읽음 API", async () => {
+    const { calls } = stack({ notifications: true, inbox: false });
+    render(<App />);
+    await openAlerts();
+
+    click("n-task");
+    await waitFor(() => expect(title()).toBe("업무"));
+    expect(calls.some((call) => call.path === "/api/notifications/n-task/read" && call.method === "POST")).toBe(true);
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/tasks/task-1")).toBe(true));
+
+    await openAlerts();
+    click("n-room");
+    await waitFor(() => expect(title()).toBe("메시지함"));
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/inbox/rooms/r1/messages")).toBe(true));
+    expect(calls.some((call) => call.path === "/api/notifications/n-room/read")).toBe(true);
+
+    await openAlerts();
+    click("n-lost");
+    await waitFor(() => expect(title()).toBe("슬랙 연동"));
+
+    // 회의는 마지막 — 이 대역은 회의 상세 응답 모양을 갖추지 않아 그 화면 안쪽까지는 보지 않는다(회의 화면이 그 회의를 읽으러 가는 것까지)
+    await openAlerts();
+    click("n-meeting");
+    await waitFor(() => expect(calls.some((call) => call.path.startsWith("/api/meetings/g1"))).toBe(true));
+    expect(calls.some((call) => call.path === "/api/notifications/n-meeting/read")).toBe(true);
+  });
+
+  it("`target: null` 이면 읽음만 하고 「열 수 없는 항목입니다」 — 화면은 그대로", async () => {
+    const { calls } = stack({ notifications: true, inbox: false });
+    render(<App />);
+    await openAlerts();
+    click("n-gone");
+    expect(await screen.findByText("열 수 없는 항목입니다")).toBeTruthy();
+    expect(title()).toBe("알림");
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/notifications/n-gone/read" && call.method === "POST")).toBe(true));
+  });
+
+  /* WORK-013 WP4 — OS 알림을 누르면 셸이 창을 앞으로 가져와 `strong-hajin:notification-click` 을 쏜다 → 목록 줄과 같은 일 */
+  it("OS 알림 클릭 사건 — 읽음 + 대상으로 · 묶음(id null)은 읽음 없이 알림 목록", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    try {
+      const { calls } = stack({ notifications: true, inbox: false });
+      render(<App />);
+      await screen.findByRole("navigation", { name: "제품 탐색" });
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:notification-click", { detail: { notification_id: "n-task", target: { surface: "work", task_id: "task-1" } } }));
+      });
+      await waitFor(() => expect(title()).toBe("업무"));
+      await waitFor(() => expect(calls.some((call) => call.path === "/api/notifications/n-task/read" && call.method === "POST")).toBe(true));
+      const reads = calls.filter((call) => call.path.endsWith("/read")).length;
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:notification-click", { detail: { notification_id: null, target: { surface: "notifications" } } }));
+      });
+      await waitFor(() => expect(title()).toBe("알림"));
+      expect(calls.filter((call) => call.path.endsWith("/read")).length).toBe(reads);
+      // 열 수 없는 대상(target: null) — 목록 줄과 같은 일: 읽음 + 「열 수 없는 항목입니다」 · 화면은 그대로(검수 W-4)
+      act(() => {
+        window.dispatchEvent(new CustomEvent("strong-hajin:notification-click", { detail: { notification_id: "n-gone", target: null } }));
+      });
+      expect(await screen.findByText("열 수 없는 항목입니다")).toBeTruthy();
+      expect(title()).toBe("알림");
+      await waitFor(() => expect(calls.some((call) => call.path === "/api/notifications/n-gone/read" && call.method === "POST")).toBe(true));
+    } finally {
+      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    }
+  });
+
+  it("사이드바 점 둘 — `GET /api/me/badges` 로 켜고, 사건(`notification.read` 등) 뒤 다시 읽어 끈다", async () => {
+    let badges = { notifications: true, inbox: true };
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      calls.push(path);
+      if (path === "/api/organization/me") return jsonResponse({ member_id: "mina", display_name: "민아", organizations: [], roles: [], capabilities: ["task.read"] });
+      if (path === "/api/me/badges") return jsonResponse(badges);
+      return jsonResponse([]);
+    });
+    FakeEventSource.all = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("fetch", withSession(fetchMock));
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
+    const dotOf = (name: string) => within(navigation).getByRole("button", { name }).querySelector(".scax-nav-item__dot");
+    await waitFor(() => expect(dotOf("알림")).not.toBeNull());
+    expect(dotOf("메시지함")).not.toBeNull();
+    expect(dotOf("업무")).toBeNull();
+
+    badges = { notifications: false, inbox: true };
+    await waitFor(() => expect(FakeEventSource.all.length).toBe(1));
+    act(() => FakeEventSource.latest().emit("notification.read", { v: 1, all: true, theme: null }));
+    await waitFor(() => expect(dotOf("알림")).toBeNull());
+    expect(dotOf("메시지함")).not.toBeNull();
+
+    badges = { notifications: false, inbox: false };
+    act(() => FakeEventSource.latest().emit("inbox.message_updated", { v: 1, type: "inbox.message_updated", member_id: "mina", message_id: "m1" }));
+    await waitFor(() => expect(dotOf("메시지함")).toBeNull());
   });
 });

@@ -4,9 +4,12 @@
 둘을 Postgres `LISTEN/NOTIFY` 로 잇는다. 이 파일이 그 사이의 **유일한 계약**이다 — 채널 이름과 페이로드 모양을
 양쪽이 여기서 가져다 쓴다(글자를 따로 적지 않는다).
 
-- **`USER_EVENTS_CHANNEL`** (`ax_user_events`) — 워커·back → back WS. 「메시지함 전용」이 아니라 2단계(AX 판단·알림)도
-  쓸 **사용자 사건 채널**이다(P-4). 페이로드는 아래 `UserEvent.to_payload()` 의 JSON 한 줄(8000바이트 한도 안 — 본문을
-  싣지 않고 **무엇이 바뀌었는지만** 싣는다. WS 는 받으면 회원 것만 거르고, 화면이 API 로 다시 읽는다).
+- **`USER_EVENTS_CHANNEL`** (`ax_user_events`) — 워커·back → back 의 사건 채널 SSE `GET /api/events/stream`
+  (SPEC-011 §4.1 · SPEC-008 v0.7.0 §4.4 — 옛 WS `/api/inbox/stream` 은 되돌림 여지로 남는다). **「메시지함 전용」이 아니다** —
+  메시지함 사건 넷과 **알림 사건 둘**(`notification.upserted` · `notification.read`)이 같은 채널을 탄다. 페이로드는 아래
+  `UserEvent.to_payload()` 의 JSON 한 줄(8000바이트 한도 안 — 본문을 싣지 않고 **무엇이 바뀌었는지만** 싣는다. 듣는 쪽은
+  받으면 회원 것만 거르고, 화면이 API 로 다시 읽는다). 알림은 `{v, type, member_id, notification_id, seq, created}` 만 싣고
+  SSE 를 내는 API 프로세스가 그 알림을 DB 에서 읽어 보낸다(SPEC-011 §4.1-4 — 읽기 인가를 한 곳에서).
 - **`SYNC_WAKE_CHANNEL`** (`ax_external_sync`) — back → 연동 워커. 연결·재연결·방 추가가 일어나면 워커가 다음 폴링을
   기다리지 않고 바로 백필을 집게 깨운다. 놓쳐도 된다 — 워커는 상태 칸(`status='backfilling'`·`backfill_done_at`)을
   주기적으로 훑어 같은 일을 찾는다(at-least-once 의 보조 신호).
@@ -37,6 +40,16 @@ class UserEventType:
     #: 메시지(메일)의 `made_task_count` 가 바뀌었다 — 그 메시지로 만든 업무가 확정됐다(SPEC-008 §4.4 · H-5). `message_id` ·
     #: `room_id`(메일이면 없음)만 싣는다. 메시지함은 받아서 그 방(메일)을 다시 읽는다. **업무 확정 커밋 뒤**에 낸다.
     MESSAGE_UPDATED = "inbox.message_updated"
+    #: 알림이 새로 섰거나 합쳐져 바뀌었다 — `notification_id` · `seq`(사건 순번) · `created` 만 싣는다(SPEC-011 §4.1-2·§4.1-4).
+    NOTIFICATION_UPSERTED = "notification.upserted"
+    #: 알림 읽음 — `data` 가 `{"notification_ids": [..]}` 또는 `{"all": true, "theme": null|…}`(SPEC-011 §4.1-2).
+    NOTIFICATION_READ = "notification.read"
+
+
+#: 메시지함 사건 넷 — 옛 WS 가 그대로 내보내는 것(이름·필드 그대로 · SPEC-008 v0.7.0 §4.4).
+INBOX_EVENT_TYPES = frozenset(
+    {UserEventType.MESSAGE_ARRIVED, UserEventType.REPLY_RESULT, UserEventType.INTEGRATION_CHANGED, UserEventType.MESSAGE_UPDATED}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,10 +64,14 @@ class UserEvent:
     source_kind: str | None = None
     #: 사건마다 더 실을 작은 값(`local_id`·`status`·`error`·`count` 등). 본문·토큰은 싣지 않는다.
     data: dict[str, Any] = field(default_factory=dict)
+    #: 알림 사건(`notification.upserted`)만 — 어느 알림인지 · 그 사건 순번 · 새로 섰는지.
+    notification_id: str | None = None
+    seq: int | None = None
+    created: bool | None = None
 
     def to_payload(self) -> str:
         body: dict[str, Any] = {"v": EVENT_VERSION, "type": self.type, "member_id": self.member_id}
-        for key in ("integration_id", "room_id", "message_id", "source_kind"):
+        for key in ("integration_id", "room_id", "message_id", "source_kind", "notification_id", "seq", "created"):
             value = getattr(self, key)
             if value is not None:
                 body[key] = value
@@ -81,6 +98,9 @@ class UserEvent:
             message_id=body.get("message_id"),
             source_kind=body.get("source_kind"),
             data=body.get("data") or {},
+            notification_id=body.get("notification_id") if isinstance(body.get("notification_id"), str) else None,
+            seq=body.get("seq") if isinstance(body.get("seq"), int) and not isinstance(body.get("seq"), bool) else None,
+            created=body.get("created") if isinstance(body.get("created"), bool) else None,
         )
 
 

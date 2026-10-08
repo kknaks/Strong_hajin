@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { useCallback, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { EventStreamProvider } from "../../lib/eventStreamContext";
+import { FakeEventSource } from "../../lib/fakeEventSource.test-utils";
 import type { TaskOriginMessage } from "../../lib/viewModels";
 import { InboxPage } from "./InboxPage";
 
@@ -86,19 +88,8 @@ const KAKAO = {
   ],
 };
 
-class FakeSocket {
-  static all: FakeSocket[] = [];
-  onopen: (() => void) | null = null;
-  onmessage: ((message: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  constructor(public url: string) {
-    FakeSocket.all.push(this);
-  }
-  close() {}
-  emit(event: unknown) {
-    act(() => this.onmessage?.({ data: JSON.stringify(event) }));
-  }
-}
+/** 사용자 사건 채널(SSE) 대역 — 서버가 그 사건 이름으로 보낸 것처럼 민다(SPEC-011 §4.1-2 · 메시지함 사건은 이름·필드 그대로). */
+const pushEvent = (event: { type: string; [key: string]: unknown }) => act(() => FakeEventSource.latest().emit(event.type, event));
 
 type Call = { path: string; method: string; body: unknown; headers: Record<string, string> };
 let calls: Call[] = [];
@@ -131,13 +122,13 @@ function Harness({ onError = noop }: { onError?: (message: string | null) => voi
   const registerRails = useCallback((next: { left?: ReactNode }) => setRails(next), []);
   const registerActions = useCallback((node: ReactNode) => setActions(node), []);
   return (
-    <>
+    <EventStreamProvider onSessionLost={noop}>
       <div data-testid="actions">{actions}</div>
       <div data-testid="rail">{rails.left}</div>
       <div data-testid="body">
         <InboxPage meName="유하람" onError={onError} onRegisterHeaderActions={registerActions} onRegisterRails={registerRails} />
       </div>
-    </>
+    </EventStreamProvider>
   );
 }
 
@@ -148,9 +139,9 @@ const card = (key: string) => document.querySelector(`[data-card="${key}"]`) as 
 beforeEach(() => {
   calls = [];
   overrides = {};
-  FakeSocket.all = [];
+  FakeEventSource.all = [];
   vi.stubGlobal("fetch", routeFetch());
-  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EventSource", FakeEventSource);
 });
 
 afterEach(() => {
@@ -242,11 +233,43 @@ describe("메시지함 — 레일 · 네 상태", () => {
   it("새 메시지 사건이 오면 목록을 다시 읽는다(AC-10b · 회의 WS 아님)", async () => {
     render(<Harness />);
     await rail().findByText("#pilot-launch");
-    const socket = FakeSocket.all[0];
-    expect(socket.url).toMatch(/\/api\/inbox\/stream$/);
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(FakeEventSource.latest().url).toBe("/api/events/stream");
     const before = calls.filter((call) => call.path.startsWith("/api/inbox/messages")).length;
-    socket.emit({ v: 1, type: "inbox.message_arrived", member_id: "me", room_id: "r1" });
+    pushEvent({ v: 1, type: "inbox.message_arrived", member_id: "me", room_id: "r1" });
     await waitFor(() => expect(calls.filter((call) => call.path.startsWith("/api/inbox/messages")).length).toBeGreaterThan(before));
+  });
+  /* WORK-013 WP1-FE — 옛 `onReconnect` 자리가 사건 채널의 `resync` 다(SPEC-011 §4.1-3 ⑤ · r2 R-F1 · r3 R3-W2). */
+  it("순번 없이 끊겼다 다시 붙으면 둘째 `ready` 에서 목록을 한 번 다시 읽는다 · 첫 `ready` 로는 다시 읽지 않는다", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<Harness />);
+      await rail().findByText("#pilot-launch");
+      const lists = () => calls.filter((call) => call.path.startsWith("/api/inbox/messages")).length;
+      act(() => FakeEventSource.latest().ready());
+      const before = lists();
+      await act(async () => {
+        FakeEventSource.latest().fail(2);
+        await vi.advanceTimersByTimeAsync(1_300);
+      });
+      expect(FakeEventSource.all).toHaveLength(2);
+      expect(FakeEventSource.latest().url).toBe("/api/events/stream");
+      expect(lists()).toBe(before);
+      act(() => FakeEventSource.latest().ready());
+      await waitFor(() => expect(lists()).toBe(before + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("서버 `resync` 가 오면 목록을 다시 읽는다", async () => {
+    render(<Harness />);
+    await rail().findByText("#pilot-launch");
+    act(() => FakeEventSource.latest().ready());
+    const lists = () => calls.filter((call) => call.path.startsWith("/api/inbox/messages")).length;
+    const before = lists();
+    act(() => FakeEventSource.latest().emit("resync", { v: 1, reason: "dropped" }));
+    await waitFor(() => expect(lists()).toBe(before + 1));
   });
 });
 
@@ -302,14 +325,14 @@ describe("메일 본문 — 샌드박스 iframe · 답장", () => {
     expect(within(box).getByRole("button", { name: "보내는 중…" })).toBeTruthy();
 
     // 결과는 사용자 사건으로 온다 — 실패면 칸 안에 「다시 보내기」, 같은 키로 다시 보낸다
-    FakeSocket.all[0].emit({ v: 1, type: "inbox.reply_result", member_id: "me", data: { local_id: "L1", status: "failed" } });
+    pushEvent({ v: 1, type: "inbox.reply_result", member_id: "me", data: { local_id: "L1", status: "failed" } });
     expect(await within(box).findByText("답장을 보내지 못했습니다")).toBeTruthy();
     fireEvent.click(within(box).getByRole("button", { name: "다시 보내기" }));
     await waitFor(() => expect(calls.filter((call) => call.path === "/api/inbox/mail/m1/reply")).toHaveLength(2));
     const [first, second] = calls.filter((call) => call.path === "/api/inbox/mail/m1/reply");
     expect(second.headers["Idempotency-Key"]).toBe(first.headers["Idempotency-Key"]);
 
-    FakeSocket.all[0].emit({ v: 1, type: "inbox.reply_result", member_id: "me", data: { local_id: "L1", status: "sent" } });
+    pushEvent({ v: 1, type: "inbox.reply_result", member_id: "me", data: { local_id: "L1", status: "sent" } });
     await waitFor(() => expect(body().queryByRole("region", { name: "전체 답장 쓰기" })).toBeNull());
   });
 });
@@ -371,7 +394,7 @@ describe("슬랙·카톡 본문 — 대화방 · 스레드 3열 · 조회 전용
     const first = calls.find((call) => call.path === "/api/inbox/rooms/r1/reply")!;
     expect((first.body as FormData).get("text")).toBe("3장 수정본 올립니다");
 
-    FakeSocket.all[0].emit({ v: 1, type: "inbox.reply_result", member_id: "me", data: { local_id: "L1", status: "failed" } });
+    pushEvent({ v: 1, type: "inbox.reply_result", member_id: "me", data: { local_id: "L1", status: "failed" } });
     fireEvent.click(await body().findByRole("button", { name: "다시 보내기" }));
     await waitFor(() => expect(calls.filter((call) => call.path === "/api/inbox/rooms/r1/reply")).toHaveLength(2));
     const second = calls.filter((call) => call.path === "/api/inbox/rooms/r1/reply")[1];
@@ -400,12 +423,12 @@ function AxHarness({ onAskAx, focus = null, onFocusHandled }: { onAskAx: (text: 
   const [rails, setRails] = useState<{ left?: ReactNode }>({});
   const registerRails = useCallback((next: { left?: ReactNode }) => setRails(next), []);
   return (
-    <>
+    <EventStreamProvider onSessionLost={noop}>
       <div data-testid="rail">{rails.left}</div>
       <div data-testid="body">
         <InboxPage focus={focus} meName="유하람" onAskAx={onAskAx as never} onError={noop} onFocusHandled={onFocusHandled} onRegisterRails={registerRails} />
       </div>
-    </>
+    </EventStreamProvider>
   );
 }
 
@@ -489,27 +512,27 @@ describe("WP4-FE — 서랍 열며 참고 자료 · 메일 머리 · 「업무 �
   });
 
   it("「업무 만듦」 — `inbox.message_updated` 가 오면 그 방을 다시 읽어 새로고침 없이 선다", async () => {
-    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.stubGlobal("EventSource", FakeEventSource);
     render(<AxHarness onAskAx={vi.fn()} />);
     fireEvent.click(await rail().findByText("#pilot-launch"));
     await body().findByText(/첫 줄/);
     expect(within(rowOf("2")).queryByText("업무 만듦")).toBeNull();
     overrides["GET /api/inbox/rooms/r1/messages"] = () =>
       json({ ...ROOM, messages: ROOM.messages.map((message) => (message.id === "2" ? { ...message, made_task_count: 1 } : message)) });
-    FakeSocket.all.at(-1)!.emit({ v: 1, type: "inbox.message_updated", member_id: "haram", message_id: "2", room_id: "r1" });
+    pushEvent({ v: 1, type: "inbox.message_updated", member_id: "haram", message_id: "2", room_id: "r1" });
     await waitFor(() => expect(within(rowOf("2")).getByText("업무 만듦")).toBeTruthy());
     // 막지 않는다 — AX 업무 생성은 그대로 선다
     expect(within(barOf(rowOf("2"))!).getByRole("button", { name: "AX 업무 생성" })).toBeTruthy();
   });
 
   it("메일도 — `inbox.message_updated`(room_id 없음)가 오면 머리에 「업무 만듦」", async () => {
-    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.stubGlobal("EventSource", FakeEventSource);
     render(<AxHarness onAskAx={vi.fn()} />);
     fireEvent.click(await rail().findByText("2차 파일럿 일정표"));
     await body().findByTitle("메일 본문");
     expect(body().queryByText("업무 만듦")).toBeNull();
     overrides["GET /api/inbox/mail/m1"] = () => json({ ...MAIL, made_task_count: 2 });
-    FakeSocket.all.at(-1)!.emit({ v: 1, type: "inbox.message_updated", member_id: "haram", message_id: "m1", room_id: null });
+    pushEvent({ v: 1, type: "inbox.message_updated", member_id: "haram", message_id: "m1", room_id: null });
     expect(await body().findByText("업무 만듦")).toBeTruthy();
   });
 

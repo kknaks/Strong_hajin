@@ -2,7 +2,7 @@
  * 데스크톱 셸(Tauri)과 말하는 **유일한 자리**.
  *
  * `api.ts` 밖에서 `fetch` 하지 않는다는 규약과 같은 결이다 — **이 파일 밖에서 `invoke` 를
- * 부르지 않는다.** 여는 것은 SPEC-006 §4 의 커맨드 넷뿐이고, 범용 invoke·파일 권한·
+ * 부르지 않는다.** 여는 것은 SPEC-006 §4 의 커맨드(넷 + 알림 둘 · v0.7.0)뿐이고, 범용 invoke·파일 권한·
  * 운영 origin 을 여기에 더하지 않는다.
  *
  * ## 셸이 없으면 «한 번도» 부르지 않는다 (`E-01` · S-13)
@@ -14,7 +14,7 @@
  * (문서가 다시 보이게 될 때 — L-14). 셸은 신호가 없다고 해서 점유를 풀지 않는다.
  */
 
-import type { KakaoLocalRoom } from "./viewModels";
+import type { KakaoLocalRoom, NotificationTarget } from "./viewModels";
 
 export type WakeState = "off" | "on" | "degraded";
 
@@ -322,4 +322,96 @@ export async function kakaoStoreDeviceToken(token: string): Promise<"stored" | "
     console.warn("[shell] 기기 토큰을 키체인에 넣지 못했습니다.");
     return "failed";
   }
+}
+
+/* ===== OS 알림 (WORK-013 WP4 · SPEC-011 §4.6 · SPEC-006 v0.7.0 「시스템 알림 수용」) =====
+ *
+ * 커맨드 둘(`notify_permission` · `notify_show`)과 셸 → 웹 사건 하나(`strong-hajin:notification-click`).
+ * **`shell_info.features` 에 `notification` 이 있을 때만** 부른다 — 옛 dmg(없음)·브라우저(셸 없음)에서는 한 번도 부르지
+ * 않고 「없다」로 답한다(목록·점만 · §2.5). 셸은 글자를 만들지 않는다 — 제목·본문은 부르는 쪽(`describeNotification`)이 만든다.
+ */
+
+let notificationProbe: Promise<boolean> | null = null;
+
+/** 이 셸이 OS 알림을 띄울 수 있나(`features` 에 `notification`). 알아낸 답은 기억한다 — 못 알아냈으면 다음에 다시 묻는다. */
+export function hasShellNotifications(): Promise<boolean> {
+  if (!hasShell()) return Promise.resolve(false);
+  if (!notificationProbe) {
+    notificationProbe = shellInfo().then((info) => {
+      if (!info) notificationProbe = null;
+      return Boolean(info?.features?.includes("notification"));
+    });
+  }
+  return notificationProbe;
+}
+
+/** 시험용 — 판정 기억을 비운다. */
+export function forgetShellNotificationProbe() {
+  notificationProbe = null;
+}
+
+export type NotifyPermission = "granted" | "denied" | "default";
+
+/**
+ * OS 알림 권한을 읽는다 — `request` 면 아직 묻지 않았을 때 OS 프롬프트를 띄운다(OQ-1102 — 로그인 뒤 첫 화면 한 번).
+ * 셸이 없거나 기능이 없으면 `absent` · 호출이 실패하면 `default`(「모른다」 — 막지 않는다).
+ */
+export async function notifyPermission(request: boolean): Promise<NotifyPermission | "absent"> {
+  if (!(await hasShellNotifications())) return "absent";
+  try {
+    const reply = await call<{ state?: unknown }>("notify_permission", { request });
+    return reply?.state === "granted" || reply?.state === "denied" ? reply.state : "default";
+  } catch {
+    return "default";
+  }
+}
+
+export type NotifyShowInput = {
+  /** 묶음 「새 알림 N건」 은 `null`(R-W5) — 클릭해도 읽음 API 를 부르지 않는다. */
+  notification_id: string | null;
+  title: string;
+  body: string;
+  /** `null` = 지금 열 수 없는 대상(SPEC-011 §4.5-4) — 클릭은 목록 줄처럼 읽음 + 「열 수 없는 항목입니다」(검수 W-4). */
+  target: NotificationTarget | null;
+};
+
+/** 알림 하나를 OS 로 — 띄웠으면 `true`. 권한 거부 · 셸 없음 · 기능 없음 · 실패는 모두 `false`(오류 아님 · 조용히). */
+export async function notifyShow(input: NotifyShowInput): Promise<boolean> {
+  if (!(await hasShellNotifications())) return false;
+  try {
+    const reply = await call<{ shown?: unknown }>("notify_show", input);
+    return reply?.shown === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * OS 알림을 눌렀다 — **셸 → 웹 사건**(셸이 창을 앞으로 가져온 뒤 `eval` 로 쏜다 · 다운로드 사건과 같은 길).
+ * 이름은 셸(`src-tauri/src/notify.rs` `CLICK_EVENT`)과 **같아야 한다** — 셸의 시험이 이 줄을 대조한다.
+ */
+export const SHELL_NOTIFICATION_CLICK_EVENT = "strong-hajin:notification-click";
+
+export type ShellNotificationClick = { notification_id: string | null; target: NotificationTarget | null };
+
+function readClickDetail(detail: unknown): ShellNotificationClick | null {
+  if (typeof detail !== "object" || detail === null) return null;
+  const { notification_id: id, target } = detail as { notification_id?: unknown; target?: unknown };
+  if (id !== null && id !== undefined && typeof id !== "string") return null;
+  const surface = typeof target === "object" && target !== null ? (target as { surface?: unknown }).surface : undefined;
+  return { notification_id: typeof id === "string" && id ? id : null, target: typeof surface === "string" ? (target as NotificationTarget) : null };
+}
+
+/** 알림 클릭을 구독한다. 반환값은 구독 해제. 셸이 없으면 듣지도 않는다. */
+export function onShellNotificationClick(
+  handler: (click: ShellNotificationClick) => void,
+  scope: ShellWindow = window,
+): () => void {
+  if (!hasShell(scope)) return () => {};
+  const listener = (event: Event) => {
+    const click = readClickDetail((event as CustomEvent<unknown>).detail);
+    if (click) handler(click);
+  };
+  scope.addEventListener(SHELL_NOTIFICATION_CLICK_EVENT, listener);
+  return () => scope.removeEventListener(SHELL_NOTIFICATION_CLICK_EVENT, listener);
 }

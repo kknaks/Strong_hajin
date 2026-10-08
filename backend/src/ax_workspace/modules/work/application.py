@@ -1,6 +1,7 @@
 """Public commands for a principal's directly owned tasks."""
 from __future__ import annotations
 
+from ax_workspace.modules.notification_events import NO_NOTIFIER, NotificationEvent, Notifier, excerpt, recipients
 from ax_workspace.modules.work.task_results import TaskCompletionResult, TaskReferenceResult, TaskReferenceReleaseResult
 from ax_workspace.modules.work.task_results import TaskSuccessorReleaseResult
 
@@ -246,8 +247,11 @@ class TaskApplication:
         schedules: TaskScheduleRepository | None = None,
         time_blocks: TimeBlockRepository | None = None,
         message_origins: MessageOriginPort | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.repository = repository
+        # 알림 생성기(SPEC-011 §5) — 사건 자리는 사건 · 관련자만 넘긴다(규칙은 `modules/notification_events.py`).
+        self._notifier = notifier or NO_NOTIFIER
         # 메시지함 메시지에서 온 업무의 「원래 메시지」 — 메시지함 모듈의 조회로만 읽는다(SPEC-008 §4.8 ③).
         self._message_origins = message_origins
         # 시간 배정 — **업무의 자식**이라 자기 가시성 규칙을 갖지 않는다 (SPEC-004 §4 Data Contract).
@@ -622,6 +626,17 @@ class TaskApplication:
             task, str(principal.id), "task.updated", f"업무 내용 수정: {task.title} ({', '.join(sorted(changes))})",
             before_ref=f"task:{task.id}@{expected_version}",
         )
+        # W17 — 기한 · 시작일이 바뀌면 담당(행위자면 없음). 요청자(W18) · 결재자(W19) · 그 밖의 칸(W20)은 없다.
+        for change, before, after in (
+            ("due_changed", dates_before[1], task.due_date),
+            ("start_changed", dates_before[0], task.start_date),
+        ):
+            if before != after:
+                self._notify_task(
+                    "W17", "work.changed", task, f"task:{task.id}@{task.version}:{change}", principal,
+                    recipients((self._holder_of(task), "assignee")),
+                    {"change": change, "before": before.isoformat() if before else None, "after": after.isoformat() if after else None},
+                )
         return {**self._view(task, principal), "schedule_release": released}
 
     def _require_project_unlocked(self, principal: Principal, tasks: list[Any]) -> None:
@@ -1578,11 +1593,8 @@ class TaskApplication:
         **멱등이 아니다** — 이미 닫힌 관계에는 대상이 없으므로 404 다. 없는 것과 못 읽는 것을 같은
         말로 답한다.
 
-        ⚠ **알림의 자리다 — 이 판의 범위 밖이다** (SPEC-007 §5 「알림의 자리」 · D-20).
-        해제가 성공하면 **B 의 시작 게이트가 열릴 수 있고 B 의 담당자는 그것을 모른다.** A 쪽에도
-        해제가 열리면서 그 구멍이 넓어졌다(A 의 담당자가 B 의 게이트를 연다). `modules/notifications.py`
-        가 이미 있지만 **이 명령은 그 모듈을 부르지 않는다** — 종류·문구·전달 경로·수신자·시점이
-        아무것도 정해지지 않았다. 다음 판이 이 자리를 찾을 수 있게 표시만 남긴다.
+        **알림 — W35** (SPEC-011 §4.2-2 · WORK-013 WP2-BE). 해제가 성공하면 B 의 시작 게이트가 열릴 수 있다 —
+        B 의 담당에게 `work.predecessor_released` 를 낸다(예전 「알림의 자리」 표시를 연 자리). 행위자가 B 의 담당이면 없다.
         """
         self._require(principal, TASK_READ)
         # **A 를 읽을 수 없으면 없는 것과 같다** — 그 업무의 후행이라는 사실 자체를 알려주지 않는다.
@@ -1616,6 +1628,13 @@ class TaskApplication:
             "task.predecessor_released",
             f"선행업무 해제: {str(getattr(self.repository.task_by_id(task_id), 'title', '') or '')[:80]}",
             before_ref=f"task:{successor.id}@{expected_version}",
+        )
+        # W35 — 「알림의 자리」를 연다(SPEC-011 §4.2-2): 후행 B 의 담당이 시작 게이트가 열린 것을 안다.
+        predecessor = self.repository.task_by_id(task_id)
+        self._notify_task(
+            "W35", "work.predecessor_released", successor, f"predecessor:{task_id}->{successor.id}@{successor.version}", principal,
+            recipients((self._holder_of(successor), "assignee")),
+            {"predecessor_title": str(getattr(predecessor, "title", "") or "")},
         )
         rows, hidden = self.successor_views(principal, task_id)
         return {
@@ -1924,6 +1943,11 @@ class TaskApplication:
         self.repository.record_activity(
             task, str(principal.id), "task.completion_submitted", f"완료 보고: {clean_summary[:80]}"
         )
+        # W25 — 요청자(확인자). CC 는 없다(W26).
+        self._notify_task(
+            "W25", "work.completion_reported", task, f"task:{task.id}@{task.version}:reported", principal,
+            self._requester_people(task), {},
+        )
         return {
             **self._view(task, principal),
             "delivery": self.delivery_view(principal, task),
@@ -1961,6 +1985,12 @@ class TaskApplication:
         self.repository.touch(task)
         self.repository.record_activity(
             task, str(principal.id), "task.completion_changes_requested", f"보완 요청: {clean[:80]}", reason=clean[:1000]
+        )
+        # W28 — 보고자 · 담당. 승인(W27)은 없다.
+        self._notify_task(
+            "W28", "work.rework_requested", task, f"task:{task.id}@{task.version}:rework", principal,
+            recipients((str(getattr(submission, "submitted_by", "") or ""), "assignee"), (self._holder_of(task), "assignee")),
+            {"comment": excerpt(clean, 300)},
         )
 
     def delivery_view(self, principal: Principal, task: Any) -> dict[str, Any] | None:
@@ -2027,6 +2057,29 @@ class TaskApplication:
             ],
             "outputs": outputs,
         }
+
+    def _requester_people(self, task: Any) -> tuple[Any, ...]:
+        """요청 업무의 요청자 자리 — 요청자와 회의 승격자(꼬리표 `requester`). 시스템 요청자는 사람이 아니다."""
+        if self._requests is None or getattr(task, "source_work_request_id", None) is None:
+            return ()
+        request = self._requests.request(task.source_work_request_id)
+        if request is None:
+            return ()
+        return recipients(
+            (str(request.requester_id), "requester"),
+            (str(getattr(request, "promoted_by_member_id", None) or ""), "requester"),
+        )
+
+    def _notify_task(
+        self, row: str, kind: str, task: Any, source_id: str, principal: Principal, people: tuple[Any, ...], data: dict[str, Any]
+    ) -> None:
+        self._notifier.notify(
+            NotificationEvent(
+                row=row, kind=kind, source_kind="task_event", source_id=source_id, recipients=people,
+                subject={"type": "task", "id": str(task.id), "title": task.title}, actor_member_id=str(principal.id),
+                data=data, target={"surface": "work", "task_id": str(task.id)},
+            )
+        )
 
     def _requester_of(self, task: Any) -> str | None:
         if self._requests is None or getattr(task, "source_work_request_id", None) is None:
@@ -2115,6 +2168,12 @@ class TaskApplication:
             before_ref=transition.event.before_ref,
             reason=transition.event.reason,
         )
+        if target is TaskState.CANCELLED:
+            # W24 — 업무 취소 → 담당(담당 자신이 취소했으면 행위자라 없다). 시작 · 보류 · 완료(W23)는 없다.
+            self._notify_task(
+                "W24", "work.changed", task, f"task:{task.id}@{task.version}:cancelled", principal,
+                recipients((self._holder_of(task), "assignee")), {"change": "cancelled"},
+            )
         return {**self._view(task, principal), "schedule_release": released}
 
     def _require_cancellable(self, task: Any) -> None:
@@ -2178,6 +2237,14 @@ class TaskApplication:
             task, str(principal.id), "task.reopened", f"업무 재개: {task.title}",
             before_ref=f"task:{task.id}@{expected_version}", reason=clean,
         )
+        # W29 — 요청자가 열면 담당 · W30 — 담당이 열면 요청자. 행위자는 원칙 ① 이 뺀다.
+        holder = self._holder_of(task)
+        by_holder = holder is not None and str(principal.id) == holder
+        # W29 이면 **담당만**(DEC 표 — 승격자에게 가지 않는다) · W30 일 때만 요청자 · 승격자(검수 W-2).
+        self._notify_task(
+            "W30" if by_holder else "W29", "work.changed", task, f"task:{task.id}@{task.version}:reopened", principal,
+            self._requester_people(task) if by_holder else recipients((holder, "assignee")), {"change": "reopened"},
+        )
         return self._view(task, principal)
 
     def _require_may_reopen(self, principal: Principal, task: Any) -> None:
@@ -2225,6 +2292,15 @@ class TaskApplication:
         if any(row.state == "pending" and row.kind == kind for row in self.repository.proposals_for(task.id)):
             raise TaskProposalNotPending("이미 응답을 기다리는 같은 종류의 제안이 있습니다")
         record = self.repository.open_proposal(task, kind, str(principal.id), payload, clean)
+        # W31 — 조건 변경 제안 · W32 — 취소 제안 → 담당(응답자).
+        data: dict[str, Any] = {"change": "condition_proposed" if kind == "terms_change" else "cancel_proposed"}
+        if kind == "terms_change" and "due_date" in (payload or {}):
+            data["before"] = task.due_date.isoformat() if task.due_date else None
+            data["after"] = (payload or {}).get("due_date")
+        self._notify_task(
+            "W31" if kind == "terms_change" else "W32", "work.changed", task, f"proposal:{record.id}:opened", principal,
+            recipients((self._holder_of(task), "assignee")), data,
+        )
         return {"task_id": str(task.id), "proposal": _proposal_view(record), "task_version": int(task.version)}
 
     def respond_to_proposal(
@@ -2275,6 +2351,12 @@ class TaskApplication:
         self.repository.settle_proposal(record, str(principal.id), "agreed" if agree else "declined")
         # **거절은 아무것도 바꾸지 않는다** — 그래도 묶음은 낸다 (증보 K3: 세 자리 전부).
         released = self._apply_proposal(principal, task, record) if agree else _NO_SCHEDULE_RELEASE
+        # W33 — 제안 응답 · 합의 취소 · 합의 조건 변경 → 제안자(요청자 · 승격자 — 꼬리표 `requester`). 철회(W34)는 없다.
+        answer = "declined" if not agree else ("agreement_cancelled" if record.kind == "cancellation" else "agreement_changed")
+        self._notify_task(
+            "W33", "work.proposal_answered", task, f"proposal:{record.id}:answered", principal,
+            recipients((str(record.proposed_by), "requester")), {"answer": answer},
+        )
         return {
             "task_id": str(task.id),
             "proposal": _proposal_view(record),

@@ -72,7 +72,14 @@ from ax_workspace.modules.ax_execution.conversations import (
     ConversationContextReferenceInput,
 )
 from ax_workspace.modules.ax_execution.actions import ActionApplication, ActionCapabilityDenied
-from ax_workspace.modules.notifications import NotificationApplication, NotificationView, notification_view
+from ax_workspace.modules.notifications import (
+    NotificationApplication,
+    NotificationItem,
+    NotificationPage,
+    NotificationReadAllResult,
+    NotificationReplay,
+    NotificationSummary,
+)
 from ax_workspace.modules.external_channels.application import (
     AddRoomsCommand,
     AvailableRoomsPage,
@@ -243,7 +250,7 @@ from ax_workspace.platform.persistence import (
     make_session_factory,
 )
 from ax_workspace.platform.materials import LocalDirectoryMaterialStorage
-from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository
+from ax_workspace.platform.notifications import SqlAlchemyNotificationRepository, notification_generator
 from ax_workspace.platform.external_channels import SqlAlchemyExternalChannelRepository
 from ax_workspace.bootstrap.external_inbox import ExternalInboxOperations
 from ax_workspace.platform.external_oauth import GoogleGmailOAuth, SlackUserOAuth
@@ -1095,6 +1102,10 @@ class WorkflowApplication(ExternalInboxOperations):
     def __init__(self, settings: Settings, report_provider: AiProvider | None = None) -> None:
         self._settings = settings
         self._session_factory = make_session_factory(settings.database_url)
+        if not settings.database_url.startswith("postgresql"):
+            # NOTIFY 가 없는 DB(시험) — `publish_user_event` 가 실은 사건을 커밋 뒤 이 프로세스의 허브로 직접 흘린다
+            # (`platform/user_events.py`). PostgreSQL 이면 LISTEN 이 같은 일을 한다.
+            self._session_factory.configure(info={user_events.LOCAL_DISPATCH_KEY: lambda payload: self.user_event_hub.dispatch(payload)})
         self._material_storage = LocalDirectoryMaterialStorage(Path(settings.materials_dir))
         self._recording_storage = LocalDirectoryRecordingStorage(Path(settings.recordings_dir))
         # 테스트가 provider 경계에서 대역을 끼우는 자리. 비어 있으면 실제 Soniox 어댑터를 만든다.
@@ -2455,40 +2466,90 @@ class WorkflowApplication(ExternalInboxOperations):
             session.commit()
             return result
 
-    # --- 알림 (main #3) ------------------------------------------------------------
+    # --- 알림 (SPEC-011 §4.4 · §4.5 · WORK-013 WP2-BE) ----------------------------------------
 
     def _notifications(self, session: Any) -> NotificationApplication:
-        return NotificationApplication(SqlAlchemyNotificationRepository(session), self._meetings(session), self._work_requests(session))
+        return NotificationApplication(
+            SqlAlchemyNotificationRepository(session),
+            lambda principal, target: self._notification_target_open(session, principal, target),
+        )
 
-    def list_notifications(self, principal: Principal) -> list[NotificationView]:
+    def _notification_target_open(self, session: Any, principal: Principal, target: dict[str, Any]) -> bool:
+        """그 대상을 **지금** 열 수 있나(§4.5-2-4) — 못 열면 줄은 남고 `target` 만 `null` 이다. 알림이 권한을 넘겨주지 않는다."""
+        surface = target.get("surface")
+        try:
+            if surface == "work":
+                if target.get("task_id"):
+                    return bool(self._tasks(session).may_read_task(principal, UUID(str(target["task_id"]))))
+                if target.get("work_request_id"):
+                    self._work_requests(session).get(principal, UUID(str(target["work_request_id"])))
+                    return True
+                return False
+            if surface == "meetings":
+                self._meetings(session).get(principal, UUID(str(target["meeting_id"])))
+                return True
+            if surface == "inbox":
+                store = SqlAlchemyInboxStore(session)
+                if target.get("source") == "mail":
+                    return store.mail_for(str(principal.id), UUID(str(target["message_id"]))) is not None
+                return store.room_for(str(principal.id), UUID(str(target["room_id"]))) is not None
+            if surface == "settings":
+                return True
+        except (ResourceNotFound, MeetingNotFound, MeetingAccessDenied, TaskNotFound, TaskAccessDenied, WorkRequestAccessDenied, ValueError, KeyError):
+            # **못 여는 것만** null 이다 — 예상 밖 소유 모듈 오류는 빈 성공으로 삼키지 않는다(옛 계약 그대로).
+            return False
+        return False
+
+    def list_notifications(
+        self, principal: Principal, *, theme: str | None = None, cursor: str | None = None, limit: int | None = None
+    ) -> NotificationPage:
         with self._session_factory() as session:
-            return self._notifications(session).list(principal)
+            return self._notifications(session).list(principal, theme=theme, cursor=cursor, limit=limit)
 
-    def mark_notification_read(self, principal: Principal, notification_id: UUID) -> NotificationView:
+    def notification_summary(self, principal: Principal) -> NotificationSummary:
+        with self._session_factory() as session:
+            return self._notifications(session).summary(principal)
+
+    def mark_notification_read(self, principal: Principal, notification_id: UUID) -> NotificationItem:
         with self._session_factory() as session:
             result = self._notifications(session).mark_read(principal, notification_id)
             session.commit()
             return result
 
-    def _authorized_notification_view(self, session: Any, principal: Principal, row: Any) -> dict[str, object] | None:
-        """알림 한 줄을 **지금 읽을 수 있는지 다시 물어** 낸다 — 알림이 권한을 넘겨주지 않는다.
+    def mark_all_notifications_read(self, principal: Principal) -> NotificationReadAllResult:
+        with self._session_factory() as session:
+            result = self._notifications(session).read_all(principal)
+            session.commit()
+            return result
 
-        회의는 판을 쌓지 않으므로 상세에 `version` 이 없다(SCAX-SPEC-004) — 그 자리는 `None` 이고,
-        제목은 사람이 지은 것이 먼저, 없으면 합성이 낸 후보다. 읽지 못하는 자원이면 그 줄을 내지 않는다.
-        """
-        try:
-            if row.resource_type == "meeting":
-                meeting = self._meetings(session).get(principal, UUID(row.resource_id))["meeting"]
-                title = meeting.get("title") or meeting.get("title_candidate") or ""
-                version = None
-            elif row.resource_type == "work_request":
-                resource = self._work_requests(session).get(principal, UUID(row.resource_id))
-                title, version = resource["title"], resource["version"]
-            else:
-                return None
-        except (MeetingError, WorkRequestError, ValueError):
-            return None
-        return notification_view(row, title=str(title), version=None if version is None else int(version))
+    def my_badges(self, principal: Principal) -> dict[str, bool]:
+        """사이드바 점 둘(§2.2) — 안 읽은 알림이 있나 · 메시지함에 안 읽은 것이 있나(레일 숫자와 같은 규칙 · `EXISTS` 하나씩)."""
+        with self._session_factory() as session:
+            member_id = str(principal.id)
+            return {
+                "notifications": SqlAlchemyNotificationRepository(session).has_unread(member_id),
+                "inbox": SqlAlchemyInboxStore(session).has_unread(member_id),
+            }
+
+    def notification_settings(self, principal: Principal) -> dict[str, Any]:
+        with self._session_factory() as session:
+            return self._notifications(session).settings(principal)
+
+    def save_notification_settings(self, principal: Principal, body: dict[str, Any]) -> dict[str, Any]:
+        with self._session_factory() as session:
+            result = self._notifications(session).save_settings(principal, body)
+            session.commit()
+            return result
+
+    def notification_event_item(self, principal: Principal, notification_id: UUID) -> NotificationItem | None:
+        """사건 채널(SSE)이 짧은 NOTIFY 를 받아 보낼 항목 — DB 에서 읽고 인가한다(SPEC-011 §4.1-4)."""
+        with self._session_factory() as session:
+            return self._notifications(session).event_item(principal, notification_id)
+
+    def notification_replay(self, principal: Principal, last_seq: int) -> NotificationReplay:
+        """다시 붙은 연결의 이어 받기(SPEC-011 §4.1-3)."""
+        with self._session_factory() as session:
+            return self._notifications(session).replay(principal, last_seq)
 
     # --- 회의 스트림 (SCAX-WP-002) ------------------------------------------------
 
@@ -2984,6 +3045,8 @@ class WorkflowApplication(ExternalInboxOperations):
             # 겹침을 읽는 **문 하나** — 배정 쪽이 드는 것과 같은 클래스이고, **같은 session** 이라
             # 검사와 저장이 한 트랜잭션에 있다 (증보 K22).
             time_blocks=SqlAlchemyTimeBlockRepository(session),
+            # 알림 생성기 — 같은 session(사건과 한 트랜잭션 · SPEC-011 §4.3-8). meeting_worker 도 이 조립을 쓴다.
+            notifier=notification_generator(session),
         )
 
     def create_task(
@@ -3698,6 +3761,7 @@ class WorkflowApplication(ExternalInboxOperations):
             OrganizationApplication(SqlAlchemyOrganizationRepository(session)),
             self._tasks(session),
             self._projects(session),
+            notifier=notification_generator(session),
         )
 
     # ---- 프로젝트: 부서를 가로질러 묶이는 일 ----
@@ -4983,6 +5047,7 @@ class WorkflowApplication(ExternalInboxOperations):
             time_blocks=SqlAlchemyTimeBlockRepository(session),
             # 메시지함 메시지에서 온 업무의 「원래 메시지」(SPEC-008 §4.8 ③) — 메시지함 저장소가 답한다.
             message_origins=SqlAlchemyInboxStore(session),
+            notifier=notification_generator(session),
         )
 
     def _projects(self, session: Any) -> ProjectApplication:
@@ -5035,6 +5100,7 @@ class WorkflowApplication(ExternalInboxOperations):
             # 그 명령이 한 트랜잭션**이다 — 나뉘면 「업무는 갔는데 사람은 안 붙은」 상태가 복구 경로
             # 없이 남는다.
             self._projects(session),
+            notifier=notification_generator(session),
         )
 
     def _conversations(self, session: Any) -> ConversationApplication:

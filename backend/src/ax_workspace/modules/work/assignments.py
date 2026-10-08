@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 
+from ax_workspace.modules.notification_events import NO_NOTIFIER, NotificationEvent, Notifier, recipients
 from ax_workspace.modules.work.task_results import TaskMutationResult
 
 from datetime import date
@@ -78,8 +79,11 @@ class TaskAssignmentApplication:
         directory: TaskAssigneeDirectory,
         tasks: TaskApplication,
         projects: ProjectAssigneePort,
+        notifier: Notifier | None = None,
     ) -> None:
         self._repository = repository
+        # 알림 생성기(SPEC-011 §5) — 사건 · 관련자만 넘긴다.
+        self._notifier = notifier or NO_NOTIFIER
         self._directory = directory
         # Assigning a part of something needs the Task module's own rules about what may be a parent.
         self._tasks = tasks
@@ -150,6 +154,11 @@ class TaskAssignmentApplication:
         )
         if parent is not None:
             self._tasks.record_subtask(principal, parent, task)
+        # W12 — 직접 배정 → 새 담당.
+        self._notify_task(
+            "W12", "work.assigned", task, f"{assignment.id}:assigned", principal,
+            recipients((assignee_id, "assignee")), {"mode": "assigned"},
+        )
         return self._view(assignment, task, principal)
 
     def plan_project_work(
@@ -227,7 +236,36 @@ class TaskAssignmentApplication:
         # **업무에 프로젝트가 없으면 아무 일도 일어나지 않는다** — 오류가 아니다.
         # 붙였다는 사실은 **붙이는 그 순간에만** 설 수 있어 배정 행에 적는다 (D-14 조건 ①).
         appended.auto_project_join = self._join_project_for(principal, task, assignee_id)
+        if current is None:
+            # W13 — 아무도 들지 않은 일을 넘김 → 새 담당.
+            self._notify_task(
+                "W13", "work.assigned", task, f"{appended.id}:offered", principal,
+                recipients((assignee_id, "assignee")), {"mode": "handed_over"},
+            )
+        else:
+            # W13 — 담당 변경 제안 → 새 담당 · W14 — 밀려나는 기존 담당.
+            self._notify_task(
+                "W13", "work.assigned", task, f"{appended.id}:offered", principal,
+                recipients((assignee_id, "assignee")), {"mode": "change_proposed"},
+            )
+            self._notify_task(
+                "W14", "work.assigned", task, f"{appended.id}:displaced", principal,
+                recipients((current.assignee_id, "assignee")), {"mode": "displaced", "new_assignee_id": assignee_id},
+            )
         return self._view(appended, task, principal)
+
+    def _notify_task(
+        self, row: str, kind: str, task: Any, source_id: str, principal: Principal, people: tuple[Any, ...], data: dict[str, Any]
+    ) -> None:
+        if task is None:
+            return
+        self._notifier.notify(
+            NotificationEvent(
+                row=row, kind=kind, source_kind="task_assignment", source_id=source_id, recipients=people,
+                subject={"type": "task", "id": str(task.id), "title": task.title}, actor_member_id=str(principal.id),
+                data=data, target={"surface": "work", "task_id": str(task.id)},
+            )
+        )
 
     def _join_project_for(self, principal: Principal, task: Any, assignee_id: str) -> bool:
         """자동 초대 — **붙였으면 참, 아니면 거짓.** 어느 쪽도 거절이 아니다."""
@@ -270,7 +308,13 @@ class TaskAssignmentApplication:
             # 잠금 뒤에 이미 같은 답으로 닫혀 있었다 — 동시 재전송이다.
             return self._answer_receipt(principal, assignment_id, "active") or self._not_found()
         self._repository.decide(assignment, str(principal.id), "accept")
-        return self._view(assignment, self._repository.task_for(assignment), principal)
+        task = self._repository.task_for(assignment)
+        # W15 — 담당 수락 → 배정자.
+        self._notify_task(
+            "W15", "work.assignment_answered", task, f"{assignment.id}:accepted", principal,
+            recipients((assignment.assigned_by, "assigner")), {"answer": "accepted"},
+        )
+        return self._view(assignment, task, principal)
 
     def _answer_receipt(self, principal: Principal, assignment_id: UUID, settled: str) -> TaskAssignmentResult | None:
         """**같은 사람의 같은 답을 다시 보낸 것인가** (SPEC-003 §3 S-16 · 「재전송이면 영수증」).
@@ -321,6 +365,11 @@ class TaskAssignmentApplication:
             return self._answer_receipt(principal, assignment_id, "declined") or self._not_found()
         self._repository.decide(assignment, str(principal.id), "reject", reason=reason.strip())
         task = self._repository.task_for(assignment)
+        # W15 — 담당 거절 → 배정자.
+        self._notify_task(
+            "W15", "work.assignment_answered", task, f"{assignment.id}:rejected", principal,
+            recipients((assignment.assigned_by, "assigner")), {"answer": "rejected"},
+        )
         # **떼는 자리 #3 — 배정 거절.** 요청 발송이 세운 `pending` 행도, 담당 교체 제안이 세운 행도
         # **둘 다 이 문으로 닫힌다**(`_pending_target` 이 `assignment_kind` 를 안 가린다) — 그래서
         # 이 한 자리가 붙는 자리 둘의 종결을 함께 받는다 (SPEC-005 §4 떼는 자리 3번).

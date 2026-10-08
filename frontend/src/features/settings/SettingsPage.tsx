@@ -22,20 +22,22 @@ import { useInboxStream } from "../inbox/inboxStream";
 import { beginConsent } from "./consent";
 import { MailSection, SlackSection } from "./IntegrationSections";
 import { KakaoSection } from "./KakaoSection";
+import { NotifySection } from "./NotifySection";
 import { ProfileSection } from "./ProfileSection";
 import { ConfirmBox, type Confirm } from "./settingsParts";
+import { useViewDetail } from "../../lib/currentView";
 
 /**
  * 「설정」 화면 (WORK-011 FE-b · SPEC-008 §2.3~2.6) — 좌 레일(설정 메뉴) + 본문(섹션 상자). **모달이 아니라 화면이다.**
  *
- * 메뉴: 연동(메일 · 슬랙 · 카카오톡) · 계정(프로필 설정 · 알림 설정). 알림 설정은 이번 범위 밖이라(D-37) 자리만 선다.
+ * 메뉴: 연동(메일 · 슬랙 · 카카오톡) · 계정(프로필 설정 · 알림 설정). 알림 설정은 WORK-013 WP3-FE 가 열었다(SPEC-011 §2.3 · `NotifySection`).
  * OAuth 콜백은 `?surface=settings&tab=…&connect=ok|denied` 로 돌아온다(N-2) — 그 탭을 열고 결과를 알린 뒤 쿼리를 지운다.
  * 데스크톱에서는 동의가 OS 브라우저에서 끝나므로 창의 `focus`/`visibilitychange` 때 연동을 다시 읽는다(N-3).
  */
 
-export type SettingsTab = "mail" | "slack" | "kakao" | "account";
+export type SettingsTab = "mail" | "slack" | "kakao" | "account" | "notify";
 
-const MENU: ReadonlyArray<{ caption: string; items: ReadonlyArray<{ id: SettingsTab | "notify"; label: string; disabled?: boolean }> }> = [
+const MENU: ReadonlyArray<{ caption: string; items: ReadonlyArray<{ id: SettingsTab; label: string }> }> = [
   {
     caption: copy.groups.link,
     items: [
@@ -48,7 +50,7 @@ const MENU: ReadonlyArray<{ caption: string; items: ReadonlyArray<{ id: Settings
     caption: copy.groups.account,
     items: [
       { id: "account", label: copy.menu.account },
-      { id: "notify", label: copy.menu.notify, disabled: true },
+      { id: "notify", label: copy.menu.notify },
     ],
   },
 ];
@@ -64,16 +66,12 @@ function SetNav({ active, onSelect, counts }: { active: SettingsTab; onSelect: (
               aria-current={item.id === active ? "true" : undefined}
               aria-label={item.label}
               className={`scax-set-nav__item${item.id === active ? " scax-set-nav__item--on" : ""}`}
-              disabled={item.disabled}
               key={item.id}
-              onClick={() => {
-                if (item.id !== "notify") onSelect(item.id);
-              }}
-              title={item.disabled ? copy.notifyOutOfScope : undefined}
+              onClick={() => onSelect(item.id)}
               type="button"
             >
               <span className="scax-set-nav__label">{item.label}</span>
-              {item.id !== "notify" && counts[item.id] != null ? <span className="scax-set-nav__tail">{counts[item.id]}</span> : null}
+              {counts[item.id] != null ? <span className="scax-set-nav__tail">{counts[item.id]}</span> : null}
             </button>
           ))}
         </div>
@@ -109,6 +107,8 @@ export function SettingsPage({
   onRegisterTitle?: (title: string | null) => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  /* OS 알림의 「보고 있으면 생략」(SPEC-011 §2.5 ①) — 연동 끊김 알림의 대상은 그 연동 탭 */
+  useViewDetail("settingsTab", tab);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [slackRooms, setSlackRooms] = useState<IntegrationRoom[]>([]);
   const [kakaoRooms, setKakaoRooms] = useState<IntegrationRoom[]>([]);
@@ -261,7 +261,9 @@ export function SettingsPage({
   };
 
   let body: ReactNode;
-  if (tab === "account") {
+  if (tab === "notify") {
+    body = <NotifySection onError={(message) => onError(message)} />;
+  } else if (tab === "account") {
     body = (
       <ProfileSection
         characterBusy={characterBusy}

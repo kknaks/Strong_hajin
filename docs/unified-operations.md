@@ -54,7 +54,7 @@ Action repository와 presenter가 Task/Meeting/ActionCenter를 내부에서 재�
 | `graph_overview` | 본인과 연결된 업무 관계 전체의 한정된 투영 | 현행 member/team/project는 같은 관계 집합의 grouping이며 범위를 넓히지 않아 view 필터 유지. 실제 코드에서 집합이 달라지는 경우 별도 query로 분리 |
 | `graph_search`, `graph_neighbors` | 관계 node 검색 / 한 node 주변 관계 | query·node·limit, 현재 각 source 인가. 원문 본문 검색과 분리 |
 | `conversations`, `conversation`, `conversation_search` | 내 저장 대화 목록·내용·과거 발화 검색 | 소유자 및 conversation 권한, query/limit. 과거 답변은 보존하고 source ID 재조회에는 현재 resource 인가 적용 |
-| `list_notifications` | 기존 알림 목록 | 수신자 고정, 현재 source 인가. D10의 새 작업 완료 알림은 만들지 않음 |
+| `list_notifications` | 내 알림 목록(최근 한 쪽) | 수신자 고정. 줄은 만들 때 저장한 제목 · 행위자 · 값을 보이고 `target` 만 지금 인가로 가른다(못 열면 null · SPEC-011 §4.5-2). 종류 19(업무 · 메시지 · 회의 — 사건 × 관계 표 SPEC-011 §4.2) |
 
 현재 `my_work`는 기능 권한 거절을 빈 배열로 삼키고 `task_list(mine=True)`는 `include_organization=not mine`을 전달한다. 목표는 각각 이름 있는 query이며 기능 거절은 403/tool error다. 이행 후 공개 `mine` 입력은 허용하지 않는다. 클라이언트/tool 목록/자연어 fixture를 함께 갱신하고 과거 tool 이름은 이력 표시 경계에서만 읽는다.
 
@@ -82,7 +82,7 @@ Action repository와 presenter가 Task/Meeting/ActionCenter를 내부에서 재�
 | canonical-judgement inventory 행 | 기존 HTTP URL을 호환 유지하고 기존 ActionItem의 allowed_commands로 수렴. MCP는 `action_item_command` 하나 | 요청/배정 판단과 AX 확인을 섞지 않음. 과거 pending/Submission을 재작성하지 않음. legacy typed payload reader는 이력/pending 소비자가 남은 동안 유지 |
 | 과거 `/api/actions` | 기존 호출자·저장 이력 호환을 보존하고 새 discovery는 ActionItem 목록/상세 | 옛 실행 도구를 다시 노출하지 않음. 제거는 실제 미사용/모든 pending 소진이 확인된 별도 변경에서만 |
 
-화면 조작 뒤 새 대상 ID를 클라이언트가 임의로 바꾸지 못하도록 interaction ID와 원 대상/version을 서버가 묶는다. 권한은 요청·브라우저 완료·서버 후속 실행마다 재검사한다. 업로드 중/녹음 중 이탈은 경고하고 중단된 입력을 접수 완료로 표시하지 않는다. 완료 알림함/푸시/자동 채팅 완료 메시지는 추가하지 않는다.
+화면 조작 뒤 새 대상 ID를 클라이언트가 임의로 바꾸지 못하도록 interaction ID와 원 대상/version을 서버가 묶는다. 권한은 요청·브라우저 완료·서버 후속 실행마다 재검사한다. 업로드 중/녹음 중 이탈은 경고하고 중단된 입력을 접수 완료로 표시하지 않는다. 이 화면 조작 경로는 완료 알림함/푸시/자동 채팅 완료 메시지를 따로 만들지 않는다(사람에게 가는 알림은 SPEC-011 의 사건 × 관계 표가 정한다 — WORK-013).
 
 ## 비동기 작업별 이행
 
@@ -110,7 +110,7 @@ Soniox 공식 계약에서 `client_reference_id`는 유일성을 강제하지 �
 
 일일보고 생성은 HTTP와 MCP 모두 동일한 `ReportStatusResult`로 durable generation ID와 대기/처리/완료/실패/확인 필요 상태를 반환한다. 접수와 `durable_jobs` 등록은 같은 transaction이다. 보고 워커는 실행 직전 현재 actor와 `daily_report.generate` 권한을 다시 확인하고 attempt의 actor·owner token·heartbeat·결과를 저장한다. 첫 시도에서 workflow definition과 run을 고정하며 재시도는 완료된 source 수집·prompt render를 재사용하고 실패한 provider node의 retry count만 늘린다. 실행 전 provider 가용성 장애만 2/4초 간격으로 최대 3회 재시도한다. 시작된 실행의 결과가 불확실하거나 시간 한도를 넘으면 `needs_verification`으로 고정하고 같은 날짜의 새 요청도 해당 generation을 돌려주므로 provider를 다시 호출하지 않는다. terminal 실패 뒤 사용자가 다시 요청하면 새 generation을 만들고 `retry_of_generation_id`로 실패한 원 작업과 연결한다. 한 단계 5분·전체 15분 한도와 늦은 결과 fencing을 적용한다.
 
-보고 화면과 오늘 화면은 재진입 시 저장된 generation을 복원하고 대기/처리 중에만 polling한다. 회의 상세도 전사와 첨부 추출이 대기/처리 중이면 같은 회의를 다시 읽으며 편집 중인 회의록 본문을 보존한다. 업무 자료 화면의 기존 추출 polling과 함께 대기·완료·실패/확인 필요를 서버 상태로 표시하며 알림은 추가하지 않는다. report worker 7 passed, 보고·회의 화면 17 passed, 관련 backend 94 passed(`/tmp/scax-report-async-regressions.log`), PostgreSQL 완료 결과 복원/동시 접수 2 passed(`/tmp/scax-report-worker-postgres.log`). 실제 Codex 보고 생성과 전체 화면 journey는 R3f에서 검증한다.
+보고 화면과 오늘 화면은 재진입 시 저장된 generation을 복원하고 대기/처리 중에만 polling한다. 회의 상세도 전사와 첨부 추출이 대기/처리 중이면 같은 회의를 다시 읽으며 편집 중인 회의록 본문을 보존한다. 업무 자료 화면의 기존 추출 polling과 함께 대기·완료·실패/확인 필요를 서버 상태로 표시하며 이 진행 상태에는 알림을 추가하지 않는다(회의록 정리 완료 · 실패만 SPEC-011 M09~M11 알림이다 — WORK-013). report worker 7 passed, 보고·회의 화면 17 passed, 관련 backend 94 passed(`/tmp/scax-report-async-regressions.log`), PostgreSQL 완료 결과 복원/동시 접수 2 passed(`/tmp/scax-report-worker-postgres.log`). 실제 Codex 보고 생성과 전체 화면 journey는 R3f에서 검증한다.
 
 ## R3 이행 slice와 증거
 

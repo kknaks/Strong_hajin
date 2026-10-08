@@ -5,6 +5,7 @@ import { Empty } from "../../ds/Empty";
 import { meetingScreen } from "../../lib/labels";
 import { MeetingDetailPage } from "./MeetingDetailPage";
 import { MeetingListPage } from "./MeetingListPage";
+import { useViewDetail } from "../../lib/currentView";
 
 /**
  * 회의 — **한 화면 4칸** (바퀴 6a).
@@ -50,6 +51,8 @@ export function MeetingWorkspace({
   onFocusHandled?: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  /* OS 알림의 「보고 있으면 생략」(SPEC-011 §2.5 ①) — 지금 연 회의 */
+  useViewDetail("meeting", selected);
   /* 목록 칸의 [수정]이 회의 정보를 고쳤다 — 그 회의를 고르고 있으면 상세도 새 값을 읽어야 한다.
      다시 마운트하지 않고 «다시 읽어라» 는 신호만 내린다: 상세가 들고 있던 것(고치던 회의록 줄,
      읽던 자리의 스크롤)을 잃지 않는다. */

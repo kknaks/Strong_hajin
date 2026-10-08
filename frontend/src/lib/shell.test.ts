@@ -253,3 +253,90 @@ describe("첨부 저장 결과 사건 (U-5 5 · OQ-T12)", () => {
     expect(shell.SHELL_DOWNLOAD_EVENT).toBe("strong-hajin:download");
   });
 });
+
+/*
+ * WORK-013 WP4 — OS 알림 다리(SPEC-011 §4.6 · SPEC-006 v0.7.0). `features` 에 `notification` 이 있을 때만 부른다.
+ */
+describe("OS 알림 — 셸이 없거나 기능이 없으면 부르지 않는다", () => {
+  it("셸이 없으면 absent · false · 듣지 않음 — invoke 0", async () => {
+    const shell = await loadShell();
+    await expect(shell.hasShellNotifications()).resolves.toBe(false);
+    await expect(shell.notifyPermission(true)).resolves.toBe("absent");
+    await expect(shell.notifyShow({ notification_id: "n1", title: "t", body: "b", target: { surface: "work", task_id: "t1" } })).resolves.toBe(false);
+    const handler = vi.fn();
+    shell.onShellNotificationClick(handler)();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("옛 dmg(features 에 notification 없음)는 shell_info 만 묻고 알림 커맨드는 부르지 않는다", async () => {
+    attachShell();
+    const shell = await loadShell();
+    invoke.mockResolvedValueOnce({ shell_api: 1, app_version: "0.0.1", platform: "macos", features: ["wake_guard", "open_external"] });
+    await expect(shell.notifyPermission(true)).resolves.toBe("absent");
+    await expect(shell.notifyShow({ notification_id: null, title: "알림", body: "새 알림 4건", target: { surface: "notifications" } })).resolves.toBe(false);
+    expect(invoke.mock.calls.map(([name]) => name)).toEqual(["shell_info"]);
+  });
+});
+
+describe("OS 알림 — 커맨드 둘", () => {
+  beforeEach(attachShell);
+  const withFeature = () => invoke.mockResolvedValueOnce({ shell_api: 1, app_version: "0.0.1", platform: "macos", features: ["wake_guard", "open_external", "notification"] });
+
+  it("notify_permission — 인자 {request} · 셋으로 갈린다 · 실패는 default(막지 않음)", async () => {
+    const shell = await loadShell();
+    withFeature();
+    invoke.mockResolvedValueOnce({ state: "granted" });
+    await expect(shell.notifyPermission(true)).resolves.toBe("granted");
+    expect(invoke).toHaveBeenLastCalledWith("notify_permission", { request: true });
+    invoke.mockResolvedValueOnce({ state: "denied" });
+    await expect(shell.notifyPermission(false)).resolves.toBe("denied");
+    invoke.mockResolvedValueOnce({ state: "default" });
+    await expect(shell.notifyPermission(false)).resolves.toBe("default");
+    invoke.mockRejectedValueOnce(new Error("IPC"));
+    await expect(shell.notifyPermission(true)).resolves.toBe("default");
+    // shell_info 는 한 번만 물었다(기억)
+    expect(invoke.mock.calls.filter(([name]) => name === "shell_info")).toHaveLength(1);
+  });
+
+  it("notify_show — 인자는 SPEC 이름 그대로(snake_case) · shown 그대로 · 거부·실패는 false", async () => {
+    const shell = await loadShell();
+    withFeature();
+    const input = { notification_id: "n1", title: "업무 · 담당", body: "오지훈님이 ‘견적서’ 업무를 요청했습니다", target: { surface: "work" as const, task_id: "t1" } };
+    invoke.mockResolvedValueOnce({ shown: true });
+    await expect(shell.notifyShow(input)).resolves.toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("notify_show", input);
+    invoke.mockResolvedValueOnce({ shown: false });
+    await expect(shell.notifyShow(input)).resolves.toBe(false);
+    invoke.mockRejectedValueOnce(new Error("검증 실패"));
+    await expect(shell.notifyShow(input)).resolves.toBe(false);
+  });
+});
+
+describe("OS 알림 클릭 사건 (셸 → 웹)", () => {
+  beforeEach(attachShell);
+
+  it("detail 의 notification_id · target 을 넘긴다 · 묶음은 id null · 모양이 다르면 버린다 · 해제하면 더 듣지 않는다", async () => {
+    const shell = await loadShell();
+    const handler = vi.fn();
+    const off = shell.onShellNotificationClick(handler);
+    const fire = (detail: unknown) => window.dispatchEvent(new CustomEvent(shell.SHELL_NOTIFICATION_CLICK_EVENT, { detail }));
+    fire({ notification_id: "n1", target: { surface: "work", task_id: "t1" } });
+    fire({ notification_id: null, target: { surface: "notifications" } });
+    fire({ notification_id: "n9", target: null }); // 열 수 없는 대상 — 검수 W-4
+    fire({ notification_id: 3, target: {} });
+    fire("x");
+    expect(handler.mock.calls).toEqual([
+      [{ notification_id: "n1", target: { surface: "work", task_id: "t1" } }],
+      [{ notification_id: null, target: { surface: "notifications" } }],
+      [{ notification_id: "n9", target: null }],
+    ]);
+    off();
+    fire({ notification_id: "n2", target: { surface: "work", task_id: "t2" } });
+    expect(handler).toHaveBeenCalledTimes(3);
+  });
+
+  it("사건 이름은 셸과 맞춘 상수 하나다", async () => {
+    const shell = await loadShell();
+    expect(shell.SHELL_NOTIFICATION_CLICK_EVENT).toBe("strong-hajin:notification-click");
+  });
+});

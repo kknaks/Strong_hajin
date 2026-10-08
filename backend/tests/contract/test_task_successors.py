@@ -492,26 +492,24 @@ def test_a_private_successor_cannot_be_released_through_this_command(tmp_path) -
     assert _detail(client, JIHO, hidden["task_id"])["preceding_task_ids"] == [first["task_id"]]
 
 
-def test_the_release_command_never_calls_the_notification_module(tmp_path, monkeypatch) -> None:
-    """**알림이 나가지 않는다** — 이 판의 범위 밖임이 문서와 코드 주석에 명시되어 있다 (D-20).
-
-    `modules/notifications.py` 가 이미 있으므로 「없어서 안 불렀다」가 근거가 될 수 없다.
-    **불릴 수 있는 자리를 걸어 두고 0건임을 센다.**
+def test_w35_releasing_a_predecessor_notifies_the_successors_holder_once(tmp_path) -> None:
+    """**W35 — 「알림의 자리」를 연다**(SPEC-011 §4.2-2 · WORK-013 WP2-BE). 예전 판은 이 명령이 알림 모듈을 부르지 않는 것을
+    0건으로 셌다(D-20). 이제 후행 B 의 담당(지호)이 `work.predecessor_released` 한 줄을 받고, 해제한 사람(민아)은 받지 않는다.
+    이동(W21 · `APP:741`)의 「알림의 자리」는 그대로 닫혀 있다.
     """
-    from ax_workspace.platform import notifications as notifications_module
-
     client, _ = _stack(tmp_path)
     project_id = _project(client, "mina", "jiho")
     first = _task(client, MINA, "r9-1", title="선행", project_id=project_id)
     later = _task(client, JIHO, "r9-2", title="후행", project_id=project_id, preceding_task_ids=[first["task_id"]])
 
-    calls: list[tuple] = []
-    original = notifications_module.SqlAlchemyNotificationRepository.emit
+    def _released(headers) -> list[dict]:
+        rows = client.get("/api/notifications", headers=headers).json()["items"]
+        return [row for row in rows if row["kind"] == "work.predecessor_released"]
 
-    def _counted(self, *args, **kwargs):
-        calls.append((args, kwargs))
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(notifications_module.SqlAlchemyNotificationRepository, "emit", _counted)
     assert _release(client, MINA, first["task_id"], later["task_id"], later["version"]).status_code == 200
-    assert calls == []
+    [row] = _released(JIHO)
+    assert row["relation"] == "assignee" and row["item"] == "unblock" and row["theme"] == "work"
+    assert row["subject"]["id"] == later["task_id"] and row["data"] == {"predecessor_title": "선행"}
+    assert row["target"] == {"surface": "work", "task_id": later["task_id"]}
+    assert row["actor"]["member_id"] == "mina"
+    assert _released(MINA) == []

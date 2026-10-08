@@ -23,6 +23,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
+from ax_workspace.modules.notification_events import NO_NOTIFIER, Notifier, message_notification
 from ax_workspace.modules.external_channels.domain import (
     KAKAO_ACCOUNT_KEY,
     ExternalChannelError,
@@ -75,6 +76,9 @@ class KakaoMessageInput(BaseModel):
     type: str | int | None = None
     text: str | None = Field(default=None, max_length=100_000)
     attachments: list[KakaoAttachmentInput] = Field(default_factory=list, max_length=200)
+    #: 「내가 보냄」 표지(SPEC-008 v0.7.0 §4.6 · SPEC-009 v0.6.0) — 수집기가 `authorId == 내 userId` 로 올린다. 없으면(옛 수집기)
+    #: 서버가 `null` 로 저장한다 = 「내 것 아님」(알림을 만들고 안 읽음에 센다).
+    from_me: bool | None = None
 
     @field_validator("logId")
     @classmethod
@@ -178,7 +182,10 @@ class KakaoIngestApplication:
         *,
         storage: BlobStorage,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        notifier: Notifier | None = None,
     ) -> None:
+        # 알림 생성기(SPEC-011 X08 · X09) — 방이 실시간(`live`)이 된 뒤 들어온 줄만.
+        self._notifier = notifier or NO_NOTIFIER
         self._repository = repository
         self._storage = storage
         self._clock = clock
@@ -201,6 +208,9 @@ class KakaoIngestApplication:
             incoming.setdefault(str(message.logId), message)  # 같은 묶음 안의 중복도 버린다
         existing = self._repository.existing_message_keys(integration.id, chat_id, list(incoming))
         accepted = 0
+        # 이 묶음 전에 이미 실시간이던 방의 줄만 「새로 왔다」 — 백필(`backfill_done` 전)은 과거를 채우는 것이다(OQ-1101).
+        live_before = room.backfill_done_at is not None
+        arrived: list[Any] = []
         last_key = room.last_message_key
         for log_id, message in incoming.items():
             last_key = _later(last_key, log_id)
@@ -220,7 +230,9 @@ class KakaoIngestApplication:
                 preview=(message.text or None) if message.text else _attachment_preview(message),
                 raw=raw,
                 created_at=now,
+                from_me=message.from_me,
             )
+            arrived.append((row, message))
             for attachment in message.attachments:
                 self._repository.add_attachment(
                     message_id=row.id,
@@ -251,6 +263,18 @@ class KakaoIngestApplication:
             room.backfill_done_at = now
             room.status = RoomStatus.LIVE
             status_changed = True
+        if live_before:
+            room_view = {"id": str(room.id), "room_type": room.room_type, "name": room.name}
+            for row, message in arrived:
+                event = message_notification(
+                    kind="kakao", member_id=str(member_id), integration_id=str(integration.id), account_key=None,
+                    account_label=integration.display_name, my_user_id=None, room=room_view, message_id=str(row.id),
+                    raw={}, author=row.author, preview=row.preview, subject=None,
+                    sent_at=row.sent_at.isoformat() if row.sent_at else None, attachment_count=len(message.attachments),
+                    from_me=message.from_me,
+                )
+                if event is not None:
+                    self._notifier.notify(event)
         if accepted:
             self._repository.notify(
                 USER_EVENTS_CHANNEL,

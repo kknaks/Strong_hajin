@@ -34,6 +34,7 @@ mod download;
 mod guard;
 #[cfg(feature = "kakao-collector")]
 mod kakao;
+mod notify;
 mod power;
 mod shell_ui;
 
@@ -89,6 +90,8 @@ struct Shell {
     last_failure: Mutex<Option<String>>,
     /// 웹뷰가 직접 내려받는 중인 것(`on_download`) — `download::PendingDownloads` 설명 참고.
     downloads: Mutex<download::PendingDownloads>,
+    /// OS 알림 클릭 중계 — 웹이 들을 준비가 될 때까지 하나만 보관한다(`notify::ClickRelay` · 검수 W-1).
+    clicks: Mutex<notify::ClickRelay>,
 }
 
 type SharedShell = Arc<Shell>;
@@ -102,6 +105,7 @@ impl Shell {
             target: Mutex::new(None),
             last_failure: Mutex::new(None),
             downloads: Mutex::new(download::PendingDownloads::default()),
+            clicks: Mutex::new(notify::ClickRelay::default()),
         }
     }
 
@@ -193,8 +197,26 @@ fn log_event(tag: &str, message: &str) {
     println!("[shell][{tag}] t={at} {message}");
 }
 
+/// 메인 창이 닫혀 있을 때 창을 **새로** 만드는 길(medi-ax 트레이 「열기」 와 같은 것). strong-hajin 판에는 없다 —
+/// 그 판은 마지막 창이 닫히면 프로세스가 끝난다. 알림 클릭(검수 W-1 ①)이 트레이와 같은 길로 창을 연다.
+type Reopen = Arc<dyn Fn(&AppHandle) + Send + Sync>;
+static REOPEN_MAIN: std::sync::OnceLock<Reopen> = std::sync::OnceLock::new();
+
+/// 웹에 셸 기능을 알려 준다. **메인 창의 앱 문서가 이것을 부르면 「웹이 준비됐다」** 로 본다 — 보관한 OS 알림 클릭이 있으면
+/// 그때 한 번 보낸다(검수 W-1 · `notify::ClickRelay`). 커맨드 수는 그대로다(새 커맨드를 열지 않는다).
 #[tauri::command]
-async fn shell_info() -> Result<ShellInfo, String> {
+async fn shell_info(window: tauri::Window, shell: tauri::State<'_, SharedShell>) -> Result<ShellInfo, String> {
+    if window.label() == MAIN_WINDOW {
+        let ready_click = shell
+            .clicks
+            .lock()
+            .ok()
+            .and_then(|mut relay| relay.on_ready(std::time::Instant::now()));
+        if let Some(click) = ready_click {
+            let origin = shell.target.lock().ok().and_then(|slot| slot.as_ref().map(guard::origin_of));
+            send_click(window.app_handle(), origin.as_deref(), click);
+        }
+    }
     let platform = if cfg!(target_os = "macos") {
         "macos"
     } else if cfg!(windows) {
@@ -207,7 +229,8 @@ async fn shell_info() -> Result<ShellInfo, String> {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         platform,
         // 웹은 숫자 비교가 아니라 이 목록으로 기능을 판단한다(SPEC-006 §4).
-        features: vec!["wake_guard", "open_external"],
+        // WORK-013 WP4: `notification` — 웹은 이 값이 있을 때만 알림 커맨드를 부른다(옛 dmg = 없음 → 목록만).
+        features: vec!["wake_guard", "open_external", "notification"],
     })
 }
 
@@ -243,6 +266,88 @@ async fn open_external(url: String) -> Result<(), String> {
     // `E-04` — `http(s)` 가 아니면 열지 않는다. 앱 창도 두 번째 웹뷰도 만들지 않는다.
     let parsed = guard::validate_external_url(&url)?;
     tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>).map_err(|error| error.to_string())
+}
+
+/// OS 알림 권한을 읽고/묻는다(SPEC-011 §4.6). 묻는 때는 웹이 정한다(OQ-1102 — 로그인 뒤 첫 화면 한 번).
+/// 프롬프트는 사람을 기다리므로 별도 스레드에서 기다린다.
+#[tauri::command(rename_all = "snake_case")]
+async fn notify_permission(app: AppHandle, request: bool) -> Result<notify::PermissionReply, String> {
+    let state = tauri::async_runtime::spawn_blocking(move || notify::permission(&app, request))
+        .await
+        .map_err(|error| error.to_string())?;
+    log_event("notify", &format!("permission request={request} state={state:?}"));
+    Ok(notify::PermissionReply { state })
+}
+
+/// 웹이 넘긴 알림 하나를 띄운다 — 셸은 거르지도 글자를 만들지도 않는다(D-09). 권한이 없으면 `{shown:false}`(오류 아님).
+#[tauri::command(rename_all = "snake_case")]
+async fn notify_show(
+    app: AppHandle,
+    notification_id: Option<String>,
+    title: String,
+    body: String,
+    target: serde_json::Value,
+) -> Result<notify::ShowReply, String> {
+    let request = notify::ShowRequest { notification_id, title, body, target };
+    notify::validate(&request)?;
+    let shown = tauri::async_runtime::spawn_blocking(move || notify::show(&app, &request))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(notify::ShowReply { shown })
+}
+
+/// OS 알림을 눌렀다 — **창을 앞으로**(보이기 · 최소화 풀기 · 포커스) 가져온 뒤 웹에 사건을 보낸다(SPEC-011 §4.6 · AC-T51).
+///
+/// - 창이 있으면 앞으로 · 웹이 준비됐으면 바로 보내고, 아니면(막 뜬 앱 · 새로 고침 중) **보관했다가** 웹이 `shell_info` 를
+///   부를 때 한 번 보낸다(검수 W-1 — strong-hajin 이 알림 클릭으로 새로 뜬 경우도 이 길)
+/// - **창이 없으면**(medi-ax 트레이 상주) 트레이 「열기」 와 **같은 길**로 창을 새로 만들고 클릭을 보관한다(검수 W-1 ①).
+///   창이 없을 때만 만드므로 둘이 동시에 서지 않는다(AC-T33). 그 길이 없는 판(strong-hajin)은 버린다
+fn notify_click(app: &AppHandle, app_origin: Option<&str>, notification_id: Option<String>, target: serde_json::Value) {
+    let click = notify::Click { notification_id, target };
+    let shell = app.state::<SharedShell>();
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        let Some(reopen) = REOPEN_MAIN.get() else {
+            log_event("notify", "창이 없고 다시 여는 길이 없는 판이라 알림 클릭을 버린다");
+            return;
+        };
+        if let Ok(mut relay) = shell.clicks.lock() {
+            relay.on_document_gone();
+            relay.on_click(click, std::time::Instant::now());
+        }
+        log_event("notify", "창이 없어 트레이 「열기」 와 같은 길로 창을 만든다 — 웹이 준비되면 클릭을 보낸다");
+        reopen(app);
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+    let now_click = shell
+        .clicks
+        .lock()
+        .ok()
+        .and_then(|mut relay| relay.on_click(click, std::time::Instant::now()));
+    match now_click {
+        Some(click) => send_click(app, app_origin, click),
+        None => log_event("notify", "웹이 아직 준비되지 않아 알림 클릭을 보관한다"),
+    }
+}
+
+/// 클릭 사건을 웹에 쏜다 — 지금 창에 **앱 origin** 문서가 떠 있을 때만(다운로드 사건과 같은 규칙).
+fn send_click(app: &AppHandle, app_origin: Option<&str>, click: notify::Click) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    let on_app = match (window.url(), app_origin) {
+        (Ok(current), Some(origin)) => guard::origin_of(&current) == origin,
+        _ => false,
+    };
+    if !on_app {
+        log_event("notify", "웹 앱 문서가 아니라 알림 클릭을 알리지 않는다");
+        return;
+    }
+    if let Err(error) = window.eval(notify::click_script(click.notification_id.as_deref(), &click.target)) {
+        log_event("notify", &format!("알림 클릭을 웹에 알리지 못했다: {error}"));
+    }
 }
 
 /// Windows(WebView2) 마이크 권한. 없으면 `getUserMedia` 가 **프롬프트 없이** 실패한다.
@@ -539,6 +644,10 @@ fn spawn_main_window(
                 let label = window.label().to_string();
                 match payload.event() {
                     tauri::webview::PageLoadEvent::Started => {
+                        // 새 문서는 알림 클릭을 들을 준비가 다시 될 때까지(그 문서의 `shell_info`) 기다린다(검수 W-1).
+                        if let Ok(mut relay) = load_shell.clicks.lock() {
+                            relay.on_document_gone();
+                        }
                         // **L-09 — 문서가 «실제로» 바뀌었다.** 그 창의 세션을 전부 푼다.
                         // 막힌 이동(`E-05`)·같은 문서 안 주소 변경(L-11)은 여기까지 오지 않는다.
                         load_shell.clear_window(&label, "document-replaced(L-09)");
@@ -572,6 +681,9 @@ fn spawn_main_window(
             log_event("win", "close-requested — 아무것도 풀지 않는다");
         }
         WindowEvent::Destroyed => {
+            if let Ok(mut relay) = event_shell.clicks.lock() {
+                relay.on_document_gone();
+            }
             // **L-06 — 창이 «실제로» 닫혔다.** 웹이 해제를 못 불렀어도 여기서 풀린다.
             // medi-ax 는 창이 파괴돼도 프로세스가 메뉴 막대에 남는다(RunEvent::ExitRequested · R3-F2).
             event_shell.clear_window(MAIN_WINDOW, "window-destroyed(L-06)");
@@ -640,6 +752,12 @@ pub fn run() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+            // OS 알림 클릭 → 창 앞으로 + 웹 사건(WORK-013 WP4). macOS 는 여기서 UN delegate 를 건다(번들일 때만).
+            let click_app = handle.clone();
+            let click_origin = app_origin.clone();
+            notify::install(Box::new(move |notification_id, target| {
+                notify_click(&click_app, click_origin.as_deref(), notification_id, target);
+            }));
             let do_watch = matches!(watch_target, Target::Configured { .. });
             // 창(웹뷰)과 그 훅은 `spawn_main_window` 한 곳에 있다 — 부팅과 트레이 「열기」가 같은 창을 만든다.
             spawn_main_window(
@@ -666,7 +784,8 @@ pub fn run() {
                 let tray_start = start_url.clone();
                 let tray_nav = navigation_allowlist.clone();
                 let tray_origin = app_origin.clone();
-                kakao::tray::build(&handle, move |app| {
+                // 닫힌 창을 다시 만드는 길 하나 — 트레이 「열기」 와 알림 클릭(검수 W-1 ①)이 같이 쓴다.
+                let reopen: Reopen = Arc::new(move |app: &AppHandle| {
                     if let Err(error) = spawn_main_window(
                         app,
                         &tray_shell,
@@ -677,18 +796,27 @@ pub fn run() {
                     ) {
                         log_event("tray", &format!("창을 다시 만들지 못했다: {error}"));
                     }
-                })?;
+                });
+                let _ = REOPEN_MAIN.set(reopen.clone());
+                kakao::tray::build(&handle, move |app| reopen(app))?;
             }
             Ok(())
         });
 
-    // 커맨드 목록 — medi-ax 는 카톡 셋이 더해져 **일곱**, strong-hajin 은 **넷**(SPEC-006 v0.6.0 · W3-1).
+    // Windows 는 공식 알림 플러그인으로 띄운다(클릭 콜백 없음). capability 에 플러그인 권한을 넣지 않으므로
+    // 원격 문서는 플러그인 커맨드를 부를 수 없다 — 셸 Rust 만 쓴다.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+
+    // 커맨드 목록 — 두 판 공통 여섯(기본 넷 + 알림 둘 · SPEC-006 v0.7.0) · medi-ax 는 카톡 셋이 더해져 **아홉**.
     #[cfg(feature = "kakao-collector")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         shell_info,
         wake_guard_acquire,
         wake_guard_release,
         open_external,
+        notify_permission,
+        notify_show,
         kakao::commands::kakao_list_rooms,
         kakao::commands::kakao_collector_status,
         kakao::commands::kakao_store_device_token
@@ -698,7 +826,9 @@ pub fn run() {
         shell_info,
         wake_guard_acquire,
         wake_guard_release,
-        open_external
+        open_external,
+        notify_permission,
+        notify_show
     ]);
 
     let app = builder
@@ -748,6 +878,7 @@ mod tests {
             target: Mutex::new(None),
             last_failure: Mutex::new(None),
             downloads: Mutex::new(download::PendingDownloads::default()),
+            clicks: Mutex::new(notify::ClickRelay::default()),
         }
     }
 
@@ -842,7 +973,7 @@ mod tests {
 
     #[test]
     fn 웹에_여는_커맨드가_판에_맞다() {
-        // AC-T23 / AC-T47 (SPEC-006 v0.6.0) — strong-hajin = **넷**, medi-ax = **일곱**(넷 + 카톡 셋).
+        // AC-T23 / AC-T47 (SPEC-006 v0.7.0) — strong-hajin = **여섯**(넷 + 알림 둘), medi-ax = **아홉**(여섯 + 카톡 셋).
         // 어느 판이든 파일·프로세스·범용 셸·open_path 표면은 **하나도** 없다 — 카톡 커맨드도 Rust 가
         // 읽어 결과만 주지 웹에 파일 권한을 열지 않는다(「외부 채널 수집기 수용」 절).
         let flavor = env!("SHELL_FLAVOR");
@@ -857,6 +988,8 @@ mod tests {
             "allow-wake-guard-acquire",
             "allow-wake-guard-release",
             "allow-open-external",
+            "allow-notify-permission",
+            "allow-notify-show",
         ];
         if flavor == "medi-ax" {
             expected.extend([
@@ -1015,9 +1148,10 @@ mod tests {
     }
 
     #[test]
-    fn 셸_프레임워크_하한이_2_11_1_이상이다() {
-        // AC-T25 — GHSA-7gmj-67g7-phm9(원격 문서가 로컬 전용 커맨드를 부르는 origin 혼동).
-        assert!(CARGO_TOML.contains(r#"tauri = { version = "2.11.1""#));
+    fn 셸_프레임워크_하한이_2_12_이상이다() {
+        // AC-T25 — GHSA-7gmj-67g7-phm9(원격 문서가 로컬 전용 커맨드를 부르는 origin 혼동)는 2.11.1 하한.
+        // WORK-013 WP4 — Windows 알림 플러그인이 2.12 를 요구해 하한이 2.12 로 올랐다(사용자 처분 2026-10-08).
+        assert!(CARGO_TOML.contains(r#"tauri = { version = "2.12""#));
         let lock = include_str!("../Cargo.lock");
         let resolved = lock
             .split("[[package]]")
@@ -1034,8 +1168,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(parts.len() >= 3, "판 번호를 읽지 못했다: {version}");
         assert!(
-            (parts[0], parts[1], parts[2]) >= (2, 11, 1),
-            "tauri 가 2.11.1 미만이다: {version}"
+            (parts[0], parts[1], parts[2]) >= (2, 12, 0),
+            "tauri 가 2.12 미만이다: {version}"
         );
     }
 

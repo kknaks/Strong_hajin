@@ -1,4 +1,6 @@
-"""사용자 사건 채널의 **듣는 쪽** — Postgres `LISTEN ax_user_events` → 그 회원의 WS 들 (SPEC-008 §4.4 · N-6 · BE-3).
+"""사용자 사건 채널의 **듣는 쪽** — Postgres `LISTEN ax_user_events` → 그 회원의 연결들 (SPEC-011 §4.1 · SPEC-008 §4.4 · N-6).
+
+연결은 SSE `GET /api/events/stream`(`entrypoints/http_events.py`)이고, 옛 WS `/api/inbox/stream` 도 같은 큐를 받는다.
 
 보내는 쪽은 `platform/user_events.publish`(NOTIFY, 트랜잭션 커밋 때 전달)이고 계약은 `modules/external_channels/events.py`
 다. back 한 프로세스에 듣는 연결은 **하나**다 — 첫 구독자가 생길 때 데몬 스레드 하나가 `LISTEN` 하고, 받은 페이로드를
@@ -8,8 +10,11 @@
 곧바로 보내고, 창 안에 더 오면 마지막 하나를 창이 닫힐 때 보낸다 — 백필이 쪽마다 사건을 내도 화면은 초에 한 번 다시 읽고,
 마지막 숫자는 놓치지 않는다. 다른 사건(새 메시지·답장 결과)은 묶지 않는다.
 
-연결이 끊기면 물러섰다가 다시 붙는다(그 사이 사건은 잃는다 — 화면은 WS 재연결 때 API 로 다시 읽는다). PostgreSQL 이 아닌
+연결이 끊기면 물러섰다가 다시 붙는다(그 사이 사건은 잃는다 — 화면은 재연결 때 API 로 다시 읽는다). PostgreSQL 이 아닌
 DB(시험)에서는 듣는 스레드를 띄우지 않고, 같은 프로세스의 쓰기가 커밋 뒤 `dispatch` 로 직접 흘린다.
+
+큐는 연결마다 200칸이다. 넘치면 가장 오래된 것을 버리고 **그 큐에 «버렸다» 표시**(`dropped`)를 남긴다 — SSE 가 그것을 보고
+그 연결에 `resync(dropped)` 를 보낸다(SPEC-011 §4.1-4 — 예전에는 조용히 버렸다).
 """
 from __future__ import annotations
 
@@ -34,6 +39,14 @@ def _start_timer(delay: float, callback: Callable[[], None]) -> None:
     timer = threading.Timer(delay, callback)
     timer.daemon = True
     timer.start()
+
+
+class EventQueue(asyncio.Queue):
+    """한 연결의 큐. `dropped` — 넘쳐서 버린 사건이 있었다(읽는 쪽이 보고 내린다)."""
+
+    def __init__(self, maxsize: int = QUEUE_LIMIT) -> None:
+        super().__init__(maxsize=maxsize)
+        self.dropped = False
 
 
 def _libpq_url(database_url: str) -> str:
@@ -63,8 +76,8 @@ class UserEventHub:
         self._thread: threading.Thread | None = None
         self._stopped = threading.Event()
 
-    def subscribe(self, member_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_LIMIT)
+    def subscribe(self, member_id: str) -> EventQueue:
+        queue = EventQueue(QUEUE_LIMIT)
         entry = (asyncio.get_running_loop(), queue)
         with self._lock:
             self._subscribers[member_id].add(entry)
@@ -151,4 +164,6 @@ def _offer(queue: asyncio.Queue, event: UserEvent) -> None:
             queue.get_nowait()  # 느린 화면은 가장 오래된 것을 잃는다 — 사건은 «다시 읽으라»는 신호일 뿐이다
         except asyncio.QueueEmpty:
             pass
+        if isinstance(queue, EventQueue):
+            queue.dropped = True  # 잃었다는 사실은 남긴다 — SSE 가 `resync(dropped)` 로 화면에 다시 읽게 한다
     queue.put_nowait(event)

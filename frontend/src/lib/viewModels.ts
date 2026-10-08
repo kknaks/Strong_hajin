@@ -1,4 +1,4 @@
-export type ProductSurface = "today" | "calendar" | "meetings" | "work" | "report" | "project" | "org" | "graph" | "inbox" | "settings";
+export type ProductSurface = "today" | "calendar" | "meetings" | "work" | "report" | "project" | "org" | "graph" | "inbox" | "settings" | "notifications";
 
 /** One thing in the relation graph. Nodes are canonical resources, never a graph-only record. */
 export type GraphNodeKind = "person" | "team" | "project" | "work_request" | "task" | "material" | "meeting" | "report";
@@ -1021,19 +1021,61 @@ export type AnswerResource = {
   changed_since?: boolean;
 };
 
+/** 알림 테마 — 알림 화면의 필터 · 설정의 테마 카드 셋과 같다(SPEC-011 §4.4). */
+export type NotificationTheme = "work" | "message" | "meeting";
+
+/**
+ * 누르면 갈 곳(SPEC-011 §4.5-2 3 · D-31 — 고른 상태까지). 지금 열 수 없으면 서버가 `null` 을 준다.
+ * `{surface: "notifications"}` 는 서버 항목에는 쓰이지 않고 화면이 묶음 OS 알림에만 단다(R-W5).
+ */
+export type NotificationTarget =
+  | { surface: "work"; task_id: string; work_request_id?: undefined }
+  | { surface: "work"; work_request_id: string; task_id?: undefined }
+  | { surface: "inbox"; source: "mail"; message_id: string }
+  | { surface: "inbox"; source: "slack" | "kakao"; room_id: string; message_id?: string | null; thread_ts?: string | null }
+  | { surface: "meetings"; meeting_id: string }
+  | { surface: "settings"; tab: "mail" | "slack" | "kakao" }
+  | { surface: "notifications" };
+
+/**
+ * 알림 항목 한 줄(SPEC-011 §4.5-2). 문장 · 보조 줄 · 가는 곳 글자는 서버가 주지 않는다 — 화면이 `kind` · `data` 로
+ * 만든다(`lib/labels.ts` `describeNotification` · §2.1). `subject.title` · `actor` · `data` 는 만들 때 저장한 값이다.
+ */
 export type Notification = {
   notification_id: string;
-  kind: "meeting.shared" | "work_request.received" | "work_request.accepted" | string;
-  summary: string;
-  actor_id: string;
-  resource: {
-    type: "meeting" | "work_request";
-    id: string;
-    version: number | null;
-    title: string;
-  };
+  /** 사건 순번(§4.1-3) — 사건 채널의 `id:` 와 같다. */
+  seq: number;
+  /** §4.2-1 의 19 종류. 모르는 값이 와도 화면이 깨지지 않게 문자열로 둔다. */
+  kind: string;
+  theme: NotificationTheme;
+  /** §4.4 의 항목 id(테마 안). */
+  item: string;
+  /** 나와의 관계 꼬리표 id(§4.2 — 시안 `RELATIONS` 16). */
+  relation: string;
+  /** 붉은 표식 — 연동 끊김 · 회의록 실패. */
+  failure: boolean;
+  actor: { member_id: string; display_name: string } | { external_name: string } | null;
+  subject: { type: string; id: string; title: string | null } | null;
+  data: Record<string, unknown>;
+  target: NotificationTarget | null;
   created_at: string;
+  updated_at: string;
   read_at: string | null;
+};
+
+export type NotificationPage = { items: Notification[]; next_cursor: string | null };
+
+/** `GET /api/notifications/summary` — 알림 화면 머리 「안 읽음 N」 · 테마 탭 수. */
+export type NotificationSummary = { unread: { all: number; work: number; message: number; meeting: number } };
+
+/** `GET /api/me/badges` — 사이드바 점 둘(§2.2). */
+export type NavBadges = { notifications: boolean; inbox: boolean };
+
+/** 알림 설정(§4.4-2) — 상위(전체 · 테마)를 꺼도 아래 값은 그대로 저장된다. */
+export type NotificationSettings = {
+  enabled: boolean;
+  themes: Record<NotificationTheme, { on: boolean; items: Record<string, boolean> }>;
+  version: number;
 };
 
 export type ConversationContextReference = {
@@ -1685,7 +1727,10 @@ export type InboxRoomPage = {
   users?: InboxPeople;
 };
 
-/** 사용자 사건 채널(`/api/inbox/stream`) 한 건 — 본문은 싣지 않고 «무엇이 바뀌었는지»만 온다(NOTIFY 계약). */
+/**
+ * 사용자 사건 채널(`/api/events/stream` · SSE — SPEC-011 §4.1)의 메시지함 사건 한 건. 본문은 싣지 않고 «무엇이 바뀌었는지»만 온다(NOTIFY 계약).
+ * 이름·필드는 옛 WS(`/api/inbox/stream`) 프레임과 같다(SPEC-008 v0.7.0 §4.4) — 받는 길만 SSE 로 바뀌었다.
+ */
 export type InboxStreamEvent = {
   v: number;
   /** `inbox.message_updated` = 메시지(메일)의 `made_task_count` 가 바뀌었다 — `{message_id, room_id|null}`, 본문 없음(SPEC-008 §4.4 · H-5). */
@@ -1696,4 +1741,18 @@ export type InboxStreamEvent = {
   message_id?: string;
   source_kind?: IntegrationKind;
   data?: { local_id?: string; status?: string; error?: string | null; [key: string]: unknown };
+};
+
+/** 사건 채널의 알림 항목 — `GET /api/notifications` 의 항목과 같은 모양이다(§4.1-2 「§4.5-2 모양」). */
+export type StreamNotification = Notification;
+
+/** `notification.upserted` — `id:` 와 `notification.seq` 는 같은 값이다. 이어 받은 줄은 `replayed: true`(SPEC-011 §4.1-2·3). */
+export type NotificationUpsertedEvent = { v: number; notification: StreamNotification; created: boolean; replayed: boolean };
+
+/** `notification.read` — 몇 건을 읽었거나(`notification_ids`) 한 갈래를 모두 읽었다(`all` · `theme`). */
+export type NotificationReadEvent = {
+  v: number;
+  notification_ids?: string[];
+  all?: boolean;
+  theme?: "work" | "message" | "meeting" | null;
 };

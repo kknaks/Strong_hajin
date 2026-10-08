@@ -24,6 +24,11 @@ export interface AppHeaderProps {
   breadcrumb?: React.ReactNode[];
   /** 그 탭의 이름. 왼쪽 끝에 선다. */
   title?: React.ReactNode;
+  /**
+   * 제목 바로 옆에 서는 것(시안 `scax-ui.jsx` `AppHeader` 의 `titleEnd` — 알림 화면의 「안 읽음 N」 · WORK-013 WP3-FE).
+   * 주지 않으면 예전과 똑같은 마크업이다(제목 `h1` 하나) — 다른 화면은 한 줄도 바뀌지 않는다.
+   */
+  titleEnd?: React.ReactNode;
   /** 오른쪽 끝의 단추 둘. 왼쪽이 outlined, 오른쪽이 solid. */
   actions?: React.ReactNode;
 }
@@ -43,7 +48,7 @@ export function AppShell({ nav, children }: AppShellProps) {
   );
 }
 
-export function AppHeader({ breadcrumb, title, actions }: AppHeaderProps) {
+export function AppHeader({ breadcrumb, title, titleEnd, actions }: AppHeaderProps) {
   return (
     <header className="scax-page-header">
       <div className="scax-page-header__lead">
@@ -64,7 +69,14 @@ export function AppHeader({ breadcrumb, title, actions }: AppHeaderProps) {
             ])}
           </nav>
         ) : null}
-        <h1 className="scax-page-header__title">{title}</h1>
+        {titleEnd ? (
+          <div className="scax-page-header__title-row">
+            <h1 className="scax-page-header__title">{title}</h1>
+            {titleEnd}
+          </div>
+        ) : (
+          <h1 className="scax-page-header__title">{title}</h1>
+        )}
       </div>
       <div className="scax-page-header__actions">{actions}</div>
     </header>

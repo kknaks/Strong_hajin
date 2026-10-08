@@ -219,6 +219,8 @@ def _seed(sessions, cipher, *, member="mina", mail_status="connected", token_exp
             row = ExternalMessageRecord(
                 integration_id=slack.id, room_id=channel.id, source_kind="slack", container_key="C1", external_key=ts, thread_key=thread,
                 sent_at=now + timedelta(minutes=10 + index), author=user, preview=f"슬랙 {index}", raw=raw, created_at=now,
+                # 저장 자리가 `raw.user` 로 판정해 채우는 칸(SPEC-008 v0.7.0 §4.4) — 내 줄은 안 읽음에 세지 않는다.
+                from_me=(user == "U-ME"),
             )
             session.add(row)
             session.flush()

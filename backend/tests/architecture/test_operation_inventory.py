@@ -130,11 +130,12 @@ def test_inventory_schemas_match_the_actual_registered_tools():
 
 def test_inventory_includes_each_declared_http_operation():
     inventory = json.loads((ROOT / 'docs/unified-operations-inventory.json').read_text())
-    # 라우트는 `http.py` 와, 거기서 한 줄로 붙이는 `http_inbox.py`(메시지함·카톡 수신·프로필 — WORK-011 BE-3)에 산다.
+    # 라우트는 `http.py` 와, 거기서 한 줄로 붙이는 `http_inbox.py`(메시지함·카톡 수신·프로필 — WORK-011 BE-3) ·
+    # `http_events.py`(사용자 사건 채널 SSE — WORK-013 WP1-BE)에 산다.
     tree = ast.Module(
         body=[
             node
-            for name in ('http.py', 'http_inbox.py')
+            for name in ('http.py', 'http_inbox.py', 'http_events.py')
             for node in ast.parse((ROOT / 'backend/src/ax_workspace/entrypoints' / name).read_text()).body
         ],
         type_ignores=[],

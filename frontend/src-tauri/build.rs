@@ -140,6 +140,9 @@ fn main() {
         "wake_guard_acquire",
         "wake_guard_release",
         "open_external",
+        // WORK-013 WP4 — OS 알림 둘(두 판 공통). 여기 없으면 capability 의 `allow-notify-*` 가 없는 권한이라 빌드가 서지 않는다.
+        "notify_permission",
+        "notify_show",
     ];
     if kakao {
         commands.extend([

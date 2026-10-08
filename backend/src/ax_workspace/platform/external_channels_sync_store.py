@@ -15,6 +15,13 @@ from sqlalchemy import and_, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ax_workspace.modules.notification_events import (
+    integration_lost_notification,
+    mail_from_me,
+    message_notification,
+    slack_from_me,
+)
+from ax_workspace.platform.notifications import notification_generator
 from ax_workspace.modules.external_channels.events import USER_EVENTS_CHANNEL, UserEvent, UserEventType
 from ax_workspace.modules.external_channels.sync import IntegrationState, RoomState, SaveMode
 from ax_workspace.modules.external_channels.sync_messages import NormalizedMessage
@@ -170,6 +177,7 @@ class SqlAlchemyExternalChannelsSyncStore:
                 )
             )
             inserted: list[ExternalMessageRecord] = []
+            attachment_counts: dict[Any, int] = {}
             newest = room.last_message_key if room is not None else None
             for message in messages:
                 if message.external_key in existing:
@@ -180,6 +188,8 @@ class SqlAlchemyExternalChannelsSyncStore:
                     container_key=message.container_key, external_key=message.external_key, thread_key=message.thread_key,
                     sent_at=message.sent_at, subject=message.subject, author=message.author, preview=message.preview,
                     raw=message.raw, created_at=now,
+                    # 「내가 보낸 줄」은 저장할 때 한 번 판정한다(SPEC-011 §4.3-6) — 안 읽음 셈 · 알림이 줄마다 쓴다.
+                    from_me=_from_me(integration, message.raw),
                 )
                 try:
                     with session.begin_nested():
@@ -195,6 +205,7 @@ class SqlAlchemyExternalChannelsSyncStore:
                 except IntegrityError:
                     continue  # 같은 키가 그 사이 들어왔다 — 버린다
                 inserted.append(record)
+                attachment_counts[record.id] = len(message.attachments)
                 if room is not None and _key_order(message.external_key) > _key_order(newest):
                     newest = message.external_key
             count = len(inserted)
@@ -210,8 +221,30 @@ class SqlAlchemyExternalChannelsSyncStore:
                 elif mode == "backfill":
                     integration.backfill_count = (integration.backfill_count or 0) + count
                 self._announce(session, integration, room, inserted, mode)
+                if mode == "live":
+                    # 알림은 **실시간 수신으로 저장된 줄만** — 백필 · 메우기는 과거를 채우는 것이다(OQ-1101 제안).
+                    # 같은 세션 · 같은 트랜잭션(SPEC-011 §4.3-8) — 메일 · 슬랙 저장은 worker-external 프로세스다.
+                    self._notify_messages(session, integration, room, inserted, attachment_counts)
             session.commit()
             return count
+
+    @staticmethod
+    def _notify_messages(
+        session: Session, integration, room, inserted: list[ExternalMessageRecord], attachment_counts: dict[Any, int]
+    ) -> None:
+        generator = notification_generator(session)
+        meta = integration.account_meta or {}
+        room_view = {"id": str(room.id), "room_type": room.room_type, "name": room.name} if room is not None else None
+        for record in sorted(inserted, key=lambda row: row.sent_at):
+            event = message_notification(
+                kind=integration.kind, member_id=str(integration.member_id), integration_id=str(integration.id),
+                account_key=integration.account_key, account_label=integration.display_name, my_user_id=meta.get("user_id"),
+                room=room_view, message_id=str(record.id), raw=record.raw or {}, author=record.author, preview=record.preview,
+                subject=record.subject, sent_at=record.sent_at.isoformat() if record.sent_at else None,
+                attachment_count=attachment_counts.get(record.id, 0), from_me=record.from_me,
+            )
+            if event is not None:
+                generator.notify(event)
 
     def _announce(self, session: Session, integration, room, inserted: list[ExternalMessageRecord], mode: SaveMode) -> None:
         member = integration.member_id
@@ -307,13 +340,24 @@ class SqlAlchemyExternalChannelsSyncStore:
                 if room.status == "paused":
                     room.status = "live" if room.backfill_done_at else "backfilling"
             else:
+                newly_lost = "access_lost" not in meta
                 meta.pop("verified_at", None)
                 meta["access_lost"] = (reason or "access_denied")[:60]
                 room.status = "paused"
             room.room_meta = meta
             room.updated_at = now
+            integration = session.get(ExternalIntegrationRecord, room.integration_id)
+            if not ok and newly_lost and integration is not None:
+                # X11 — 방 접근을 잃었다 → 그 방의 연동 소유자(항목 = 그 채널 · 붉은 표식).
+                notification_generator(session).notify(
+                    integration_lost_notification(
+                        kind=integration.kind, member_id=str(integration.member_id), integration_id=str(integration.id),
+                        account_label=integration.display_name, occurred_at=now.isoformat(),
+                        room={"id": str(room.id), "name": room.name},
+                    )
+                )
             if room.status != status_before:
-                self._changed(session, session.get(ExternalIntegrationRecord, room.integration_id), room_id=room_id)
+                self._changed(session, integration, room_id=room_id)
             session.commit()
 
     def room_users(self, room_id: str) -> dict[str, dict[str, Any]]:
@@ -358,6 +402,13 @@ class SqlAlchemyExternalChannelsSyncStore:
             row.disconnected_at = now
             row.updated_at = now
             self._changed(session, row)
+            # X10 — 연동 끊김 → 연동 소유자(항목 = 그 채널 · 붉은 표식). 되살림 · 백필 끝(X13)은 없다.
+            notification_generator(session).notify(
+                integration_lost_notification(
+                    kind=row.kind, member_id=str(row.member_id), integration_id=str(row.id),
+                    account_label=row.display_name, occurred_at=now.isoformat(),
+                )
+            )
             session.commit()
 
     @staticmethod
@@ -404,3 +455,12 @@ class SqlAlchemyExternalChannelsSyncStore:
             self._changed(session, row)
             session.commit()
             return str(row.id)
+
+
+def _from_me(integration: ExternalIntegrationRecord, raw: dict[str, Any]) -> bool | None:
+    """슬랙 = `raw.user` == 연동 `account_meta.user_id` · 메일 = From == 연동 계정 주소(D-41). 모르면 None."""
+    if integration.kind == "slack":
+        return slack_from_me(raw or {}, (integration.account_meta or {}).get("user_id"))
+    if integration.kind == "mail":
+        return mail_from_me(raw or {}, integration.account_key)
+    return None

@@ -32,7 +32,7 @@ from ax_workspace.modules.work.project_results import ProjectView, ProjectDetail
 
 from ax_workspace.modules.ax_execution.result_contracts import ActionMaterialDraftView
 from ax_workspace.modules.ax_execution.conversation_commands import ConversationMessageResult, ConversationRetryResult
-from ax_workspace.modules.notifications import NotificationView
+from ax_workspace.modules.notifications import NotificationItem, NotificationPage
 from ax_workspace.modules.organization_access.commands import AssistantCharacterResult
 from ax_workspace.modules.work.folder_commands import FolderView, FolderArchiveResult, FolderDetachResult
 from ax_workspace.modules.work.project_commands import ProjectReleaseResult
@@ -619,7 +619,7 @@ class McpReportsFacade:
             return action
         return self._application.retry_conversation_turn(self.principal, **command.model_dump())
 
-    def mark_notification_read(self, notification_id: str) -> NotificationView | ActionProposalResult:
+    def mark_notification_read(self, notification_id: str) -> NotificationItem | ActionProposalResult:
         command = NotificationReadCommand(notification_id=UUID(notification_id))
         action = self._propose_chat_action("notification.mark_read", "알림 읽음 처리 확인", command.model_dump(mode="json"))
         if action is not None:
@@ -1345,7 +1345,8 @@ class McpReportsFacade:
     def material_metadata(self, material_id: str) -> MaterialMetadataResult:
         return self._application.material_metadata(self.principal, UUID(material_id))
 
-    def list_notifications(self) -> list[NotificationView]:
+    def list_notifications(self) -> NotificationPage:
+        """최근 알림 한 쪽(SPEC-011 §4.5 — HTTP 와 같은 모양)."""
         return self._application.list_notifications(self.principal)
 
     def create_project(self, request: ProjectCreateInput) -> ProjectView | ActionProposalResult:
@@ -1604,7 +1605,7 @@ def _register_additional_query_tools(server: MCPServer, facade: McpReportsFacade
         return facade.material_metadata(material_id)
 
     @server.tool(annotations=_READ_ONLY_TOOL, structured_output=True)
-    def list_notifications() -> list[NotificationView]:
+    def list_notifications() -> NotificationPage:
         return facade.list_notifications()
 
     @server.tool(annotations=_READ_ONLY_TOOL, structured_output=True)
@@ -1926,8 +1927,8 @@ def _register_conversation_command_tools(server: MCPServer, facade: McpReportsFa
 
 def _register_personal_command_tools(server: MCPServer, facade: McpReportsFacade) -> None:
     @server.tool(annotations=_COMMAND_TOOL, structured_output=True)
-    def notification_mark_read(notification_id: str) -> CommandResult[NotificationView]:
-        return CommandResult[NotificationView](facade.mark_notification_read(notification_id))
+    def notification_mark_read(notification_id: str) -> CommandResult[NotificationItem]:
+        return CommandResult[NotificationItem](facade.mark_notification_read(notification_id))
 
     @server.tool(annotations=_COMMAND_TOOL, structured_output=True)
     def assistant_character_set(request: AssistantCharacterInput) -> CommandResult[AssistantCharacterResult]:

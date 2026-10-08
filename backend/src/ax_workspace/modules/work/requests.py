@@ -56,6 +56,7 @@ from ax_workspace.modules.work.request_lifecycle import (
     revise_work_request,
     withdraw_work_request,
 )
+from ax_workspace.modules.notification_events import NO_NOTIFIER, NotificationEvent, Notifier, excerpt, recipients
 from ax_workspace.modules.work.parties import may_read, party_of
 from ax_workspace.modules.work.projects import PROJECT_END_REQUEST_REJECTED, PROJECT_END_REQUEST_WITHDRAWN, auto_joined_by
 from ax_workspace.modules.work.material_extraction import MaterialExtractionJob, MaterialExtractionQueue, MaterialExtractionRepository
@@ -125,7 +126,7 @@ class WorkRequestRepository(Protocol):
         source_action_item_id: UUID | None = None, source_decision_item_id: UUID | None = None,
         source_submission_id: UUID | None = None, source_review_decision_id: UUID | None = None,
     ) -> Any: ...
-    def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> None: ...
+    def append_audit(self, request_id: UUID, actor_id: str, event_type: str, payload: dict[str, Any]) -> str: ...
     def inbox_for(self, assignee_id: str) -> list[Any]: ...
     def list_for(self, principal_id: str) -> list[Any]: ...
     def record_decision(
@@ -316,8 +317,11 @@ class WorkRequestApplication:
         extraction_queue: MaterialExtractionQueue | None = None,
         parents: "RequestParentPort | None" = None,
         projects: "RequestProjectMembershipPort | None" = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self._repository = repository
+        # 알림 생성기(SPEC-011 §5) — 사건 자리는 「무슨 일 · 관련자」 만 넘긴다. 규칙은 생성기 한 곳에 있다.
+        self._notifier = notifier or NO_NOTIFIER
         # 상위를 붙여도 되는지는 **업무 모듈이 판정한다** — 중심 업무·순환·수락 전 부모 금지가 거기 한 곳에
         # 있고, 요청이 그 규칙을 다시 쓰면 두 벌이 조용히 갈린다.
         self._parents = parents
@@ -449,7 +453,7 @@ class WorkRequestApplication:
         )
         if not created:
             return self._view(request, task_id=self._repository.derived_task_ids([request]).get(request.id))
-        self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
+        created_audit = self._repository.append_audit(request.id, str(principal.id), "work_request.created", {})
         # **수락 없이** 업무와 활성 담당이 같은 transaction 에 선다 (WORK-001 Phase 4). 요청 행은 그대로
         # 남아 출처가 되고, 업무가 `source_work_request_id` 로 그것을 가리킨다 — 완료 승인의 확인자가
         # 거기서 나온다. 사람이 하지 않은 수락을 판단 회차로 기록하지 않는다.
@@ -481,6 +485,11 @@ class WorkRequestApplication:
             assignment = self._repository.request_assignment(request)
             if assignment is not None:
                 assignment.auto_project_join = True
+        # W01 — 받는 사람(담당). 요청자 · 승격자(W02 행위자) · CC(W03) · 결재자(W04)에게는 없다.
+        self._notify_request(
+            "W01", "work.request_received", request, created_audit, principal,
+            recipients((request.assignee_id, "assignee")), {"resubmitted": False}, task_id=getattr(task, "id", None),
+        )
         return self._view(request, task)
 
     def accept(self, principal: Principal, request_id: UUID, expected_version: int) -> WorkRequestMutationResult:
@@ -503,7 +512,12 @@ class WorkRequestApplication:
         # **요청에 실린 자료가 그 업무의 자료로 함께 선다** (WORK-003). 요청 binding 은 그대로 두고
         # 같은 Attachment 에 업무 binding 을 더한다 — 복사본을 만들지 않으므로 파일은 하나다.
         self._adopt_materials_into_task(request, task, str(principal.id))
-        self._repository.append_audit(request.id, str(principal.id), "work_request.accepted", {"task_id": str(task.id)})
+        audit = self._repository.append_audit(request.id, str(principal.id), "work_request.accepted", {"task_id": str(task.id)})
+        # W05 — 요청자(승격자 포함). 받는 사람은 행위자(W06).
+        self._notify_request(
+            "W05", "work.request_answered", request, audit, principal, self._requester_side(request), {"answer": "accepted"},
+            task_id=task.id,
+        )
         return self._view(request, task)
 
     def reject(self, principal: Principal, request_id: UUID, expected_version: int, reason: str) -> WorkRequestMutationResult:
@@ -528,7 +542,11 @@ class WorkRequestApplication:
         )
         # **떼는 자리 #1 — 요청 거절** (SPEC-005 §4 · D-13). 붙은 근거가 그 요청인데 그 근거가 사라졌다.
         self._release_project_for(request, task, reason=PROJECT_END_REQUEST_REJECTED, ended_by=str(principal.id))
-        self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
+        audit = self._repository.append_audit(request.id, str(principal.id), "work_request.rejected", {"reason": reason.strip()})
+        self._notify_request(
+            "W05", "work.request_answered", request, audit, principal, self._requester_side(request), {"answer": "rejected"},
+            task_id=getattr(task, "id", None),
+        )
         return self._view(request, task)
 
     def negotiate(
@@ -556,8 +574,12 @@ class WorkRequestApplication:
             request, str(principal.id), "negotiate",
             reason=str(conditions.get("note") or "") or None, conditions=conditions, expected_version=expected_version,
         )
-        self._repository.append_audit(
+        audit = self._repository.append_audit(
             request.id, str(principal.id), "work_request.negotiated", {"conditions": conditions}
+        )
+        # W07 — 조건 제시 → 요청자.
+        self._notify_request(
+            "W07", "work.request_answered", request, audit, principal, self._requester_side(request), {"answer": "negotiated"}
         )
         return self._view(request)
 
@@ -601,7 +623,7 @@ class WorkRequestApplication:
         if revision.replay:
             return self._view(request)
         submission = self._apply_round(request, str(principal.id), revision, self._repository.amend)
-        self._repository.append_audit(
+        amended_audit = self._repository.append_audit(
             request.id,
             str(principal.id),
             "work_request.amended",
@@ -613,6 +635,10 @@ class WorkRequestApplication:
             },
         )
         self._record_inheritance(request, str(principal.id), submission)
+        # W08 — 수락 전 수정 → 받는 사람.
+        self._notify_request(
+            "W08", "work.changed", request, amended_audit, principal, recipients((request.assignee_id, "assignee")), {"change": "amended"}
+        )
         return self._view(request)
 
     def _amendment_produced(self, request: Any, actor_id: str, expected_version: int, command: dict[str, Any]) -> bool:
@@ -677,10 +703,14 @@ class WorkRequestApplication:
             ),
         )
         submission = self._apply_round(request, str(principal.id), revision, self._repository.resubmit)
-        self._repository.append_audit(
+        audit = self._repository.append_audit(
             request.id, str(principal.id), "work_request.resubmitted", {"submission_version": submission.submission_version}
         )
         self._record_inheritance(request, str(principal.id), submission)
+        # W09 — 재상신 → 받는 사람(「다시 요청했습니다」).
+        self._notify_request(
+            "W09", "work.request_received", request, audit, principal, recipients((request.assignee_id, "assignee")), {"resubmitted": True}
+        )
         return self._view(request)
 
     def _record_inheritance(self, request: Any, actor_id: str, submission: Any) -> None:
@@ -720,7 +750,12 @@ class WorkRequestApplication:
         )
         # **떼는 자리 #2 — 요청 철회** (SPEC-005 §4 · D-13). **철회라고 조건이 느슨해지지 않는다.**
         self._release_project_for(request, task, reason=PROJECT_END_REQUEST_WITHDRAWN, ended_by=str(principal.id))
-        self._repository.append_audit(request.id, str(principal.id), "work_request.withdrawn", {})
+        audit = self._repository.append_audit(request.id, str(principal.id), "work_request.withdrawn", {})
+        # W10 — 철회 → 받는 사람.
+        self._notify_request(
+            "W10", "work.changed", request, audit, principal, recipients((request.assignee_id, "assignee")), {"change": "withdrawn"},
+            task_id=getattr(task, "id", None),
+        )
         return self._view(request, task)
 
     def _release_project_for(self, request: Any, task: Any, *, reason: str, ended_by: str) -> None:
@@ -1136,7 +1171,9 @@ class WorkRequestApplication:
         if not text:
             raise WorkRequestError("comment body is required")
         if not idempotency_key:
-            return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text), [])
+            comment = self._comments.add(request.request_thread_id, str(principal.id), text)
+            self._notify_comment(principal, request, comment, text)
+            return self._comment_view(comment, [])
         comment_id = comment_identity(request.request_thread_id, str(principal.id), idempotency_key)
         # Serialize same-key posts that arrive together; the second one then sees the first.
         self._comments.lock_thread(request.request_thread_id)
@@ -1145,7 +1182,59 @@ class WorkRequestApplication:
             if existing.body != text:
                 raise WorkRequestIdempotencyConflict("comment idempotency key was reused with different content")
             return self._comment_view(existing, self._comment_attachments(existing))
-        return self._comment_view(self._comments.add(request.request_thread_id, str(principal.id), text, comment_id=comment_id), [])
+        comment = self._comments.add(request.request_thread_id, str(principal.id), text, comment_id=comment_id)
+        self._notify_comment(principal, request, comment, text)
+        return self._comment_view(comment, [])
+
+    # ── 알림 (SPEC-011 §4.2-2) — 사건 자리는 사건 · 관련자만 넘긴다 ──────────────────────────
+
+    @staticmethod
+    def _requester_side(request: Any) -> tuple[Any, ...]:
+        """요청자 자리 — 요청자와 회의 승격자(같은 칸 · 꼬리표 `requester`). 시스템 요청자(`system:meeting`)는 사람이 아니다."""
+        return recipients(
+            (str(request.requester_id), "requester"),
+            (str(getattr(request, "promoted_by_member_id", None) or ""), "requester"),
+        )
+
+    def _notify_request(
+        self,
+        row: str,
+        kind: str,
+        request: Any,
+        source_id: str,
+        principal: Principal,
+        people: tuple[Any, ...],
+        data: dict[str, Any],
+        *,
+        task_id: Any = None,
+    ) -> None:
+        if task_id is None:
+            task_id = self._repository.derived_task_ids([request]).get(request.id)
+        target = {"surface": "work", "task_id": str(task_id)} if task_id else {"surface": "work", "work_request_id": str(request.id)}
+        self._notifier.notify(
+            NotificationEvent(
+                row=row, kind=kind, source_kind="work_request_audit_event", source_id=str(source_id),
+                recipients=people, subject={"type": "work_request", "id": str(request.id), "title": request.title},
+                actor_member_id=str(principal.id), data=data, target=target,
+            )
+        )
+
+    def _notify_comment(self, principal: Principal, request: Any, comment: Any, text: str) -> None:
+        """W36 — 요청 스레드 댓글 → 담당 · 요청자(승격자) · CC, 작성자 빼고. 꼬리표는 관계 우선 하나(§4.3-3)."""
+        people = (
+            *recipients((str(request.assignee_id), "assignee")),
+            *self._requester_side(request),
+            *recipients(*((member, "cc") for member in self._repository.cc_member_ids(request))),
+        )
+        task_id = self._repository.derived_task_ids([request]).get(request.id)
+        target = {"surface": "work", "task_id": str(task_id)} if task_id else {"surface": "work", "work_request_id": str(request.id)}
+        self._notifier.notify(
+            NotificationEvent(
+                row="W36", kind="work.commented", source_kind="comment", source_id=str(comment.id), recipients=people,
+                subject={"type": "work_request", "id": str(request.id), "title": request.title},
+                actor_member_id=str(principal.id), data={"excerpt": excerpt(text)}, target=target,
+            )
+        )
 
     def _comment_attachments(self, comment: Any) -> list[dict[str, Any]]:
         if self._attachments is None:
