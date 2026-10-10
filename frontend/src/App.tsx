@@ -48,7 +48,7 @@ const navigation: ReadonlyArray<{ id: ProductSurface | "materials"; label: strin
   { id: "materials", label: "자료함", icon: "document", disabled: true },
   { id: "meetings", label: "회의", icon: "persons" },
   /* 메시지함 — 메일·슬랙·카톡이 쌓이는 독립 화면(WORK-011 FE-a · SPEC-008 §2 Placement). 「업무 > 수신함」과 다르다(D-06). */
-  { id: "inbox", label: "메시지함", icon: "inbox" },
+  { id: "inbox", label: "메시지", icon: "inbox" },
   { id: "org", label: "조직", icon: "company" },
   { id: "report", label: "보고", icon: "document" },
   // 데모 기간에는 사이드 탭에서 닫는다. 화면 자체와 다른 진입 경로는 그대로 둔다.
@@ -64,7 +64,7 @@ const surfaceLabel: Record<ProductSurface, string> = {
   project: "프로젝트",
   org: "조직",
   graph: "관계 탐색",
-  inbox: "메시지함",
+  inbox: "메시지",
   settings: "설정",
   notifications: "알림",
 };

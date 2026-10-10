@@ -50,10 +50,10 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
   expect(container.querySelector(".scax-side-nav__version")).toBeNull();
 
   const nav = within(screen.getByRole("navigation", { name: "제품 탐색" }));
-  const surfaces = ["홈", "업무", "캘린더", "프로젝트", "회의", "메시지함", "조직", "보고", "관계 탐색"];
+  const surfaces = ["홈", "업무", "캘린더", "프로젝트", "회의", "메시지", "조직", "보고", "관계 탐색"];
   for (const label of surfaces) expect(nav.getByRole("button", { name: label }), label).toBeTruthy();
   expect(Array.from(container.querySelectorAll(".scax-nav-item")).map((item) => item.textContent)).toEqual(
-    ["알림", "설정", "홈", "업무", "캘린더", "프로젝트", "자료함", "회의", "메시지함", "조직", "보고", "관계 탐색"],
+    ["알림", "설정", "홈", "업무", "캘린더", "프로젝트", "자료함", "회의", "메시지", "조직", "보고", "관계 탐색"],
   );
   expect(nav.getByRole("button", { name: "자료함" }).hasAttribute("disabled")).toBe(true);
   // 시안에만 있는 메뉴는 만들지 않았다
@@ -97,7 +97,7 @@ it("셸 뼈대가 서고, 화면마다 스크롤 기둥이 본문 칸에 직접 
        바깥이 함께 스크롤하면 스크롤 주인이 둘이 되어 격자가 잘린다.
        WORK-005 FE-1: 프로젝트도 같은 편에 섰다 — 좌·우 레일과 본문(요약 스트립 + 진행 라인)이
        칸을 꽉 채우고 `.scax-pj-view` 가 «자기 안에서» 스크롤한다. 나머지 화면은 그대로 문서형이다. */
-    const fixed = label === "회의" || label === "캘린더" || label === "프로젝트" || label === "메시지함";
+    const fixed = label === "회의" || label === "캘린더" || label === "프로젝트" || label === "메시지";
     expect(scroll.classList.contains("scax-page-scroll--fixed"), `${label} fixed`).toBe(fixed);
     expect(scroll.children.length, `${label} 내용이 기둥 안에 있다`).toBeGreaterThan(0);
     // 스크롤 기둥은 본문 칸의 «직계 자식» 이어야 높이를 나눠 받는다

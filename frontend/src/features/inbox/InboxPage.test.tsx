@@ -156,7 +156,7 @@ describe("메시지함 — 레일 · 네 상태", () => {
     expect(rail().getByText("#pilot-launch")).toBeTruthy();
     expect(rail().getByText("박지윤", { selector: "h3" })).toBeTruthy();
     expect(rail().getByRole("img", { name: "안 읽음" })).toBeTruthy();
-    expect(screen.getByRole("region", { name: "메시지함" }).querySelector(".scax-gutter-list__title .scax-badge--count")?.textContent).toBe("2");
+    expect(screen.getByRole("region", { name: "메시지" }).querySelector(".scax-gutter-list__title .scax-badge--count")?.textContent).toBe("2");
     // 그 밖에 N건 더 — 미읽음 5 중 미리보기 1줄
     expect(rail().getByText("그 밖에 4건 더")).toBeTruthy();
     for (const absent of ["내 업무로", "확인완료", "업무", "참고"]) expect(rail().queryByRole("button", { name: absent })).toBeNull();

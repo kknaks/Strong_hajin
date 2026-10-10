@@ -350,6 +350,40 @@ fn send_click(app: &AppHandle, app_origin: Option<&str>, click: notify::Click) {
     }
 }
 
+/// **WKWebView 요소 전체화면을 끈다**(macOS · 2026-10-10 전체화면 빈 공간 버그).
+///
+/// tauri 2.11 → 2.12 로 오르며 wry 가 0.55 → 0.57 이 됐고, wry 0.56(#1779 · #1780)은 `fullscreen` feature 를 걷고
+/// `WKPreferences.elementFullscreenEnabled` 를 **늘** 켠다. 전 판은 tauri 의 `macos-private-api` 기능일 때만 켰고 우리는 그
+/// 기능을 쓰지 않으므로 **꺼진 채**였다. 두 판 사이 macOS 웹뷰 생성에서 바뀐 동작은 이것뿐이다(프레임 · 자동 크기 무변경 —
+/// 리포트 §1). 웹은 요소 전체화면(`requestFullscreen`)을 쓰지 않는다(grep 0) — 끄는 것으로 잃는 기능이 없다.
+/// 실패해도 창은 그대로 뜬다(로그만).
+#[cfg(target_os = "macos")]
+fn restore_element_fullscreen_off(window: &WebviewWindow) {
+    let result = window.with_webview(|platform| {
+        use objc2::rc::Retained;
+        use objc2::runtime::{AnyObject, Bool};
+        use objc2::{msg_send, sel};
+        // SAFETY: tauri 가 넘기는 macOS 웹뷰 포인터는 살아 있는 WKWebView 다. 메서드는 존재를 묻고 부른다.
+        unsafe {
+            let Some(webview) = (platform.inner() as *mut AnyObject).as_ref() else {
+                return;
+            };
+            let config: Option<Retained<AnyObject>> = msg_send![webview, configuration];
+            let Some(config) = config else { return };
+            let prefs: Option<Retained<AnyObject>> = msg_send![&*config, preferences];
+            let Some(prefs) = prefs else { return };
+            let public: Bool = msg_send![&*prefs, respondsToSelector: sel!(setElementFullscreenEnabled:)];
+            if public.as_bool() {
+                let _: () = msg_send![&*prefs, setElementFullscreenEnabled: Bool::NO];
+                log_event("win", "WKWebView 요소 전체화면을 껐다(전 판 설정)");
+            }
+        }
+    });
+    if let Err(error) = result {
+        log_event("win", &format!("요소 전체화면 설정을 되돌리지 못했다: {error}"));
+    }
+}
+
 /// Windows(WebView2) 마이크 권한. 없으면 `getUserMedia` 가 **프롬프트 없이** 실패한다.
 /// macOS 는 `Info.plist` 의 `NSMicrophoneUsageDescription` 이 프롬프트를 띄운다.
 #[cfg(windows)]
@@ -668,13 +702,26 @@ fn spawn_main_window(
         }
     }
 
+    // macOS — wry 0.56 이 WKWebView 의 요소 전체화면을 늘 켠다(전 판은 `macos-private-api` 일 때만 · 우리는 끈 판).
+    // 전체화면 왕복 뒤 아래 빈 공간(2026-10-10 사용자 · `fe-fullscreen-report.md`)의 1순위 원인이라 전 판 설정으로 되돌린다.
+    #[cfg(target_os = "macos")]
+    restore_element_fullscreen_off(&window);
+
     // 원격 주소를 열 때만 감시한다. 셸 자기 화면은 감시할 이유가 없다.
     if do_watch {
         watch_load(shell.clone(), window.clone(), start_url.clone());
     }
 
     let event_shell = shell.clone();
+    let resized_window = window.clone();
     window.on_window_event(move |event| match event {
+        WindowEvent::Resized(size) => {
+            // 전체화면 왕복 실측용 한 줄(코디 — 실행 파일을 터미널에서 띄우면 보인다) · 아무것도 바꾸지 않는다
+            log_event(
+                "win",
+                &format!("resized {}x{} fullscreen={:?}", size.width, size.height, resized_window.is_fullscreen().ok()),
+            );
+        }
         WindowEvent::CloseRequested { .. } => {
             // **요청은 «완료»가 아니다**(I-4·I-5 · `E-12`). 여기서 점유를 풀면,
             // 사용자가 「계속 녹음」을 고른 바로 그 순간 기기가 잠들 수 있게 된다.
@@ -1171,6 +1218,18 @@ mod tests {
             (parts[0], parts[1], parts[2]) >= (2, 12, 0),
             "tauri 가 2.12 미만이다: {version}"
         );
+    }
+
+    #[test]
+    fn 제품_창은_macos_에서_요소_전체화면을_끈다() {
+        // 2026-10-10 전체화면 왕복 뒤 빈 공간 — wry 0.56 이 늘 켜는 `elementFullscreenEnabled` 를 전 판(꺼짐)으로 되돌린다.
+        // 창을 만드는 한 곳(`spawn_main_window`)이 부르는지, 되돌리는 쪽이 공개 API 를 존재를 묻고 쓰는지 본다.
+        let source = include_str!("lib.rs");
+        let spawn = source.split("fn spawn_main_window(").nth(1).expect("spawn_main_window");
+        let spawn = spawn.split("\nfn ").next().unwrap();
+        assert!(spawn.contains("restore_element_fullscreen_off(&window)"), "창을 만들 때 요소 전체화면을 끄지 않는다");
+        assert!(source.contains("respondsToSelector: sel!(setElementFullscreenEnabled:)"));
+        assert!(source.contains("setElementFullscreenEnabled: Bool::NO"));
     }
 
     #[test]
