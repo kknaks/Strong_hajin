@@ -2518,7 +2518,7 @@ describe("메시지함 → AX 서랍", () => {
 
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "메시지함" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "메시지" }));
     fireEvent.click(await screen.findByText("#pilot-launch", { selector: "h3" }));
     await screen.findByText("배포 일정 잡아 주세요");
     const row = document.querySelector('[data-message-id="msg-7"]') as HTMLElement;
@@ -2563,7 +2563,7 @@ describe("사건 채널 — 앱 전역 연결 하나", () => {
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     await waitFor(() => expect(FakeEventSource.all).toHaveLength(1));
     expect(FakeEventSource.latest().url).toBe("/api/events/stream");
-    for (const name of ["업무", "메시지함", "홈"]) fireEvent.click(within(navigation).getByRole("button", { name }));
+    for (const name of ["업무", "메시지", "홈"]) fireEvent.click(within(navigation).getByRole("button", { name }));
     fireEvent.click(within(navigation).getByRole("button", { name: "설정" }));
     await screen.findByRole("button", { name: "알림 설정" });
     expect(FakeEventSource.all).toHaveLength(1);
@@ -2659,7 +2659,7 @@ describe("알림 — 누르면 대상으로 · 사이드바 점", () => {
 
     await openAlerts();
     click("n-room");
-    await waitFor(() => expect(title()).toBe("메시지함"));
+    await waitFor(() => expect(title()).toBe("메시지"));
     await waitFor(() => expect(calls.some((call) => call.path === "/api/inbox/rooms/r1/messages")).toBe(true));
     expect(calls.some((call) => call.path === "/api/notifications/n-room/read")).toBe(true);
 
@@ -2731,17 +2731,17 @@ describe("알림 — 누르면 대상으로 · 사이드바 점", () => {
     const navigation = await screen.findByRole("navigation", { name: "제품 탐색" });
     const dotOf = (name: string) => within(navigation).getByRole("button", { name }).querySelector(".scax-nav-item__dot");
     await waitFor(() => expect(dotOf("알림")).not.toBeNull());
-    expect(dotOf("메시지함")).not.toBeNull();
+    expect(dotOf("메시지")).not.toBeNull();
     expect(dotOf("업무")).toBeNull();
 
     badges = { notifications: false, inbox: true };
     await waitFor(() => expect(FakeEventSource.all.length).toBe(1));
     act(() => FakeEventSource.latest().emit("notification.read", { v: 1, all: true, theme: null }));
     await waitFor(() => expect(dotOf("알림")).toBeNull());
-    expect(dotOf("메시지함")).not.toBeNull();
+    expect(dotOf("메시지")).not.toBeNull();
 
     badges = { notifications: false, inbox: false };
     act(() => FakeEventSource.latest().emit("inbox.message_updated", { v: 1, type: "inbox.message_updated", member_id: "mina", message_id: "m1" }));
-    await waitFor(() => expect(dotOf("메시지함")).toBeNull());
+    await waitFor(() => expect(dotOf("메시지")).toBeNull());
   });
 });

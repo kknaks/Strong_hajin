@@ -67,7 +67,10 @@ a{color:var(--scax-color-accent);text-decoration:none}
 :focus,:focus-visible{outline:none}
 
 /* ---------- AppShell ---------- */
-.scax-app-shell{display:flex;flex-direction:row;width:100%;min-width:1542px;height:100vh;overflow:hidden;background:var(--scax-color-surface)}
+/* 높이는 `100vh` 가 아니라 html → body → #root → 셸의 `height:100%` 사슬로 잡는다(2026-10-10 · 데스크톱 앱 전체화면 왕복 뒤
+   아래 빈 공간). 뷰포트 단위는 웹뷰가 창 크기 변화를 늦게 알리면 옛 값에 머물 수 있다 — `%` 는 지금 레이아웃 뷰포트를 그대로 따른다. */
+html,body,#root{height:100%}
+.scax-app-shell{display:flex;flex-direction:row;width:100%;min-width:1542px;height:100%;overflow:hidden;background:var(--scax-color-surface)}
 .scax-app-main{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;box-shadow:var(--scax-shadow-rail)}
 
 /* ---------- SideNav ---------- */
@@ -158,7 +161,7 @@ span.scax-side-nav__avatar{display:flex;align-items:center;justify-content:cente
 /* ══════════════════════════════════════════════════════════════════════════
    바퀴 2 과도기 규칙 — 원본 shell.css 에 없다. 여기서 더한 것이고 이유가 있다.
 
-   .scax-app-shell 은 height:100vh · overflow:hidden 이고,
+   .scax-app-shell 은 height:100%(html·body·#root 사슬 — 예전 100vh) · overflow:hidden 이고,
    .scax-page-body__content 는 overflow:auto hidden — 즉 «세로가 잘린다».
    시안은 본문 안쪽 부품(.scax-gutter-list__body · .scax-task-table__body …)이
    저마다 overflow-y:auto 를 갖는 전제인데, 그 부품들은 바퀴 3~6 에서 온다.

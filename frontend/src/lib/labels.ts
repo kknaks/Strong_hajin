@@ -1483,7 +1483,7 @@ export const shellDownload = {
 
 /* ===== 메시지함 (WORK-011 FE-a · SPEC-008 §2.1·2.2·2.8) — 문구는 확정 시안 `inbox.v1.jsx` 그대로 ===== */
 export const inboxScreen = {
-  title: "메시지함",
+  title: "메시지",
   nav: "메시지함",
   readAll: "모두 읽음으로",
   sources: [
